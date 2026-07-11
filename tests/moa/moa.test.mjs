@@ -1,0 +1,431 @@
+// Black-box component tests for the MoA decision engine (skills/loop-testing/scripts/moa.mjs).
+//
+// Constraints honored here:
+//   - NO real network, NO real API keys. Every endpoint is a local node:http stub.
+//   - moa.mjs is exercised as a subprocess (real CLI contract), with a fully
+//     controlled env so the host machine's real proxy / keys never leak in.
+//   - Proxy behavior is verified by pointing the OpenAI base URL at an UNROUTABLE
+//     host and setting *_PROXY at a local stub proxy: success is only possible if
+//     traffic actually goes through the proxy.
+//
+// Run: node --test tests/moa/
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const MOA_PATH = join(HERE, '..', '..', 'skills', 'loop-testing', 'scripts', 'moa.mjs');
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Start a local HTTP stub. `handler(req, res, body)` is called after the full
+// body is buffered. Every request is recorded in `requests`.
+function startServer(handler) {
+  return new Promise((resolve) => {
+    const requests = [];
+    const server = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        requests.push({ method: req.method, url: req.url, headers: req.headers, body });
+        try {
+          handler(req, res, body, requests);
+        } catch (e) {
+          res.statusCode = 500;
+          res.end(String(e));
+        }
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      resolve({
+        server,
+        port,
+        url: `http://127.0.0.1:${port}`,
+        requests,
+        close: () => new Promise((r) => server.close(r)),
+      });
+    });
+  });
+}
+
+// A chat-completions handler that routes by the request's `model` field:
+//   - model in failModels  -> HTTP 500 (echoing the Authorization header so
+//                             redaction of error excerpts can be asserted).
+//   - model === aggModel   -> structured JSON aggregator response.
+//   - otherwise            -> a reference opinion `opinion-from-<model>`.
+function chatHandler({ aggModel, failModels = [] }) {
+  return (req, res, body) => {
+    let model = '';
+    try { model = JSON.parse(body).model; } catch { /* ignore */ }
+    res.setHeader('content-type', 'application/json');
+    if (failModels.includes(model)) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: 'boom', seen_auth: req.headers.authorization || '' }));
+      return;
+    }
+    let content;
+    if (model === aggModel) {
+      content = JSON.stringify({
+        summary: 'S-summary', recommendation: 'R-reco',
+        rationale: 'RA-rationale', risks: 'RK-risks',
+      });
+    } else {
+      content = `opinion-from-${model}`;
+    }
+    res.statusCode = 200;
+    res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+  };
+}
+
+// Run moa.mjs as a subprocess with a *clean* env (only what we pass, plus PATH).
+function runMoa(args, env = {}, cwd) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [MOA_PATH, ...args], {
+      cwd: cwd || HERE,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+async function withWorkspace(fn) {
+  const dir = await mkdtemp(join(tmpdir(), 'moa-test-'));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function writeInput(dir, text = '# 决策上下文\n\n现象：X。候选方案：A 或 B。') {
+  const p = join(dir, 'ctx.md');
+  await writeFile(p, text, 'utf8');
+  return p;
+}
+
+async function writeConfig(dir, cfg) {
+  const p = join(dir, 'moa.config.json');
+  await writeFile(p, JSON.stringify(cfg), 'utf8');
+  return p;
+}
+
+const TWO_REF_CONFIG = {
+  reference_models: [
+    { model: 'ref-model-a', provider: 'openai' },
+    { model: 'ref-model-b', provider: 'openai' },
+  ],
+  aggregator: { model: 'agg-model', provider: 'openai' },
+};
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test('happy path: 2 references + aggregator produce all sections and both opinions', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      for (const section of ['问题摘要', '各参考模型意见', '聚合推荐方案', '理由', '风险与分歧点', '元数据']) {
+        assert.ok(doc.includes(section), `missing section: ${section}`);
+      }
+      assert.ok(doc.includes('opinion-from-ref-model-a'), 'missing ref-a opinion');
+      assert.ok(doc.includes('opinion-from-ref-model-b'), 'missing ref-b opinion');
+      assert.ok(doc.includes('R-reco'), 'missing aggregator recommendation');
+      assert.ok(doc.includes('RK-risks'), 'missing aggregator risks');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('provider selection: dry-run reflects openrouter-only vs openai-only default', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const routerOnly = await runMoa(
+      ['--input', input, '--dry-run'],
+      { OPENROUTER_API_KEY: 'sk-or' }, dir,
+    );
+    assert.equal(routerOnly.code, 0, routerOnly.stderr);
+    assert.match(routerOnly.stdout, /default_provider:\s*openrouter/);
+
+    const openaiOnly = await runMoa(
+      ['--input', input, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-oa' }, dir,
+    );
+    assert.equal(openaiOnly.code, 0, openaiOnly.stderr);
+    assert.match(openaiOnly.stdout, /default_provider:\s*openai/);
+  });
+});
+
+test('provider selection: real OpenRouter wire path via OPENROUTER_BASE_URL', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, {
+        reference_models: [{ model: 'ref-model-a', provider: 'openrouter' }],
+        aggregator: { model: 'agg-model', provider: 'openrouter' },
+      });
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENROUTER_API_KEY: 'sk-or-fake', OPENROUTER_BASE_URL: `${stub.url}/api/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const authHeaders = stub.requests.map((r) => r.headers.authorization);
+      assert.ok(authHeaders.every((a) => a === 'Bearer sk-or-fake'), 'openrouter auth not applied');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('proxy: traffic routes through *_PROXY (base host is unroutable)', async () => {
+  await withWorkspace(async (dir) => {
+    // The proxy stub doubles as responder: it records the absolute-form URL and
+    // answers directly. The OpenAI base points at an unroutable host, so a
+    // successful run PROVES the request went through the proxy.
+    const proxy = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        {
+          OPENAI_API_KEY: 'sk-fake',
+          OPENAI_BASE_URL: 'http://10.255.255.1/v1', // unroutable (TEST-NET-ish blackhole)
+          HTTPS_PROXY: proxy.url,
+        },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      assert.ok(proxy.requests.length >= 3, `expected >=3 proxied calls, got ${proxy.requests.length}`);
+      // Absolute-form request-target is the hallmark of forward-proxying an http origin.
+      assert.ok(
+        proxy.requests.every((r) => r.url.startsWith('http://10.255.255.1/v1/')),
+        `proxy did not receive absolute-form targets: ${proxy.requests.map((r) => r.url).join(', ')}`,
+      );
+    } finally {
+      await proxy.close();
+    }
+  });
+});
+
+test('degradation: one reference 500s -> still succeeds with a metadata note', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer(chatHandler({ aggModel: 'agg-model', failModels: ['ref-model-b'] }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      assert.ok(doc.includes('opinion-from-ref-model-a'), 'surviving reference missing');
+      assert.ok(doc.includes('ref-model-b'), 'failed reference not noted');
+      assert.match(doc, /degraded/i);
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('degradation: all references fail -> aggregator-only + degraded no-references', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer(chatHandler({
+      aggModel: 'agg-model', failModels: ['ref-model-a', 'ref-model-b'],
+    }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      assert.match(doc, /no-references/);
+      assert.ok(doc.includes('R-reco'), 'aggregator output missing in aggregator-only mode');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('degradation: aggregator fails -> exit code 2', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer(chatHandler({ aggModel: 'agg-model', failModels: ['agg-model'] }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 2, `expected exit 2, stderr: ${stderr}`);
+      assert.match(stderr, /aggregat/i);
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('degradation: no keys at all -> exit code 2 with clear message', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const config = await writeConfig(dir, TWO_REF_CONFIG);
+    const { code, stdout, stderr } = await runMoa(
+      ['--input', input, '--config', config],
+      { /* no keys */ }, dir,
+    );
+    assert.equal(code, 2, `expected exit 2, stderr: ${stderr}`);
+    assert.match(stderr, /key/i);
+    assert.ok(!stdout.includes('Bearer'), 'no key material should appear in stdout');
+  });
+});
+
+test('redaction: fake key never appears in stdout / output file (success path)', async () => {
+  await withWorkspace(async (dir) => {
+    const SECRET = 'sk-SECRET-abc123XYZ';
+    const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stdout, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: SECRET, OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      assert.ok(!stdout.includes(SECRET), 'secret leaked to stdout');
+      assert.ok(!stderr.includes(SECRET), 'secret leaked to stderr');
+      assert.ok(!doc.includes(SECRET), 'secret leaked to output file');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('redaction: key is scrubbed from HTTP error excerpts on stderr', async () => {
+  await withWorkspace(async (dir) => {
+    const SECRET = 'sk-SECRET-err789';
+    // Aggregator 500s AND the stub echoes the Authorization header into the body;
+    // moa surfaces an error excerpt, which must be redacted.
+    const stub = await startServer(chatHandler({ aggModel: 'agg-model', failModels: ['agg-model'] }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config],
+        { OPENAI_API_KEY: SECRET, OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 2);
+      assert.ok(!stderr.includes(SECRET), `secret leaked in error excerpt: ${stderr}`);
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('config override: --config changes models (visible in dry-run)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const config = await writeConfig(dir, {
+      reference_models: ['cfg-a', 'cfg-b'],
+      aggregator: 'cfg-agg',
+    });
+    const { code, stdout, stderr } = await runMoa(
+      ['--input', input, '--config', config, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-fake' }, dir,
+    );
+    assert.equal(code, 0, stderr);
+    for (const m of ['cfg-a', 'cfg-b', 'cfg-agg']) {
+      assert.ok(stdout.includes(m), `dry-run missing model ${m}`);
+    }
+  });
+});
+
+test('config override: env LOOP_TESTING_MOA_* wins over config file', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const config = await writeConfig(dir, {
+      reference_models: ['cfg-a', 'cfg-b'],
+      aggregator: 'cfg-agg',
+    });
+    const { code, stdout, stderr } = await runMoa(
+      ['--input', input, '--config', config, '--dry-run'],
+      {
+        OPENAI_API_KEY: 'sk-fake',
+        LOOP_TESTING_MOA_MODELS: 'env-x,env-y',
+        LOOP_TESTING_MOA_AGGREGATOR: 'env-agg',
+      }, dir,
+    );
+    assert.equal(code, 0, stderr);
+    for (const m of ['env-x', 'env-y', 'env-agg']) {
+      assert.ok(stdout.includes(m), `dry-run missing env model ${m}`);
+    }
+    assert.ok(!stdout.includes('cfg-a'), 'env override should replace config reference models');
+  });
+});
+
+test('dry-run: makes zero network calls', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const { code, stdout, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--dry-run'],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, stderr);
+      assert.match(stdout, /dry-run/i);
+      assert.equal(stub.requests.length, 0, 'dry-run must not hit the network');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('dry-run: reports proxy on/off and key presence as booleans (no values)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const { stdout, code } = await runMoa(
+      ['--input', input, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-should-not-print', HTTPS_PROXY: 'http://127.0.0.1:9' }, dir,
+    );
+    assert.equal(code, 0);
+    assert.match(stdout, /proxy:\s*on/i);
+    assert.match(stdout, /OPENAI_API_KEY:\s*set/);
+    assert.match(stdout, /OPENROUTER_API_KEY:\s*missing/);
+    assert.ok(!stdout.includes('sk-should-not-print'), 'dry-run leaked key value');
+  });
+});

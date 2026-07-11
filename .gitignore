@@ -1,0 +1,7 @@
+# AI tooling / local-only config
+.claude/
+.code-graph/
+CLAUDE.md
+
+# Local docs (not part of the project)
+docs/
