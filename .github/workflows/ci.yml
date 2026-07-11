@@ -27,6 +27,24 @@ jobs:
           jq -e . .claude-plugin/marketplace.json > /dev/null
           jq -e . hooks/hooks.json > /dev/null
           echo "manifests: valid JSON"
+          # Version-sync gate: plugin.json, both marketplace.json version fields,
+          # and (on a tag push) the tag itself must all agree. Guards against the
+          # v0.1.1 tag-without-manifest-bump desync that CI's JSON check missed.
+          pv=$(jq -r '.version' .claude-plugin/plugin.json)
+          mv_meta=$(jq -r '.metadata.version' .claude-plugin/marketplace.json)
+          mv_plugin=$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)
+          if [ "$pv" != "$mv_meta" ] || [ "$pv" != "$mv_plugin" ]; then
+            echo "::error::version desync — plugin.json=$pv marketplace.metadata=$mv_meta marketplace.plugins[0]=$mv_plugin"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag_ver="${GITHUB_REF_NAME#v}"
+            if [ "$pv" != "$tag_ver" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match manifest version ${pv}"
+              exit 1
+            fi
+          fi
+          echo "manifests: version ${pv} consistent across plugin.json + marketplace.json${GITHUB_REF_TYPE:+ (ref ${GITHUB_REF_NAME})}"
 
       - name: Run test suite
         run: bash tests/run-all.sh
