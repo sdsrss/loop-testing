@@ -71,4 +71,11 @@ write_state "$WS6" RUNNING 1
 STUB_STREAK_ONLY=1 bash "$CODEX_DRIVER" --project "$WS6" --codex-bin "$stub" --no-protect --max-sessions 3 >/dev/null 2>&1
 assert_rc $? 3 "streak+evidence progress (round/issues static) -> max-sessions, not NO_PROGRESS"
 
+# I. STATE.md never created -> fail fast after exactly 1 session, not 2 (audit C9).
+WS7=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7"' EXIT
+stub=$(write_stub "$WS7")
+STUB_NO_STATE=1 bash "$CODEX_DRIVER" --project "$WS7" --codex-bin "$stub" --no-protect --max-sessions 5 >/dev/null 2>&1
+assert_rc $? 5 "absent STATE.md -> exit 5"
+assert_eq "1" "$(sessions_in_log "$WS7")" "exits after exactly 1 STATE-less session (not 2)"
+
 report "codex-limits.test.sh"

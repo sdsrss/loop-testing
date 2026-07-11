@@ -51,4 +51,11 @@ write_state "$WS4" RUNNING 1
 STUB_STREAK_ONLY=1 bash "$DRIVER" --project "$WS4" --claude-bin "$stub" --max-sessions 3 >/dev/null 2>&1
 assert_rc $? 3 "streak+evidence progress (round/issues static) -> runs to max-sessions, not NO_PROGRESS"
 
+# G. STATE.md never created -> fail fast after exactly 1 session, not 2 (audit C9).
+WS5=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5"' EXIT
+stub=$(write_stub "$WS5")   # no write_state: STATE.md stays absent; stub writes none
+STUB_NO_STATE=1 bash "$DRIVER" --project "$WS5" --claude-bin "$stub" --max-sessions 5 >/dev/null 2>&1
+assert_rc $? 5 "absent STATE.md -> exit 5"
+assert_eq "1" "$(sessions_in_log "$WS5")" "exits after exactly 1 STATE-less session (not 2)"
+
 report "driver-limits.test.sh"

@@ -67,7 +67,7 @@ STATE="$LT/STATE.md"
 ISSUES="$LT/ISSUES.md"
 DLOG="$LT/driver.log"
 mkdir -p "$LT"
-: >> "$DLOG"
+: >> "$DLOG" || die "cannot write driver.log at $DLOG"
 
 # Protect the installed skill from the full-access session; always restore.
 # Set the restore trap BEFORE the chmod so a signal in between can't leave the
@@ -141,7 +141,7 @@ while true; do
 
   # Wall-clock watchdog around the single-shot codex session; cwd = project.
   if [ -n "$TIMEOUT_BIN" ]; then
-    ( cd "$PROJECT" && "$TIMEOUT_BIN" -k 20 "$sess_budget" \
+    ( cd "$PROJECT" && "$TIMEOUT_BIN" -k 15 "$sess_budget" \
       "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" \
       >/dev/null 2>&1 )
     rc=$?
@@ -155,6 +155,12 @@ while true; do
   cur_issues="$(issue_count)"
   cur_sig="$(progress_sig)"
   log "session $session: exit=$rc round=$cur_round issues=$cur_issues status=$(state_field status) sig=$cur_sig"
+
+  # C9: a session that didn't even create STATE.md made no progress and resuming
+  # can't help — fail fast instead of waiting out the 2-session no-progress window.
+  if [ ! -f "$STATE" ]; then
+    summary_exit 5 "NO_PROGRESS: session $session produced no STATE.md (agent likely failed before round 0)"
+  fi
 
   # No-progress breaker: ANY change in the composite signal (round, issue count,
   # converged_streak, runs/ evidence bytes+count) counts as progress — catches a

@@ -73,6 +73,9 @@ state_field() { # key -> value (trimmed) ; empty if absent/unparseable
   [ -f "$STATE" ] || return 0
   grep -aE "^$1:" "$STATE" 2>/dev/null | head -1 | sed "s/^$1:[[:space:]]*//" | tr -d '[:space:]'
 }
+round_of() { # normalized integer round (tolerates a trailing annotation); -1 if none
+  local r; r=$(state_field round | sed 's/[^0-9-]//g'); [ -n "$r" ] && echo "$r" || echo -1;
+}
 issue_count() {
   [ -f "$ISSUES" ] || { echo 0; return; }
   # grep -c always prints the count (0 on no match) but exits 1 then; swallow the
@@ -87,10 +90,9 @@ runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth sig
   echo "$n:$b"
 }
 progress_sig() { # composite progress fingerprint: round|issues|streak|runsN:runsB
-  local r s
-  r="$(state_field round)"; [ -n "$r" ] || r=-1
+  local s
   s="$(state_field converged_streak)"; [ -n "$s" ] || s=-1
-  printf '%s|%s|%s|%s' "$r" "$(issue_count)" "$s" "$(runs_sig)"
+  printf '%s|%s|%s|%s' "$(round_of)" "$(issue_count)" "$s" "$(runs_sig)"
 }
 
 mkdir -p "$LT"
@@ -166,11 +168,17 @@ while true; do
     rc=$?
   fi
 
-  cur_round="$(state_field round)"; [ -n "$cur_round" ] || cur_round=-1
+  cur_round="$(round_of)"
   cur_issues="$(issue_count)"
   cur_status="$(state_field status)"; [ -n "$cur_status" ] || cur_status="?"
   cur_sig="$(progress_sig)"
   log_line "session $session: exit=$rc round=$cur_round issues=$cur_issues status=$cur_status sig=$cur_sig"
+
+  # C9: a session that didn't even create STATE.md made no progress and resuming
+  # can't help — fail fast instead of waiting out the 2-session no-progress window.
+  if [ ! -f "$STATE" ]; then
+    summary_exit 5 "NO_PROGRESS: session $session produced no STATE.md (agent likely failed before round 0)"
+  fi
 
   # 4. No-progress circuit breaker. Progress = ANY change in the composite signal
   #    (round, issue count, converged_streak, or runs/ evidence bytes+count). The

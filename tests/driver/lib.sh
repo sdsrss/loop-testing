@@ -41,6 +41,7 @@ write_stub() {
 set -u
 LT="docs/looptesting"; mkdir -p "$LT/runs" "$LT/decisions"
 STATE="$LT/STATE.md"; ISS="$LT/ISSUES.md"
+if [ "${STUB_NO_STATE:-0}" = "1" ]; then echo "stub: intentionally wrote no STATE"; exit "${STUB_EXIT:-0}"; fi
 round=-1
 [ -f "$STATE" ] && round=$(grep -aE '^round:' "$STATE" | head -1 | sed 's/[^0-9-]//g')
 case "$round" in ''|*[!0-9-]*) round=-1 ;; esac
