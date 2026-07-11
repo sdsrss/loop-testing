@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.2.0 — 2026-07-11
+
+Production-readiness audit follow-up (batch 2 of 3): functional hardening that
+unblocks unattended long runs and proxied environments. Minor bump — the behavior
+changes are backward-compatible (they remove false-positives and add recovery), each
+with a new env knob to tune or disable. Full suite `ALL GREEN` (MoA 25, driver +
+sandbox + hook suites all green).
+
+**What changes for you (all backward-compatible):**
+- The unattended drivers no longer misfire NO_PROGRESS on a genuinely-progressing
+  run (a deep round spanning sessions, or progress via convergence/evidence).
+- A crashed run's leftover stop-gate sentinel now auto-recovers instead of taxing
+  every future stop.
+- New env knobs: `LOOP_TESTING_GATE_STALE_SECONDS` (default 86400, `0` disables),
+  `LOOP_TESTING_MOA_MAX_RESPONSE_BYTES` (default 8388608).
+
+- **fix(drivers)**: the no-progress circuit breaker was `round AND issue-count
+  unchanged for 2 sessions`. A hard round spanning >1 session, or progress made by
+  advancing `converged_streak` / appending `runs/` evidence before `round` ticks,
+  changed neither and was misread as stuck (false INCOMPLETE, exit 5). Progress is
+  now ANY change in the composite `round|issues|streak|runs(count+bytes)`
+  fingerprint. Kept identical across both drivers.
+- **fix(sandbox-setup)**: `sandbox-clean` removes the worktree but keeps the
+  ownership marker, so a later `sandbox-setup` short-circuited "already initialized"
+  and re-seeded WITHOUT recreating the worktree — a second QA run then operated on
+  (and committed into) the main tree, defeating isolation. Setup now verifies the
+  recorded worktree still exists in `git worktree list` and rebuilds it on the kept
+  qa branch if gone.
+- **fix(moa)**: the https-origin CONNECT+TLS proxy path (every proxied run) is now
+  hardened and tested — an own timeout destroys an orphaned socket on a CONNECT
+  hang, and bytes pipelined after the CONNECT header are preserved before TLS. A
+  response body is capped at 8 MB (override `LOOP_TESTING_MOA_MAX_RESPONSE_BYTES`)
+  so a hostile/misconfigured endpoint can't OOM a headless run. An `--output` write
+  failure no longer discards an already-paid-for decision — it goes to stdout with a
+  clean error. (+7 MoA tests incl. an end-to-end CONNECT+TLS tunnel with SNI.)
+- **fix(stop-gate)**: a crashed run (SIGKILL) left `.active` + a non-terminal STATE
+  forever, so every future stop ate a full block cycle. The gate now treats a STATE
+  that hasn't been updated in `LOOP_TESTING_GATE_STALE_SECONDS` (default 24h, `0`
+  disables) as abandoned — disarm and allow the stop. Fresh RUNNING still blocks.
+- **docs**: README gains a stuck-sentinel / crash-recovery section.
+
 ## 0.1.3 — 2026-07-11
 
 Production-readiness audit follow-up (batch 1 of 3). A five-track parallel audit
