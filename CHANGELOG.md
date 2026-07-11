@@ -2,7 +2,9 @@
 
 ## 0.1.0 — 2026-07-11
 
-Initial release.
+Initial release. Full-loop acceptance passed on two project shapes (CLI + REST
+API), each converging naturally in 4 rounds with 4/4 seeded-bug discovery plus
+14 real bugs found beyond the seeded set.
 
 - **Core QA loop skill** (`skills/loop-testing/`): autonomous self-test / self-fix /
   self-iterate loop with dual personas (novice / impatient power user ↔ rigorous
@@ -14,14 +16,20 @@ Initial release.
   OpenRouter wire formats; env-only keys with redaction; explicit proxy support
   (raw HTTP absolute-form / HTTPS CONNECT tunnel — undici is not importable
   zero-dep on Node 22); parallel reference fan-out + aggregator; bounded
-  degradation chain (partial references → aggregator-only → exit 2).
+  degradation chain (partial references → aggregator-only → exit 2). Defaults
+  calibrated at release against a live model listing + real per-model probes
+  (references `openai/gpt-5.6-sol` + `google/gemini-3.1-pro-preview`, aggregator
+  `anthropic/claude-fable-5`); token guards: concise-output prompts, max_tokens
+  stop-losses (3000/4000), 16k-char input cap with explicit truncation marker.
 - **Mechanism-layer enforcement** (Claude Code, `hooks/`): stop-gate Stop hook
   (sentinel + STATE.md machine fields, MAX_BLOCKS=3 under the platform's
   8-consecutive-block force-allow, progress-aware counter reset, fail-closed on
   unparseable state) and ledger-gate PreToolUse hook (blocks unverified VERIFIED
   transitions incl. common Bash write paths; documented as cost-raiser, not a
   complete gate). Escape hatches: `LOOP_TESTING_DISABLE_STOP_GATE=1`,
-  `LOOP_TESTING_DISABLE_LEDGER_GATE=1`.
+  `LOOP_TESTING_DISABLE_LEDGER_GATE=1`. Hook auto-loading verified in an
+  isolated-config sandbox for BOTH `/plugin install` and `--plugin-dir` modes
+  (probe sessions showed the full block → feedback → ceiling-release chain).
 - **Dual-platform distribution**: Claude Code plugin (`.claude-plugin/`,
   `claude plugin validate` passing) and Codex installer
   (`install/install-codex.sh`, marker-based fail-closed uninstall). Verified in a
@@ -31,7 +39,9 @@ Initial release.
   for `claude -p` runs — repeatedly resumes the loop from `STATE.md` until a terminal
   status, with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, a per-session wall-clock
   watchdog, and fail-closed limits (max-sessions / max-minutes / no-progress → exit
-  3 / 4 / 5); per-session progress appended to `docs/looptesting/driver.log`.
+  3 / 4 / 5); per-session progress appended to `docs/looptesting/driver.log`. Also
+  sanitizes coordinator-mode env vars so child sessions get the full tool set when
+  launched from inside an agent-teams session (F6).
 - **Tests**: sandboxed shell suites (sandbox scripts 27 assertions, stop-gate
   19, ledger-gate 8, driver 17, installer 4 suites) + MoA `node --test` suite (14
   tests); single entry `tests/run-all.sh` (ALL GREEN at release).

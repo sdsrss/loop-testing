@@ -33,7 +33,7 @@ claude --plugin-dir .
 
 安装后在会话中用触发词（见下）即可启动。
 
-> **机制增强层**（Stop-hook 强制续跑、VERIFIED 台账防伪写）由仓库 `hooks/` 提供。当插件包含 `hooks/` 时，新版 Claude Code 会随插件自动加载 `hooks/hooks.json`，旧版按 `hooks/` 内说明手动注册。未启用机制层时，循环续跑与红线由**提示词纪律**保证（见"已知限制"）。
+> **机制增强层**（Stop-hook 强制续跑、VERIFIED 台账防伪写）由仓库 `hooks/` 提供，随插件自动加载 `hooks/hooks.json`——**已在隔离环境实测确认**（Claude Code 2.1.207，2026-07-11）：`/plugin install` 正式安装与 `claude --plugin-dir` 两种模式下 Stop hook 均自动生效（探针会话观察到完整的"拦截 → 反馈 → 3 次后放行"行为链）。极旧版本若不自动加载，按 `hooks/` 内说明手动注册。未启用机制层时（如 Codex 端），循环续跑与红线由**提示词纪律**保证（见"已知限制"）。
 
 ### Codex（技能目录）
 
