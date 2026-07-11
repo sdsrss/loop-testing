@@ -1,5 +1,7 @@
 # loop-testing
 
+[![CI](https://github.com/sdsrss/loop-testing/actions/workflows/ci.yml/badge.svg)](https://github.com/sdsrss/loop-testing/actions/workflows/ci.yml)
+
 **自测 · 自修 · 自迭代 · 自循环**的验收测试技能 / 插件。项目开发完成后，让编码智能体（Claude Code / Codex）以**真实用户身份**在沙箱中反复使用你项目的每一个功能，发现 bug / 代码 / 功能 / 流程 / 隐蔽 / 逻辑 / 安全 / 用户体验八类问题；能安全修的当场修（带回归测试 + 原子提交），需决策的记录在案并给出 **MoA（Mixture of Agents）多模型决策建议**；连续两轮只剩无关紧要的低等级问题时自动停止并输出总结报告。
 
 一条命令启动，全程自主推进——除三类例外（需密钥/付费/外网权限、疑似安全漏洞需上报、阻塞性问题导致无法继续），不需要你每轮确认。
