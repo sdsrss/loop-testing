@@ -70,4 +70,17 @@ WS9=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8
 arm "$WS9"; write_state "$WS9" RUNNING 2
 run_stop "$WS9" false; assert_rc $? 2 "fresh RUNNING still blocks (staleness does not misfire)"
 
+# K. grep-only fallback (no jq / no python3) must still reset the block counter on
+#    a fresh stop, so independent stops don't accumulate toward the ceiling (C5).
+WS10=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR"' EXIT
+arm "$WS10"; write_state "$WS10" RUNNING 1
+BINDIR=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-nobin.XXXXXX")
+for b in bash grep sed head tr cat rm date stat timeout mktemp printf; do
+  p=$(command -v "$b" 2>/dev/null) && ln -sf "$p" "$BINDIR/$b"
+done
+( cd "$WS10" && printf '{"stop_hook_active": false}' | PATH="$BINDIR" bash "$STOP" ) >/dev/null 2>&1
+( cd "$WS10" && printf '{"stop_hook_active": false}' | PATH="$BINDIR" bash "$STOP" ) >/dev/null 2>&1
+read -r kc _ < "$WS10/$CF"
+assert_eq "1" "$kc" "grep-fallback resets counter on each fresh stop (no jq/python3)"
+
 report "stop-gate.test.sh"

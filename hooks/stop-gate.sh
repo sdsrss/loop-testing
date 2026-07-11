@@ -62,7 +62,13 @@ v=d.get("stop_hook_active")
 print("" if v is None else ("true" if v else "false"))' 2>/dev/null)
   [ -n "$v" ] && stop_active="$v"
 else
-  printf '%s' "$STDIN_JSON" | grep -qE '"stop_hook_active"[[:space:]]*:[[:space:]]*true' && stop_active="true"
+  # Emit an explicit false (not "unknown") when the field is absent/false, so the
+  # counter-reset on a fresh stop still fires without jq/python3 (audit C5).
+  if printf '%s' "$STDIN_JSON" | grep -qE '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; then
+    stop_active="true"
+  else
+    stop_active="false"
+  fi
 fi
 
 # --- read STATE.md machine fields under a small internal budget (fail closed) -
@@ -70,9 +76,9 @@ fi
 GATE_BUDGET="${LOOP_TESTING_GATE_TIMEOUT:-10}"
 case "$GATE_BUDGET" in *[!0-9]*|"") GATE_BUDGET=10 ;; esac
 if command -v timeout >/dev/null 2>&1; then
-  FIELDS=$(timeout "$GATE_BUDGET" grep -aE '^(status|round|converged_streak):' "$STATE" 2>/dev/null); rc=$?
+  FIELDS=$(timeout "$GATE_BUDGET" grep -aE '^(status|round):' "$STATE" 2>/dev/null); rc=$?
 else
-  FIELDS=$(grep -aE '^(status|round|converged_streak):' "$STATE" 2>/dev/null); rc=$?
+  FIELDS=$(grep -aE '^(status|round):' "$STATE" 2>/dev/null); rc=$?
 fi
 
 block() { # increments counter (with reset logic) and blocks, or force-allows at ceiling
