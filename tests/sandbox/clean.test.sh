@@ -19,7 +19,10 @@ echo "round 1 evidence" > "$REPO/docs/looptesting/runs/round-1.md"
 # a process the sandbox 'started' (recorded) and one it did NOT start
 sleep 30 & owned_pid=$!
 sleep 30 & foreign_pid=$!
+# a recorded process that IGNORES SIGTERM -> clean must escalate to SIGKILL (C7)
+( trap '' TERM; while true; do sleep 0.5; done ) & stubborn_pid=$!
 echo "$owned_pid" >> "$REPO/docs/looptesting/.pids"
+echo "$stubborn_pid" >> "$REPO/docs/looptesting/.pids"
 
 ( cd "$REPO" && bash "$CLEAN" ) >/dev/null 2>&1
 assert_ok $? "clean succeeds"
@@ -38,6 +41,10 @@ if kill -0 "$owned_pid" 2>/dev/null; then
 if kill -0 "$foreign_pid" 2>/dev/null; then
   PASS=$((PASS+1)); kill "$foreign_pid" 2>/dev/null; else
   FAIL=$((FAIL+1)); echo "  FAIL: foreign process must NOT be stopped" >&2; fi
+# SIGTERM-ignoring recorded process must be escalated to SIGKILL
+if kill -0 "$stubborn_pid" 2>/dev/null; then
+  FAIL=$((FAIL+1)); echo "  FAIL: SIGTERM-ignoring process should be SIGKILLed" >&2; kill -9 "$stubborn_pid" 2>/dev/null
+else PASS=$((PASS+1)); fi
 
 # idempotent: second clean is a no-op success
 ( cd "$REPO" && bash "$CLEAN" ) >/dev/null 2>&1

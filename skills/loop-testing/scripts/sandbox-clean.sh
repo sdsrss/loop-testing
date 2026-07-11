@@ -33,7 +33,19 @@ if [ -f "$PIDS_FILE" ]; then
       ''|*[!0-9]*) continue ;;   # skip blanks / non-numeric lines
     esac
     if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null && echo_info "stopped process $pid"
+      kill "$pid" 2>/dev/null && echo_info "sent SIGTERM to process $pid"
+      # Escalate to SIGKILL if it doesn't exit within a short grace, so a process
+      # that ignores SIGTERM doesn't leak past cleanup. (Residual: .pids stores
+      # bare PIDs captured live at start; a PID recycled by an unrelated process
+      # between capture and clean could be signalled — the writer verifies
+      # liveness + listening port at capture to minimize this.)
+      i=0
+      while [ "$i" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.1; i=$(( i + 1 ))
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null && echo_info "escalated to SIGKILL for process $pid"
+      fi
     fi
   done < "$PIDS_FILE"
   : > "$PIDS_FILE"   # clear the ledger; keep the file for continued runs
