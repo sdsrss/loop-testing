@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased (v0.1.1)
+
+- **CI**: GitHub Actions (`.github/workflows/ci.yml`) runs the full test suite
+  (manifest JSON validation + `tests/run-all.sh`) on push to main, tags, PRs, and
+  manual dispatch. Verified green on GitHub.
+- **Codex unattended driver** (`scripts/unattended-codex.sh`): outer resume-driver
+  for `codex exec`, the Codex-side counterpart to `unattended-loop.sh`. `codex exec`
+  is single-shot (no `--max-turns`), so a long loop can end a session before
+  convergence; the driver relaunches `codex exec` to resume from `STATE.md` until a
+  terminal status, with a per-session wall-clock watchdog, the same no-progress /
+  max-sessions / max-minutes circuit breakers and exit codes as the Claude driver,
+  and read-only protection of the installed skill dir during full-access sessions.
+  16 stub-driven sandbox tests (no real `codex` invoked).
+
 ## 0.1.0 — 2026-07-11
 
 Initial release. Full-loop acceptance passed on two project shapes (CLI + REST
