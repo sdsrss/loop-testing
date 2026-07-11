@@ -19,7 +19,7 @@
 - **多模型决策（MoA）** —— 需要产品决策的问题不擅自拍板：多个参考模型并行分析 → 聚合模型给最终建议 → 落盘成决策记录供你确认。
 - **反作弊收敛** —— 连续两轮"干净轮"才停，且第二轮必须换场景反证；覆盖量不许缩水、未重放不许标通过、达轮次上限如实报 `INCOMPLETE` 绝不谎报 PASS。
 - **断点续跑** —— 一切进度写在文件里，会话中断 / 上下文压缩后重新触发即从断点继续，不重置。
-- **机制层强制（Claude Code）** —— Stop-hook 未收敛不许停会话、防伪写 hook 拦截伪造的"已验证"，把纪律从"提示词承诺"变成"机制保证"。
+- **机制层强化（Claude Code）** —— Stop-hook 机制性禁止未收敛就停会话（硬保证）；防伪写 hook 尽力抬高伪造"已验证"的成本——best-effort、可被绕过，残余靠红线纪律与人工 diff 审查兜底，并非硬拦截。
 - **双平台一份技能** —— Claude Code 与 Codex 共用同一 `SKILL.md`，一个仓库两处安装。
 - **安全内建** —— 沙箱隔离、失败即拒（fail-closed）、密钥只从环境变量读且日志脱敏、绝不 push/部署/碰生产。
 
@@ -69,7 +69,7 @@
 claude --plugin-dir .
 ```
 
-> **机制增强层**（Stop-hook 强制续跑 + VERIFIED 防伪写）由 `hooks/` 提供，随插件自动加载。已实测确认 `/plugin install` 与 `--plugin-dir` 两种模式下 Stop hook 均自动生效；极旧版本若不自动加载，按 `hooks/` 内说明手动注册。
+> **机制增强层**（Stop-hook 强制续跑 + VERIFIED 防伪写的 best-effort 成本抬升）由 `hooks/` 提供，随插件自动加载。已实测确认 `/plugin install` 与 `--plugin-dir` 两种模式下 Stop hook 均自动生效；极旧版本若不自动加载，按 `hooks/` 内说明手动注册。
 
 ### Codex（技能目录）
 
@@ -136,7 +136,7 @@ bash skills/loop-testing/scripts/unattended-codex.sh --project <目标项目> \
 | `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | 存在即 LLM 调用走代理 |
 | `LOOP_TESTING_MOA_MODELS` | 逗号分隔覆盖参考模型 |
 | `LOOP_TESTING_MOA_AGGREGATOR` | 覆盖聚合模型 |
-| `LOOP_TESTING_MOA_TIMEOUT_MS` | 单次调用超时毫秒（默认 60000）|
+| `LOOP_TESTING_MOA_TIMEOUT_MS` | 单次调用超时毫秒（默认 120000）|
 
 也可用 `docs/looptesting/moa.config.json` 或 `--config <path>` 覆盖。**默认模型为发布时校准的顶级组合，会过时——请按需覆盖。**
 

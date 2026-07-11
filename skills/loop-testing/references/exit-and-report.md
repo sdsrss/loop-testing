@@ -33,13 +33,17 @@
 
 两者都必须先持久化状态，明确下一步与恢复入口。**以下都不是成功停止理由**：已做很多工作、所有已有测试通过、暂时想不到场景、上下文快满、某功能被阻塞、达到最大轮数、本轮没发现问题但覆盖仍不完整。
 
-## 4. 停止前：沙箱清理（`scripts/sandbox-clean.sh`）
+## 4. 退出序（严格按此顺序，勿颠倒）
 
-输出报告前执行：`bash skills/loop-testing/scripts/sandbox-clean.sh`。它会停掉**自己启动的**进程（`docs/looptesting/.pids` 记录）、移除**自己创建且能确认归属的** worktree/临时数据；**保留 `docs/looptesting/` 全部证据与状态文档，保留 qa 分支（含修复 commit）与基线标记，绝不碰用户数据**。无归属标记时**失败即拒清**（fail-closed）。
+达到停止条件后按以下顺序收尾——**先写终态 `status:`，再清沙箱**，使 stop-gate 的哨兵 `.active` 在真正的终态写入前始终有效：
+
+1. 实例化并写完 `FINAL_REPORT.md`（结构见 §5）。
+2. **把 `STATE.md` 机器 `status:` 字段写为终态**（`CONVERGED` / `INCOMPLETE` / `BLOCKED`，映射见 §2）。stop-gate 一旦读到终态即自行解除哨兵 `.active` 并放行——此刻起会话可安全停止；即使后续清理被硬中断，也不会留下「哨兵已除但 `status:` 仍 RUNNING」的失护窗口（那会让 Claude Code 无护栏停在未收敛态、让无人值守驱动续跑到 `--max-sessions` 误报 INCOMPLETE）。
+3. 执行 `bash skills/loop-testing/scripts/sandbox-clean.sh`：停掉**自己启动的**进程（`docs/looptesting/.pids` 记录）、移除**自己创建且能确认归属的** worktree/临时数据；**保留 `docs/looptesting/` 全部证据与状态文档，保留 qa 分支（含修复 commit）与基线标记，绝不碰用户数据**。无归属标记时**失败即拒清**（fail-closed）。clean 会再删一次 `.active`——终态时它已被 stop-gate 移除，重复删除幂等无害。
 
 ## 5. FINAL_REPORT.md 结构（模板见 templates/）
 
-> `FINAL_REPORT.md` **只在退出时**从本技能 `templates/FINAL_REPORT.md` 实例化——启动时不预建（半路存在"最终报告"会误导续跑判断）。写完最终报告、跑完 `sandbox-clean.sh` 后，把 `STATE.md` 的机器 `status:` 字段写为 `CONVERGED`（正常收敛，含 PASS 与 CONVERGED_WITH_OPEN_ISSUES 两种交付结论）/ `INCOMPLETE`（达 MAX_ROUNDS）/ `BLOCKED`（全被阻塞）三者之一——**不要把 PASS 或 CONVERGED_WITH_OPEN_ISSUES 写进机器字段**（见 §2 机器字段映射）；stop-gate 检测到终态即放行并解除哨兵。
+> `FINAL_REPORT.md` **只在退出时**从本技能 `templates/FINAL_REPORT.md` 实例化——启动时不预建（半路存在"最终报告"会误导续跑判断）。退出序见 §4：**先写 `FINAL_REPORT.md`，再把 `STATE.md` 机器 `status:` 字段写为终态**——`CONVERGED`（正常收敛，含 PASS 与 CONVERGED_WITH_OPEN_ISSUES 两种交付结论）/ `INCOMPLETE`（达 MAX_ROUNDS）/ `BLOCKED`（全被阻塞）三者之一，**最后**才跑 `sandbox-clean.sh`。**不要把 PASS 或 CONVERGED_WITH_OPEN_ISSUES 写进机器字段**（见 §2 机器字段映射）；stop-gate 检测到终态即放行并解除哨兵。
 
 1. **FINAL STATUS**：`PASS / CONVERGED_WITH_OPEN_ISSUES / INCOMPLETE / BLOCKED`；
 2. 停止原因与证据：总轮数、连续收敛轮数、最后两轮差异与结果、为何不是更高等级；
