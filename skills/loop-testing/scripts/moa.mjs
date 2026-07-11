@@ -50,11 +50,26 @@ import { URL } from 'node:url';
 // LOOP_TESTING_MOA_MODELS / LOOP_TESTING_MOA_AGGREGATOR env vars — no code change
 // needed. Names use OpenRouter's namespace by default.
 // ===========================================================================
-const DEFAULT_REFERENCE_MODELS = ['openai/gpt-5.5', 'deepseek/deepseek-v4-pro'];
-const DEFAULT_AGGREGATOR_MODEL = 'anthropic/claude-opus-4.8';
+// Calibrated 2026-07-11 against a live OpenRouter /models listing + one real
+// minimal completion per model (all three returned "ok" through the proxy
+// path). Note: this account has a provider allowlist (openai / anthropic /
+// google-ai-studio) — models routed only through other providers (e.g.
+// deepseek/*) 404 at completion time even though /models lists them.
+const DEFAULT_REFERENCE_MODELS = ['openai/gpt-5.6-sol', 'google/gemini-3.1-pro-preview'];
+const DEFAULT_AGGREGATOR_MODEL = 'anthropic/claude-fable-5';
 const DEFAULT_REFERENCE_TEMPERATURE = 0.6;
 const DEFAULT_AGGREGATOR_TEMPERATURE = 0.4;
-const DEFAULT_TIMEOUT_MS = 60_000;
+// Top-tier reasoning models spend time thinking before the first output
+// token; raised from 60s to give long decision contexts headroom.
+const DEFAULT_TIMEOUT_MS = 120_000;
+// Token-consumption guards: hard ceilings against runaway output (reasoning
+// models burn tokens thinking inside max_tokens, so these are stop-losses,
+// not tight budgets — prompts additionally demand concise output), plus an
+// input-size cap so an over-stuffed decision context can't multiply cost
+// across every reference model.
+const REFERENCE_MAX_TOKENS = 3000;
+const AGGREGATOR_MAX_TOKENS = 4000;
+const MAX_CONTEXT_CHARS = 16000;
 
 // Provider registry. Both are OpenAI chat-completions wire format.
 const PROVIDERS = {
@@ -331,12 +346,15 @@ function requestRaw(urlStr, { method = 'POST', headers = {}, body = null, timeou
 // Chat completion (one model, single bounded attempt — within the "no retries
 // beyond 1" ceiling; we deliberately do zero retries for deterministic behavior).
 // ===========================================================================
-async function chatComplete({ model, messages, temperature, resolved, timeoutMs, proxyResolver, redact }) {
+async function chatComplete({ model, messages, temperature, maxTokens, resolved, timeoutMs, proxyResolver, redact }) {
   if (!resolved.hasKey) {
     throw new Error(`missing API key for provider "${resolved.provider}" (env ${resolved.keyEnv})`);
   }
   const url = `${resolved.baseUrl}/chat/completions`;
-  const payload = JSON.stringify({ model, messages, temperature, stream: false });
+  const payload = JSON.stringify({
+    model, messages, temperature, stream: false,
+    ...(Number.isFinite(maxTokens) ? { max_tokens: maxTokens } : {}),
+  });
   const headers = {
     'content-type': 'application/json',
     authorization: `Bearer ${resolved.key}`,
@@ -379,7 +397,9 @@ function referenceMessages(contextMd) {
       content:
         '你是一位资深技术评审专家（软件架构、质量、安全）。阅读用户给出的决策上下文，' +
         '独立给出你的分析与明确推荐。仅输出文本，不调用任何工具，不要臆造事实；' +
-        '若信息不足，明确指出需要补充什么。保持简洁、有依据、可执行。',
+        '若信息不足，明确指出需要补充什么。' +
+        '输出必须精炼：总长不超过 400 字，结构为「推荐方案（1-2 句）/ 关键理由（≤3 条）/ 主要风险（≤2 条）」，' +
+        '不要铺开背景复述，不要输出思考过程。',
     },
     { role: 'user', content: contextMd },
   ];
@@ -396,7 +416,9 @@ function aggregatorMessages(contextMd, opinions) {
         '你是聚合决策者。综合原始决策上下文与各参考模型意见，产出最终建议。' +
         '严格只输出一个 JSON 对象（不要代码围栏、不要额外文字），键为：' +
         'summary（问题摘要）、recommendation（聚合推荐方案）、rationale（理由）、risks（风险与分歧点）。' +
-        '每个值为中文 Markdown 文本；在分歧处指出各参考意见的异同。',
+        '每个值为中文 Markdown 文本；在分歧处指出各参考意见的异同。' +
+        '输出必须精炼：summary ≤80 字，recommendation ≤150 字，rationale ≤3 条要点，risks ≤3 条要点；' +
+        '总长控制在 600 字以内，不要复述上下文原文。',
     },
     {
       role: 'user',
@@ -564,6 +586,15 @@ async function main() {
     process.stderr.write(`error: --input ${args.input} is empty\n`);
     return 1;
   }
+  if (contextMd.length > MAX_CONTEXT_CHARS) {
+    // Cost guard: an over-stuffed context is paid once per reference model plus
+    // once for the aggregator. Truncate with an explicit marker so the models
+    // (and the archived DEC file) know evidence was cut, not missing.
+    process.stderr.write(
+      `warn: decision context ${contextMd.length} chars > ${MAX_CONTEXT_CHARS}; truncating to control token cost — trim the context (excerpt evidence, don't paste full logs)\n`,
+    );
+    contextMd = `${contextMd.slice(0, MAX_CONTEXT_CHARS)}\n\n> [由 moa.mjs 截断：原文 ${contextMd.length} 字符，超出 ${MAX_CONTEXT_CHARS} 上限。请精炼决策上下文——摘录关键证据，勿粘贴全量日志。]`;
+  }
 
   const proxyResolver = makeProxyResolver(env);
 
@@ -575,6 +606,7 @@ async function main() {
         model: entry.model,
         messages: referenceMessages(contextMd),
         temperature: cfg.reference_temperature,
+        maxTokens: REFERENCE_MAX_TOKENS,
         resolved,
         timeoutMs,
         proxyResolver,
@@ -613,6 +645,7 @@ async function main() {
       model: cfg.aggregator.model,
       messages: aggregatorMessages(contextMd, opinions),
       temperature: cfg.aggregator_temperature,
+      maxTokens: AGGREGATOR_MAX_TOKENS,
       resolved: aggResolved,
       timeoutMs,
       proxyResolver,
