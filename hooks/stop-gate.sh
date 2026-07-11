@@ -77,6 +77,28 @@ fi
 
 block() { # increments counter (with reset logic) and blocks, or force-allows at ceiling
   local reason="$1" cur_round="$2"
+
+  # Stale-remnant escape: a crashed/abandoned run leaves .active + a non-terminal
+  # STATE forever, taxing EVERY future stop in this project with a full block cycle.
+  # STATE.md is rewritten frequently during a live loop, so if it hasn't been
+  # touched in STALE_SECONDS (default 24h; 0 disables) treat the run as abandoned:
+  # disarm and allow the stop instead of blocking. mtime avoids parsing the ISO
+  # last_updated field and works whether or not the agent wrote it.
+  local stale_secs="${LOOP_TESTING_GATE_STALE_SECONDS:-86400}"
+  case "$stale_secs" in *[!0-9]*|"") stale_secs=86400 ;; esac
+  if [ "$stale_secs" -gt 0 ] && [ -f "$STATE" ]; then
+    local mtime now
+    mtime="$(stat -c %Y "$STATE" 2>/dev/null || stat -f %m "$STATE" 2>/dev/null)"
+    now="$(date +%s 2>/dev/null)"
+    case "$mtime" in ''|*[!0-9]*) mtime="" ;; esac
+    case "$now" in ''|*[!0-9]*) now="" ;; esac
+    if [ -n "$mtime" ] && [ -n "$now" ] && [ "$((now - mtime))" -ge "$stale_secs" ]; then
+      rm -f "$ACTIVE" "$COUNT_FILE"
+      echo "loop-testing stop-gate: STATE.md is stale ($((now - mtime))s since last update > ${stale_secs}s) with a non-terminal status — treating as an abandoned run: disarming the sentinel and allowing the stop. Re-trigger the skill to resume from STATE.md." >&2
+      exit 0
+    fi
+  fi
+
   local prev_count=0 prev_round=-1
   if [ -f "$COUNT_FILE" ]; then
     read -r prev_count prev_round < "$COUNT_FILE" 2>/dev/null

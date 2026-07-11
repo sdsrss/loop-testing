@@ -56,4 +56,18 @@ done
 read -r c _ < "$WS7/$CF"
 assert_eq "1" "$c" "counter stays 1 across progressing rounds (progress resets)"
 
+# I. stale remnant: RUNNING + armed but STATE.md untouched for > threshold ->
+#    allow + disarm (a crashed run must not tax every future stop) (audit B7).
+WS8=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8"' EXIT
+arm "$WS8"; write_state "$WS8" RUNNING 2
+touch -d "@$(( $(date +%s) - 200000 ))" "$WS8/docs/looptesting/STATE.md"   # ~2.3 days old
+run_stop "$WS8" false; assert_rc $? 0 "stale RUNNING remnant -> allow stop"
+assert_absent "$WS8/$ACT" "stale remnant disarms the sentinel"
+
+# J. fresh RUNNING (recent STATE mtime) still blocks — staleness must not weaken
+#    the live-loop gate.
+WS9=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9"' EXIT
+arm "$WS9"; write_state "$WS9" RUNNING 2
+run_stop "$WS9" false; assert_rc $? 2 "fresh RUNNING still blocks (staleness does not misfire)"
+
 report "stop-gate.test.sh"

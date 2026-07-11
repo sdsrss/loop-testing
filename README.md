@@ -189,3 +189,11 @@ QA 循环本体离线可用。只有 MoA 多模型决策需要 LLM API（`OPENRO
 - **Codex 侧 MoA 默认降级单模型**：即便 key 在场，Codex 默认把外网调用当"需授权"而降级；要真跑多模型委员会需在触发语显式授权外网。
 - **无头单次调用截断（F4）**：`claude -p` / `codex exec` 单次可能未收敛就结束——无头运行请用上文的续跑驱动。
 - **Node ≥ 20 仅 MoA 需要**：QA 循环本体离线可用；缺 Node 时 MoA 降级为单模型建议。
+
+### 卡住的哨兵 / 崩溃残留恢复
+
+`docs/looptesting/.active` 是 Stop-hook 的续跑哨兵。正常收敛/退出时它会被自动摘除；若一次运行被强杀（如 `SIGKILL`）而 `STATE.md` 停在非终态，哨兵可能残留，导致该项目此后每次停止都被 gate 反复拦截。恢复方式（任一）：
+
+- **自动**：Stop-hook 会检测 `STATE.md` 超过 24 小时（默认，可用 `LOOP_TESTING_GATE_STALE_SECONDS` 覆盖，`0` 关闭）未更新的非终态运行，判为遗弃并放行、自动摘哨兵。
+- **手动即时**：删除哨兵 `rm docs/looptesting/.active`，或本次会话设 `LOOP_TESTING_DISABLE_STOP_GATE=1` 临时停用 gate。
+- **续跑**：重新触发技能即从 `STATE.md` 断点继续（不会重置轮数）。
