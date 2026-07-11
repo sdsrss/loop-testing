@@ -34,6 +34,8 @@
 
 > **基线跑不通本身立为最高级问题（P0）**：先在 `ISSUES.md` 立案再处理，不得跳过。
 
+> **长驻服务记 `.pids`（Web/API/后台任务）**：为基线或测试启动的服务，PID **校验后**才记入 `docs/looptesting/.pids`——`$!` 未必是真正监听端口的进程，用 `lsof -t -i :PORT`（或 `ss -ltnp`）确认存活且在监听目标端口，不一致时以端口定位的 PID 为准。清理与重启沿用「`.pids` + 端口」双路径，供终局 `sandbox-clean` 可靠停服、不留孤儿。
+
 ## 7. 建立沙箱（`scripts/sandbox-setup.sh`）
 
 - 优先 `git worktree`（隔离，主工作区脏也安全）；或独立分支 `qa/loop-testing`（要求工作区干净）。打基线标记 `qa-baseline`。
