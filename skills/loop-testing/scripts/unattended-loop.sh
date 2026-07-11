@@ -41,13 +41,13 @@ is_uint() { case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --project)         PROJECT="${2:-}"; shift 2;;
-    --max-sessions)    MAX_SESSIONS="${2:-}"; shift 2;;
-    --max-minutes)     MAX_MINUTES="${2:-}"; shift 2;;
-    --session-minutes) SESSION_MINUTES="${2:-}"; shift 2;;
-    --max-turns)       MAX_TURNS="${2:-}"; shift 2;;
-    --plugin-dir)      PLUGIN_DIR="${2:-}"; shift 2;;
-    --claude-bin)      CLAUDE_BIN="${2:-}"; shift 2;;
+    --project)         PROJECT="${2:-}"; shift; shift;;
+    --max-sessions)    MAX_SESSIONS="${2:-}"; shift; shift;;
+    --max-minutes)     MAX_MINUTES="${2:-}"; shift; shift;;
+    --session-minutes) SESSION_MINUTES="${2:-}"; shift; shift;;
+    --max-turns)       MAX_TURNS="${2:-}"; shift; shift;;
+    --plugin-dir)      PLUGIN_DIR="${2:-}"; shift; shift;;
+    --claude-bin)      CLAUDE_BIN="${2:-}"; shift; shift;;
     -h|--help)         sed -n '2,30p' "$0"; exit 0;;
     *) die "unknown argument: $1";;
   esac

@@ -44,14 +44,14 @@ is_uint() { case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --project)         PROJECT="${2:-}"; shift 2;;
-    --max-sessions)    MAX_SESSIONS="${2:-}"; shift 2;;
-    --max-minutes)     MAX_MINUTES="${2:-}"; shift 2;;
-    --session-minutes) SESSION_MINUTES="${2:-}"; shift 2;;
-    --codex-bin)       CODEX_BIN="${2:-}"; shift 2;;
-    --skill-dir)       SKILL_DIR="${2:-}"; shift 2;;
+    --project)         PROJECT="${2:-}"; shift; shift;;
+    --max-sessions)    MAX_SESSIONS="${2:-}"; shift; shift;;
+    --max-minutes)     MAX_MINUTES="${2:-}"; shift; shift;;
+    --session-minutes) SESSION_MINUTES="${2:-}"; shift; shift;;
+    --codex-bin)       CODEX_BIN="${2:-}"; shift; shift;;
+    --skill-dir)       SKILL_DIR="${2:-}"; shift; shift;;
     --no-protect)      PROTECT=0; shift 1;;
-    -h|--help)         sed -n '2,34p' "$0"; exit 0;;
+    -h|--help)         sed -n '2,31p' "$0"; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done
@@ -70,9 +70,11 @@ mkdir -p "$LT"
 : >> "$DLOG"
 
 # Protect the installed skill from the full-access session; always restore.
+# Set the restore trap BEFORE the chmod so a signal in between can't leave the
+# dir read-only (only SIGKILL, which skips traps, can — unavoidable).
 if [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
-  chmod -R a-w "$SKILL_DIR" 2>/dev/null || true
   trap 'chmod -R u+w "$SKILL_DIR" 2>/dev/null || true' EXIT
+  chmod -R a-w "$SKILL_DIR" 2>/dev/null || true
 fi
 
 RESUME_PROMPT='使用 loop-testing 技能：读取 docs/looptesting/STATE.md，从断点继续执行自测循环（若 STATE 不存在则从第 0 轮开始）。在当前会话内联执行整个循环，不要把循环委派给别的 agent 或 Task 工具。本会话尽量多完成整轮（选场景→像真实用户使用→发现即立案/复现/分级→修复+回归→复验+轮末结算），每轮末更新 STATE.md 的机器判读字段（round/converged_streak/status）。若已满足收敛判据（连续2轮收敛低风险轮）或保险停止条件，按 references/exit-and-report.md 写入终态（CONVERGED/INCOMPLETE/BLOCKED）并停止；否则显式声明「继续第 N+1 轮」。'

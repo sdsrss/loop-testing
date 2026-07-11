@@ -35,4 +35,11 @@ assert_eq "0" "$(sessions_in_log "$WS3")" "no session launched past the time bud
 bash "$DRIVER" --claude-bin /bin/true >/dev/null 2>&1
 assert_rc $? 2 "missing --project -> exit 2"
 
+# E. value-taking flag as the LAST token must fail-closed (exit 2), never hang.
+# (Regression guard: `shift 2` on a 1-arg tail is a no-op -> infinite loop.)
+timeout 10 bash "$DRIVER" --project >/dev/null 2>&1
+assert_rc $? 2 "trailing --project -> exit 2 (no hang)"
+timeout 10 bash "$DRIVER" --project /tmp --max-turns >/dev/null 2>&1
+assert_rc $? 2 "trailing --max-turns -> exit 2 (no hang)"
+
 report "driver-limits.test.sh"
