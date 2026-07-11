@@ -27,10 +27,18 @@ Initial release.
   (`install/install-codex.sh`, marker-based fail-closed uninstall). Verified in a
   real codex-cli 0.144.1 session: installed skill is discovered and enters
   round-0 correctly.
+- **Unattended headless driver** (`scripts/unattended-loop.sh`): outer resume-driver
+  for `claude -p` runs — repeatedly resumes the loop from `STATE.md` until a terminal
+  status, with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, a per-session wall-clock
+  watchdog, and fail-closed limits (max-sessions / max-minutes / no-progress → exit
+  3 / 4 / 5); per-session progress appended to `docs/looptesting/driver.log`.
 - **Tests**: sandboxed shell suites (sandbox scripts 27 assertions, stop-gate
-  19, ledger-gate 8, installer 4 suites) + MoA `node --test` suite (14 tests);
-  single entry `tests/run-all.sh` (ALL GREEN at release).
+  19, ledger-gate 8, driver 17, installer 4 suites) + MoA `node --test` suite (14
+  tests); single entry `tests/run-all.sh` (ALL GREEN at release).
 
 Known limitations (see README): Codex side has no mechanism-layer gate (prompt
 discipline only); default MoA model list requires release-time calibration and
-degrades gracefully on provider-allowlist 404s.
+degrades gracefully on provider-allowlist 404s; under headless `claude -p`, a loop
+the model delegates to a sub-agent is killed by the print-mode background-wait
+ceiling (~600s) — run unattended sessions via `scripts/unattended-loop.sh`, which
+disables that ceiling and drives resume-until-terminal (F4).
