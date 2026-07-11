@@ -47,4 +47,37 @@ WS8=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8
 json="{\"tool_name\":\"MultiEdit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS8")\",\"edits\":[{\"new_string\":\"### ISSUE-008 | P1 | VERIFIED | y\"}]}}"
 run_ledger "$WS8" "$json"; assert_rc $? 2 "MultiEdit VERIFIED w/o footprint -> deny"
 
+# 9. Edit setting the legit FIXED_UNVERIFIED status -> allow (word-boundary: the
+#    substring VERIFIED inside FIXED_UNVERIFIED must NOT trigger a false-deny).
+WS9=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9"' EXIT
+json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS9")\",\"new_string\":\"### ISSUE-009 | P1 | FIXED_UNVERIFIED | fixed, awaiting replay\"}}"
+run_ledger "$WS9" "$json"; assert_rc $? 0 "FIXED_UNVERIFIED write (word-boundary) -> allow, not false-deny"
+
+# 10. Minimal Edit old=FIXED_UNVERIFIED new=VERIFIED: introduced text has no ID,
+#     ID resolved from the ledger block enclosing old_string; no footprint -> deny.
+WS10=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10"' EXIT
+printf '# ISSUES\n\n### ISSUE-010 | P1 | FIXED_UNVERIFIED | fixed\n- 验证: 待复验\n' > "$WS10/docs/looptesting/ISSUES.md"
+json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS10")\",\"old_string\":\"FIXED_UNVERIFIED\",\"new_string\":\"VERIFIED\"}}"
+run_ledger "$WS10" "$json"; assert_rc $? 2 "minimal VERIFIED edit, ID from context, no footprint -> deny"
+
+# 11. Same minimal edit but ISSUE-010 HAS a replay footprint -> allow.
+WS11=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11"' EXIT
+printf '# ISSUES\n\n### ISSUE-010 | P1 | FIXED_UNVERIFIED | fixed\n' > "$WS11/docs/looptesting/ISSUES.md"
+echo "replayed ISSUE-010 ok" > "$WS11/docs/looptesting/runs/round-1.md"
+json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS11")\",\"old_string\":\"FIXED_UNVERIFIED\",\"new_string\":\"VERIFIED\"}}"
+run_ledger "$WS11" "$json"; assert_rc $? 0 "minimal VERIFIED edit WITH footprint -> allow"
+
+# 12. Bash writing a bare ISSUES.md (no docs/looptesting path, loop NOT armed) ->
+#     allow. An unrelated project using the same ISSUE-NNN/VERIFIED convention must
+#     not be false-denied by a bare-substring match.
+WS12=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12"' EXIT
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"- ISSUE-99 VERIFIED\" >> ISSUES.md"}}'
+run_ledger "$WS12" "$json"; assert_rc $? 0 "bare ISSUES.md write, loop not armed -> allow (no false-deny)"
+
+# 13. Bash bare ISSUES.md BUT the loop IS armed (.active present) + no footprint ->
+#     deny (a real in-loop cd-then-append is still caught).
+WS13=$(mk_lt); arm "$WS13"; trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13"' EXIT
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-013 | P1 | VERIFIED |\" >> ISSUES.md"}}'
+run_ledger "$WS13" "$json"; assert_rc $? 2 "armed loop, bare ISSUES.md VERIFIED, no footprint -> deny"
+
 report "ledger-gate.test.sh"
