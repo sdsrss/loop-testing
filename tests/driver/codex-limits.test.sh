@@ -45,4 +45,22 @@ assert_rc $? 2 "trailing --project -> exit 2 (no hang)"
 timeout 10 bash "$CODEX_DRIVER" --project /tmp --max-sessions >/dev/null 2>&1
 assert_rc $? 2 "trailing --max-sessions -> exit 2 (no hang)"
 
+# G. Watchdog binary detection falls back to `gtimeout` when GNU `timeout` is
+# absent (macOS/Homebrew coreutils). Evaluate the detection logic under a PATH
+# where only a stub gtimeout exists, then assert the driver actually carries the
+# fallback branch (kept identical to unattended-loop.sh).
+WS5=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5"' EXIT
+mkdir -p "$WS5/bin"; printf '#!/bin/sh\nexit 0\n' > "$WS5/bin/gtimeout"; chmod +x "$WS5/bin/gtimeout"
+# Subshell with PATH restricted to the stub dir; command/echo are builtins so no
+# real coreutils are needed to resolve them.
+got=$(
+  PATH="$WS5/bin"
+  TIMEOUT_BIN=""
+  if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
+  echo "$TIMEOUT_BIN"
+)
+assert_eq "gtimeout" "$got" "watchdog detection falls back to gtimeout when timeout absent"
+assert_file_contains "$CODEX_DRIVER" "elif command -v gtimeout" "codex driver carries the gtimeout fallback branch"
+
 report "codex-limits.test.sh"

@@ -100,6 +100,15 @@ summary_exit() {
   exit "$code"
 }
 
+# Watchdog binary: GNU coreutils ships it as `timeout`, macOS/Homebrew as
+# `gtimeout`. Detect both (kept identical to unattended-loop.sh) so the wall-clock
+# breaker isn't silently lost where only gtimeout exists — otherwise a single hung
+# `codex exec` would hang the driver forever (--max-minutes is only checked between
+# sessions).
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
+
 while true; do
   st="$(state_field status)"
   case "$st" in
@@ -121,8 +130,8 @@ while true; do
   [ "$sess_budget" -lt 1 ] && sess_budget=1
 
   # Wall-clock watchdog around the single-shot codex session; cwd = project.
-  if command -v timeout >/dev/null 2>&1; then
-    ( cd "$PROJECT" && timeout -k 20 "$sess_budget" \
+  if [ -n "$TIMEOUT_BIN" ]; then
+    ( cd "$PROJECT" && "$TIMEOUT_BIN" -k 20 "$sess_budget" \
       "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" \
       >/dev/null 2>&1 )
     rc=$?
