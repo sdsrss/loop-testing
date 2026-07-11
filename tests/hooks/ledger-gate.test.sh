@@ -80,4 +80,10 @@ WS13=$(mk_lt); arm "$WS13"; trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6
 json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-013 | P1 | VERIFIED |\" >> ISSUES.md"}}'
 run_ledger "$WS13" "$json"; assert_rc $? 2 "armed loop, bare ISSUES.md VERIFIED, no footprint -> deny"
 
+# 14. Bash perl -i inlining a fabricated VERIFIED verdict on the ledger path, no
+#     footprint -> deny (write-verb table now covers perl/mv/cp/dd/python) (C6).
+WS14=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14"' EXIT
+json='{"tool_name":"Bash","tool_input":{"command":"perl -i -pe \"s/OPEN/VERIFIED/ if /ISSUE-014/\" docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS14" "$json"; assert_rc $? 2 "perl -i fabricating VERIFIED on ledger, no footprint -> deny"
+
 report "ledger-gate.test.sh"

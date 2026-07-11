@@ -68,7 +68,7 @@ TEXT=""; TARGETS_LEDGER=0; LT_DIR=""
 is_issues_path() { case "$1" in */docs/looptesting/ISSUES.md|docs/looptesting/ISSUES.md) return 0 ;; *) return 1 ;; esac; }
 
 case "$TOOL" in
-  Write|Edit|MultiEdit|NotebookEdit)
+  Write|Edit|MultiEdit)
     if is_issues_path "$FILE"; then
       TARGETS_LEDGER=1
       TEXT="$NEWSTR
@@ -82,7 +82,7 @@ $CONTENT"
     # its own ISSUES.md is never false-denied. We do NOT bind the verb to the path
     # with one regex — our ISSUE lines contain '|' chars, which a "[^|]*" span
     # would stop at. cwd = project root.
-    if printf '%s' "$CMD" | grep -qaE '(>>?|\btee\b|\bsed\b|\bprintf\b|\becho\b)' \
+    if printf '%s' "$CMD" | grep -qaE '(>>?|\btee\b|\bsed\b|\bprintf\b|\becho\b|\bmv\b|\bcp\b|\bdd\b|\bperl\b|\bpython3?\b)' \
        && { printf '%s' "$CMD" | grep -qaE 'docs/looptesting/ISSUES\.md' \
             || { [ -f docs/looptesting/.active ] && printf '%s' "$CMD" | grep -qaE 'ISSUES\.md'; }; }; then
       TARGETS_LEDGER=1
