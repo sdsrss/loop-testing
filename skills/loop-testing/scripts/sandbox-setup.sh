@@ -68,10 +68,24 @@ seed_dirs_and_templates() {
 }
 
 # --- idempotent short-circuit: already initialized ---------------------------
+# BUT if the marker records a worktree that a prior sandbox-clean removed, the
+# sandbox lost its isolation — re-seeding alone would hand back a phantom
+# "initialized" sandbox with NO isolated worktree, so the loop would run against
+# (and commit into) the main tree (audit B2). In that case rebuild instead: drop
+# the stale marker and fall through to full init, which re-adds the worktree on
+# the (kept) qa branch. A live worktree, or branch-mode (no worktree), short-circuits.
 if [ -f "$MARKER" ]; then
-  seed_dirs_and_templates   # re-create only files the user may have deleted
-  echo "sandbox-setup: already initialized (marker present); left existing state untouched."
-  exit 0
+  RECORDED_WT="$(grep -E '^CREATED_WORKTREE=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+  if [ -n "$RECORDED_WT" ] \
+     && ! git -C "$TOP" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $RECORDED_WT"; then
+    echo "sandbox-setup: recorded worktree is gone ($RECORDED_WT) — rebuilding isolation on the qa branch."
+    [ -z "$WT_PATH" ] && WT_PATH="$RECORDED_WT"
+    rm -f "$MARKER"
+  else
+    seed_dirs_and_templates   # re-create only files the user may have deleted
+    echo "sandbox-setup: already initialized (marker present); left existing state untouched."
+    exit 0
+  fi
 fi
 
 # --- isolation guard ---------------------------------------------------------

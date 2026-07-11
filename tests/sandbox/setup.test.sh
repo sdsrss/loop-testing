@@ -59,4 +59,24 @@ for flag in --branch --worktree-path --baseline-tag; do
     FAIL=$((FAIL+1)); echo "  FAIL: trailing $flag hung (exit 124)" >&2; fi
 done
 
+# --- worktree rebuild after clean removed it (audit B2) ----------------------
+# setup(worktree) -> clean (removes worktree, keeps marker) -> setup(worktree)
+# must REBUILD the isolated worktree, not phantom-short-circuit on the stale
+# marker (which would leave the loop running against the main tree).
+WS4=$(mk_ws); trap 'rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4"' EXIT
+REPO4="$WS4/proj"
+WT4="$WS4/proj-qa-loop"
+( cd "$REPO4" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? "worktree-mode setup succeeds"
+assert_exists "$WT4" "worktree created by first setup"
+( cd "$REPO4" && bash "$CLEAN" ) >/dev/null 2>&1
+assert_absent "$WT4" "clean removed the worktree"
+assert_exists "$REPO4/docs/looptesting/.sandbox/ownership.env" "clean kept the marker"
+( cd "$REPO4" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? "second worktree-mode setup succeeds after clean"
+assert_exists "$WT4" "worktree REBUILT by second setup (not phantom short-circuit)"
+if ( cd "$REPO4" && git worktree list --porcelain | grep -qxF "worktree $WT4" ); then
+  PASS=$((PASS+1)); echo "  ok: rebuilt worktree is a registered git worktree"
+else FAIL=$((FAIL+1)); echo "  FAIL: rebuilt worktree not in git worktree list" >&2; fi
+
 report "setup.test.sh"
