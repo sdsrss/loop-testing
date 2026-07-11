@@ -82,6 +82,17 @@ RESUME_PROMPT='使用 loop-testing 技能：读取 docs/looptesting/STATE.md，�
 state_field() { grep -aE "^$1:" "$STATE" 2>/dev/null | head -1 | sed "s/^$1:[[:space:]]*//" | tr -d '[:space:]'; }
 round_of()  { local r; r=$(state_field round | sed 's/[^0-9-]//g'); [ -n "$r" ] && echo "$r" || echo -1; }
 issue_count() { [ -f "$ISSUES" ] && { grep -acE '^### ISSUE-' "$ISSUES" 2>/dev/null || true; } || echo 0; }
+runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth signal
+  local d="$LT/runs" n b
+  [ -d "$d" ] || { echo "0:0"; return; }
+  n=$(find "$d" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+  b=$(cat "$d"/*.md 2>/dev/null | wc -c | tr -d ' ')
+  echo "$n:$b"
+}
+progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB
+  local s; s="$(state_field converged_streak)"; [ -n "$s" ] || s=-1
+  printf '%s|%s|%s|%s' "$(round_of)" "$(issue_count)" "$s" "$(runs_sig)"
+}
 
 log() { echo "$*" >> "$DLOG"; }
 
@@ -89,8 +100,7 @@ START=$(date +%s)
 DEADLINE=$(( START + MAX_MINUTES * 60 ))
 session=0
 noprog=0
-prev_round="$(round_of)"
-prev_issues="$(issue_count)"
+prev_sig="$(progress_sig)"
 log "driver start: project=$PROJECT max_sessions=$MAX_SESSIONS max_minutes=$MAX_MINUTES session_minutes=$SESSION_MINUTES bin=$CODEX_BIN skill_dir=$SKILL_DIR protect=$PROTECT"
 
 summary_exit() {
@@ -143,17 +153,21 @@ while true; do
 
   cur_round="$(round_of)"
   cur_issues="$(issue_count)"
-  log "session $session: exit=$rc round=$cur_round issues=$cur_issues status=$(state_field status)"
+  cur_sig="$(progress_sig)"
+  log "session $session: exit=$rc round=$cur_round issues=$cur_issues status=$(state_field status) sig=$cur_sig"
 
-  if [ "$cur_round" = "$prev_round" ] && [ "$cur_issues" = "$prev_issues" ]; then
+  # No-progress breaker: ANY change in the composite signal (round, issue count,
+  # converged_streak, runs/ evidence bytes+count) counts as progress — catches a
+  # long round spanning sessions and convergence progress the old round+issues
+  # signal misread as stuck (audit A3). Kept identical to unattended-loop.sh.
+  if [ "$cur_sig" = "$prev_sig" ]; then
     noprog=$(( noprog + 1 ))
   else
     noprog=0
   fi
-  prev_round="$cur_round"
-  prev_issues="$cur_issues"
+  prev_sig="$cur_sig"
 
   if [ "$noprog" -ge 2 ]; then
-    summary_exit 5 "NO_PROGRESS: two consecutive sessions with no change in round and issues"
+    summary_exit 5 "NO_PROGRESS: two consecutive sessions with no change in round/issues/streak/runs"
   fi
 done

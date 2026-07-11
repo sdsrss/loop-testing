@@ -63,4 +63,12 @@ got=$(
 assert_eq "gtimeout" "$got" "watchdog detection falls back to gtimeout when timeout absent"
 assert_file_contains "$CODEX_DRIVER" "elif command -v gtimeout" "codex driver carries the gtimeout fallback branch"
 
+# H. Progress via convergence + evidence only (round/issues static, streak + runs/
+#    evidence advance) must NOT trip NO_PROGRESS (audit A3). Mirrors loop driver F.
+WS6=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6"' EXIT
+stub=$(write_stub "$WS6")
+write_state "$WS6" RUNNING 1
+STUB_STREAK_ONLY=1 bash "$CODEX_DRIVER" --project "$WS6" --codex-bin "$stub" --no-protect --max-sessions 3 >/dev/null 2>&1
+assert_rc $? 3 "streak+evidence progress (round/issues static) -> max-sessions, not NO_PROGRESS"
+
 report "codex-limits.test.sh"

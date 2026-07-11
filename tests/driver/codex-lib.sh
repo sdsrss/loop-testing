@@ -46,7 +46,17 @@ STATE="$LT/STATE.md"; ISS="$LT/ISSUES.md"
 round=-1
 [ -f "$STATE" ] && round=$(grep -aE '^round:' "$STATE" | head -1 | sed 's/[^0-9-]//g')
 case "$round" in ''|*[!0-9-]*) round=-1 ;; esac
-if [ "${STUB_NO_PROGRESS:-0}" = "1" ]; then
+streak=0
+if [ "${STUB_STREAK_ONLY:-0}" = "1" ]; then
+  # Progress via convergence + evidence only: round and issue count stay static,
+  # but converged_streak advances and a runs/ evidence file grows each call.
+  new_round=$round; [ "$new_round" -lt 0 ] && new_round=0
+  [ -f "$STATE" ] && streak=$(grep -aE '^converged_streak:' "$STATE" | head -1 | sed 's/[^0-9]//g')
+  case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+  streak=$(( streak + 1 ))
+  printf 'evidence for session (streak now %s)\n' "$streak" >> "$LT/runs/round-${new_round}.md"
+  status=RUNNING
+elif [ "${STUB_NO_PROGRESS:-0}" = "1" ]; then
   new_round=$round; [ "$new_round" -lt 0 ] && new_round=0
   status=RUNNING
 else
@@ -57,11 +67,11 @@ fi
 cat > "$STATE" <<EOS
 # STATE
 round: $new_round
-converged_streak: 0
+converged_streak: $streak
 status: $status
 max_rounds: 12
 EOS
-echo "stub-codex: round=$new_round status=$status"
+echo "stub-codex: round=$new_round streak=$streak status=$status"
 exit "${STUB_EXIT:-0}"
 STUB
   chmod +x "$stub"

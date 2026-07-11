@@ -42,4 +42,13 @@ assert_rc $? 2 "trailing --project -> exit 2 (no hang)"
 timeout 10 bash "$DRIVER" --project /tmp --max-turns >/dev/null 2>&1
 assert_rc $? 2 "trailing --max-turns -> exit 2 (no hang)"
 
+# F. Progress via convergence + evidence only (round AND issue count static, but
+#    converged_streak advances and runs/ evidence grows) must NOT trip NO_PROGRESS
+#    — the old round+issues-only signal misread this as stuck (audit A3).
+WS4=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4"' EXIT
+stub=$(write_stub "$WS4")
+write_state "$WS4" RUNNING 1
+STUB_STREAK_ONLY=1 bash "$DRIVER" --project "$WS4" --claude-bin "$stub" --max-sessions 3 >/dev/null 2>&1
+assert_rc $? 3 "streak+evidence progress (round/issues static) -> runs to max-sessions, not NO_PROGRESS"
+
 report "driver-limits.test.sh"

@@ -79,6 +79,19 @@ issue_count() {
   # exit WITHOUT a second echo (|| echo 0 would double-print "0").
   grep -acE '^### ISSUE-' "$ISSUES" 2>/dev/null || true
 }
+runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth signal
+  local d="$LT/runs" n b
+  [ -d "$d" ] || { echo "0:0"; return; }
+  n=$(find "$d" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+  b=$(cat "$d"/*.md 2>/dev/null | wc -c | tr -d ' ')
+  echo "$n:$b"
+}
+progress_sig() { # composite progress fingerprint: round|issues|streak|runsN:runsB
+  local r s
+  r="$(state_field round)"; [ -n "$r" ] || r=-1
+  s="$(state_field converged_streak)"; [ -n "$s" ] || s=-1
+  printf '%s|%s|%s|%s' "$r" "$(issue_count)" "$s" "$(runs_sig)"
+}
 
 mkdir -p "$LT"
 : >> "$DRIVER_LOG" || die "cannot write driver.log at $DRIVER_LOG"
@@ -92,8 +105,7 @@ elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
 
 session=0
 no_progress=0
-prev_round="$(state_field round)"; [ -n "$prev_round" ] || prev_round=-1
-prev_issues="$(issue_count)"
+prev_sig="$(progress_sig)"
 
 log_line() { printf '%s\n' "$1" >> "$DRIVER_LOG"; }
 summary_exit() { # code, verdict
@@ -157,16 +169,21 @@ while true; do
   cur_round="$(state_field round)"; [ -n "$cur_round" ] || cur_round=-1
   cur_issues="$(issue_count)"
   cur_status="$(state_field status)"; [ -n "$cur_status" ] || cur_status="?"
-  log_line "session $session: exit=$rc round=$cur_round issues=$cur_issues status=$cur_status"
+  cur_sig="$(progress_sig)"
+  log_line "session $session: exit=$rc round=$cur_round issues=$cur_issues status=$cur_status sig=$cur_sig"
 
-  # 4. No-progress circuit breaker: round AND issues both unchanged.
-  if [ "$cur_round" = "$prev_round" ] && [ "$cur_issues" = "$prev_issues" ]; then
+  # 4. No-progress circuit breaker. Progress = ANY change in the composite signal
+  #    (round, issue count, converged_streak, or runs/ evidence bytes+count). The
+  #    last two catch a long round that spans sessions appending evidence before
+  #    `round` ticks, and progress made by advancing convergence — cases the old
+  #    round+issues-only signal misread as stuck (audit A3).
+  if [ "$cur_sig" = "$prev_sig" ]; then
     no_progress=$(( no_progress + 1 ))
   else
     no_progress=0
   fi
-  prev_round="$cur_round"; prev_issues="$cur_issues"
+  prev_sig="$cur_sig"
   if [ "$no_progress" -ge 2 ]; then
-    summary_exit 5 "NO_PROGRESS: 2 consecutive sessions with no change in round/issues (stuck)"
+    summary_exit 5 "NO_PROGRESS: 2 consecutive sessions with no change in round/issues/streak/runs (stuck)"
   fi
 done
