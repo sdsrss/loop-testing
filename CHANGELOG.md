@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.1.3 — 2026-07-11
+
+Production-readiness audit follow-up (batch 1 of 3). A five-track parallel audit
+(prompt layer / hooks / MoA engine / drivers+sandbox / tests+release) found no P0,
+three P1s, and a cluster of P2s. This release lands the seven pre-release fixes;
+full suite `ALL GREEN` (MoA 20/20, ledger-gate 13/13, codex-limits 12/12).
+
+- **fix(moa)**: an invalid `provider` in the config file leaked a `fatal:` stack +
+  exit 1 (the same clean-error class v0.1.2 fixed for flags/JSON/model-entry, but
+  the provider field was uncovered, and in the reference-fan-out path it aborted the
+  whole run instead of degrading). `normalizeModelEntry` now validates the provider
+  against the registry so it surfaces as a clean `error: unknown provider "x"` +
+  exit 1. (+2 MoA tests.)
+- **fix(ledger-gate)**: two-sided error. (1) A word-boundary miss made a legitimate
+  `FIXED_UNVERIFIED` write match the `VERIFIED` substring and get false-denied;
+  matching is now word-boundary so `*_UNVERIFIED` no longer trips it. (2) A minimal
+  `Edit` (`FIXED_UNVERIFIED` → `VERIFIED`) introduced `VERIFIED` with no ISSUE-ID on
+  the line and slipped through free — the ID is now recovered from the edit's
+  `old_string` (its own ID, or the `### ISSUE-NNN` block enclosing it in the ledger).
+  (3) The Bash branch matched a bare `ISSUES.md` substring and could false-deny an
+  unrelated project using the same convention; it now anchors to the loop path (or a
+  bare name only while the loop is armed). (+5 ledger-gate tests.)
+- **fix(unattended-codex)**: the Codex driver only detected GNU `timeout`, silently
+  losing its wall-clock watchdog where coreutils ships as `gtimeout` (macOS/Homebrew)
+  — a single hung `codex exec` could then hang the driver forever. Added the same
+  `timeout`/`gtimeout` detection the Claude driver already uses. (+1 driver test.)
+- **fix(exit-and-report)**: the documented exit order removed the stop-gate sentinel
+  (`.active`, via `sandbox-clean.sh`) BEFORE writing the terminal `status:`, so a hard
+  interrupt in that window left `.active` gone with `status: RUNNING` — the session
+  could stop unconverged and unprotected, or a driver could burn to `--max-sessions`.
+  Order is now: FINAL_REPORT → write terminal `status:` → `sandbox-clean.sh` (stop-gate
+  disarms `.active` itself on the terminal status).
+- **ci**: manifest validation now asserts version-sync — `plugin.json.version` ==
+  both `marketplace.json` version fields, and on a tag push == `${GITHUB_REF_NAME#v}`.
+  Guards against the v0.1.1 tag-without-manifest-bump desync that the JSON-only check
+  missed.
+- **docs**: README now describes the ledger gate honestly as a best-effort cheat-cost
+  raiser (not a hard "机制保证"), and corrects the `LOOP_TESTING_MOA_TIMEOUT_MS` default
+  (60000 → actual 120000).
+
 ## 0.1.2 — 2026-07-11
 
 End-to-end "real user" test pass over every runnable entrypoint (MoA CLI, both
