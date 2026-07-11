@@ -131,15 +131,24 @@ while true; do
   [ "$sess_budget" -lt 1 ] && sess_budget=1
 
   # Run the session with the project as cwd (the skill operates on ./docs/looptesting).
+  # F6: when the driver itself is launched from inside a Claude Code session
+  # (agent-teams/coordinator context), the child inherits env vars that boot it
+  # in coordinator mode with ORCHESTRATION-ONLY tools (Agent/SendMessage/
+  # TaskStop/Workflow — no Read/Bash/Edit/Write), so it can only delegate (F4)
+  # or honestly BLOCK. Unset them so the child gets the standard tool set.
+  # Verified empirically 2026-07-11: inherited env → 4 orchestration tools;
+  # sanitized → full set incl. Bash/Edit/Read/Write/Skill.
+  SANITIZE_ENV=(env -u CLAUDE_CODE_COORDINATOR_MODE -u CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+                -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID)
   if [ -n "$TIMEOUT_BIN" ]; then
     ( cd "$PROJECT" && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 "$TIMEOUT_BIN" -k 15 "$sess_budget" \
-      "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
+      "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
       --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" \
       >/dev/null 2>&1 )
     rc=$?
   else
     ( cd "$PROJECT" && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
-      "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
+      "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
       --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" \
       >/dev/null 2>&1 )
     rc=$?
