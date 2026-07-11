@@ -1,6 +1,31 @@
 # Changelog
 
-## Unreleased (v0.1.1)
+## 0.1.2 — 2026-07-11
+
+End-to-end "real user" test pass over every runnable entrypoint (MoA CLI, both
+unattended drivers, both hooks, install + sandbox scripts). Three real bugs fixed,
+each with a regression test; full suite `ALL GREEN`.
+
+- **fix(moa)**: expected user errors no longer leak Node stack traces. An unknown
+  CLI flag, an unreadable/malformed `--config`, or an invalid model entry fell
+  through to the top-level catch and printed `fatal: <stack>`; they now print a
+  clean `error: <msg>` + exit 1 (matching the already-graceful `--input` path).
+  `fatal:<stack>` is reserved for genuinely unexpected crashes. (+4 MoA tests.)
+- **fix(sandbox-setup)**: a value-taking flag as the last token (e.g.
+  `sandbox-setup.sh --mode`) hung forever — the same `shift 2`-on-a-1-arg-tail bug
+  that v0.1.1 fixed in both drivers but missed in this third script. `shift 2` →
+  `shift; shift`; trailing flags now fail-closed fast. (+regression guards.)
+- **fix(exit-and-report)**: bridged the status vocabulary gap. The machine
+  `STATE.md status:` field is `RUNNING|CONVERGED|INCOMPLETE|BLOCKED` (what
+  `stop-gate.sh` + both drivers match as terminal), but the exit reference told the
+  agent to write the FINAL-REPORT delivery verdict (`PASS` /
+  `CONVERGED_WITH_OPEN_ISSUES`) there without a mapping — a converged run could
+  write `status: PASS`, which fails the terminal check → spurious stop-gate blocks
+  and drivers relaunching to `--max-sessions` misreporting a converged run as
+  INCOMPLETE. Both verdicts now explicitly map to machine `status: CONVERGED`.
+- **docs**: README restructured (highlights / comparison / FAQ) with SEO/GEO polish.
+
+## 0.1.1 — 2026-07-11
 
 - **CI**: GitHub Actions (`.github/workflows/ci.yml`) runs the full test suite
   (manifest JSON validation + `tests/run-all.sh`) on push to main, tags, PRs, and

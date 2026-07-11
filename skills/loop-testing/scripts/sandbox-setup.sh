@@ -28,10 +28,10 @@ die() { echo "sandbox-setup: $*" >&2; exit "${2:-1}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --mode)          MODE="${2:-}"; shift 2 ;;
-    --worktree-path) WT_PATH="${2:-}"; shift 2 ;;
-    --branch)        BRANCH="${2:-}"; shift 2 ;;
-    --baseline-tag)  BASELINE_TAG="${2:-}"; shift 2 ;;
+    --mode)          MODE="${2:-}"; shift; shift ;;
+    --worktree-path) WT_PATH="${2:-}"; shift; shift ;;
+    --branch)        BRANCH="${2:-}"; shift; shift ;;
+    --baseline-tag)  BASELINE_TAG="${2:-}"; shift; shift ;;
     --allow-dirty)   ALLOW_DIRTY=1; shift ;;
     *) die "unknown argument: $1" 2 ;;
   esac

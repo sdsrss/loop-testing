@@ -24,6 +24,8 @@
 - **`PASS`**：不存在未解决 P0-P2；所有核心功能为 `PASS` 或合理 `N/A`；所有适用检查通过；无关键证据缺口。
 - **`CONVERGED_WITH_OPEN_ISSUES`**：连续两轮只新增 P3 或无新问题，但仍有已充分记录的 P0-P2 / 待确认 / 被阻断功能 / 稳定的既有检查失败。表示「继续盲测的边际价值已很低」，**不表示项目通过**。
 
+> **机器字段映射（关键，勿写错）**：`PASS` 与 `CONVERGED_WITH_OPEN_ISSUES` 是 **FINAL_REPORT 的交付结论**，只写进报告的 `FINAL STATUS`。写入 `STATE.md` 的机器 `status:` 字段时，**两者都写作 `CONVERGED`**——机器字段只认 `RUNNING | CONVERGED | INCOMPLETE | BLOCKED` 这四个值（stop-gate hook 与两个无人值守驱动据此判定终态）。把 `PASS` / `CONVERGED_WITH_OPEN_ISSUES` 直接写进机器字段会让 stop-gate 判为「未收敛」而反复拦停、让驱动一直续跑到 `--max-sessions` 误报 INCOMPLETE。
+
 ## 3. 保险停止（必须如实，禁止谎报 PASS）
 
 - 达 `MAX_ROUNDS`（默认 12）仍未收敛 → **`INCOMPLETE`**；
@@ -37,7 +39,7 @@
 
 ## 5. FINAL_REPORT.md 结构（模板见 templates/）
 
-> `FINAL_REPORT.md` **只在退出时**从本技能 `templates/FINAL_REPORT.md` 实例化——启动时不预建（半路存在"最终报告"会误导续跑判断）。写完最终报告、跑完 `sandbox-clean.sh` 后，把 `STATE.md` 的 `status` 写为对应终态；stop-gate 检测到终态即放行并解除哨兵。
+> `FINAL_REPORT.md` **只在退出时**从本技能 `templates/FINAL_REPORT.md` 实例化——启动时不预建（半路存在"最终报告"会误导续跑判断）。写完最终报告、跑完 `sandbox-clean.sh` 后，把 `STATE.md` 的机器 `status:` 字段写为 `CONVERGED`（正常收敛，含 PASS 与 CONVERGED_WITH_OPEN_ISSUES 两种交付结论）/ `INCOMPLETE`（达 MAX_ROUNDS）/ `BLOCKED`（全被阻塞）三者之一——**不要把 PASS 或 CONVERGED_WITH_OPEN_ISSUES 写进机器字段**（见 §2 机器字段映射）；stop-gate 检测到终态即放行并解除哨兵。
 
 1. **FINAL STATUS**：`PASS / CONVERGED_WITH_OPEN_ISSUES / INCOMPLETE / BLOCKED`；
 2. 停止原因与证据：总轮数、连续收敛轮数、最后两轮差异与结果、为何不是更高等级；

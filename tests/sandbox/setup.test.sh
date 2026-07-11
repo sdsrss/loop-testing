@@ -44,4 +44,19 @@ if ( cd "$REPO2" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/n
   FAIL=$((FAIL+1)); echo "  FAIL: dirty refusal must not create branch" >&2
 else PASS=$((PASS+1)); fi
 
+# --- value-taking flag as the LAST token must fail-closed, never hang --------
+# Regression guard: `shift 2` on a 1-arg tail is a no-op -> infinite loop
+# (same class as the driver da16858 fix, which missed this script). Run from a
+# throwaway NON-git dir so nothing real is touched even if a flag proceeds.
+WS3=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-trail.XXXXXX"); trap 'rm -rf "$WS1" "$WS" "$WS2" "$WS3"' EXIT
+( cd "$WS3" && timeout 10 bash "$SETUP" --mode ) >/dev/null 2>&1
+rc=$?
+assert_eq "2" "$rc" "trailing --mode -> exit 2 (mode validation), not a hang"
+for flag in --branch --worktree-path --baseline-tag; do
+  ( cd "$WS3" && timeout 10 bash "$SETUP" "$flag" ) >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 124 ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: trailing $flag hung (exit 124)" >&2; fi
+done
+
 report "setup.test.sh"

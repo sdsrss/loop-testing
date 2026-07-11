@@ -537,29 +537,46 @@ function dryRunReport(cfg, env) {
 // ===========================================================================
 // Main
 // ===========================================================================
-async function main() {
-  const { values: args } = parseArgs({
-    options: {
-      input: { type: 'string' },
-      output: { type: 'string' },
-      config: { type: 'string' },
-      'dry-run': { type: 'boolean', default: false },
-      help: { type: 'boolean', default: false },
-    },
-    allowPositionals: false,
-  });
+const USAGE =
+  'Usage: node moa.mjs --input <decision-context.md> [--output <file>] [--config <moa.config.json>] [--dry-run]';
 
+async function main() {
   const env = process.env;
   const redact = makeRedactor(collectSecrets(env));
 
+  // Argument-parse failures (unknown flag, missing value) are user errors, not
+  // internal crashes — surface a clean message + usage, never a Node stack trace.
+  let args;
+  try {
+    ({ values: args } = parseArgs({
+      options: {
+        input: { type: 'string' },
+        output: { type: 'string' },
+        config: { type: 'string' },
+        'dry-run': { type: 'boolean', default: false },
+        help: { type: 'boolean', default: false },
+      },
+      allowPositionals: false,
+    }));
+  } catch (e) {
+    process.stderr.write(`error: ${redact(e.message)}\n${USAGE}\n`);
+    return 1;
+  }
+
   if (args.help) {
-    process.stdout.write(
-      'Usage: node moa.mjs --input <decision-context.md> [--output <file>] [--config <moa.config.json>] [--dry-run]\n',
-    );
+    process.stdout.write(`${USAGE}\n`);
     return 0;
   }
 
-  const cfg = await resolveConfig(args, env);
+  // Config resolution failures (unreadable --config, malformed JSON, bad model
+  // entry) are user errors too — same clean treatment.
+  let cfg;
+  try {
+    cfg = await resolveConfig(args, env);
+  } catch (e) {
+    process.stderr.write(`error: ${redact(e.message)}\n`);
+    return 1;
+  }
   const timeoutMs = Number(env.LOOP_TESTING_MOA_TIMEOUT_MS) > 0
     ? Number(env.LOOP_TESTING_MOA_TIMEOUT_MS)
     : DEFAULT_TIMEOUT_MS;

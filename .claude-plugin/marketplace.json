@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "loop-testing plugin marketplace",
-    "version": "0.1.0"
+    "version": "0.1.2"
   },
   "plugins": [
     {
       "name": "loop-testing",
       "source": "./",
       "description": "Autonomous self-test / self-fix / self-iterate QA loop that drives a finished project to convergence as a simulated real user in a sandbox (自测·验收·QA 循环).",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "category": "development"
     }
   ]

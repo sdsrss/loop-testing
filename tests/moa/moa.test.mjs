@@ -396,6 +396,64 @@ test('config override: env LOOP_TESTING_MOA_* wins over config file', async () =
   });
 });
 
+// A user error (bad flag / bad config) must read as a clean one-line message,
+// never a leaked Node stack trace — the engine is invoked by the driver/skill
+// and stack noise pollutes decision archives and logs.
+function assertCleanUserError({ code, stderr }) {
+  assert.equal(code, 1, `expected exit 1, stderr: ${stderr}`);
+  assert.match(stderr, /^error: /m);
+  // Real V8 stack frames begin a line with indentation + "at " (e.g. "    at main (file:…)").
+  // Guard against that shape specifically — not the word "at" appearing inline in a message.
+  assert.ok(!/^\s+at /m.test(stderr), `stack trace leaked: ${stderr}`);
+  assert.ok(!stderr.includes('fatal:'), `crashed instead of clean error: ${stderr}`);
+}
+
+test('user error: unknown flag -> clean message + usage, no stack trace', async () => {
+  await withWorkspace(async (dir) => {
+    const res = await runMoa(['--frobnicate'], { OPENAI_API_KEY: 'sk-fake' }, dir);
+    assertCleanUserError(res);
+    assert.match(res.stderr, /--frobnicate/);
+    assert.match(res.stderr, /Usage:/);
+  });
+});
+
+test('user error: explicit --config missing -> clean message, no stack trace', async () => {
+  await withWorkspace(async (dir) => {
+    const res = await runMoa(
+      ['--dry-run', '--config', join(dir, 'does-not-exist.json')],
+      { OPENAI_API_KEY: 'sk-fake' }, dir,
+    );
+    assertCleanUserError(res);
+    assert.match(res.stderr, /config file not readable/);
+  });
+});
+
+test('user error: malformed config JSON -> clean message, no stack trace', async () => {
+  await withWorkspace(async (dir) => {
+    const badPath = join(dir, 'moa.config.json');
+    await writeFile(badPath, '{bad json', 'utf8');
+    const res = await runMoa(
+      ['--dry-run', '--config', badPath],
+      { OPENAI_API_KEY: 'sk-fake' }, dir,
+    );
+    assertCleanUserError(res);
+    assert.match(res.stderr, /not valid JSON/);
+  });
+});
+
+test('user error: invalid model entry in config -> clean message, no stack trace', async () => {
+  await withWorkspace(async (dir) => {
+    const badPath = join(dir, 'moa.config.json');
+    await writeFile(badPath, JSON.stringify({ reference_models: [123] }), 'utf8');
+    const res = await runMoa(
+      ['--dry-run', '--config', badPath],
+      { OPENAI_API_KEY: 'sk-fake' }, dir,
+    );
+    assertCleanUserError(res);
+    assert.match(res.stderr, /invalid model entry/);
+  });
+});
+
 test('dry-run: makes zero network calls', async () => {
   await withWorkspace(async (dir) => {
     const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));
