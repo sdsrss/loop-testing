@@ -37,6 +37,8 @@
 
 ## 5. FINAL_REPORT.md 结构（模板见 templates/）
 
+> `FINAL_REPORT.md` **只在退出时**从本技能 `templates/FINAL_REPORT.md` 实例化——启动时不预建（半路存在"最终报告"会误导续跑判断）。写完最终报告、跑完 `sandbox-clean.sh` 后，把 `STATE.md` 的 `status` 写为对应终态；stop-gate 检测到终态即放行并解除哨兵。
+
 1. **FINAL STATUS**：`PASS / CONVERGED_WITH_OPEN_ISSUES / INCOMPLETE / BLOCKED`；
 2. 停止原因与证据：总轮数、连续收敛轮数、最后两轮差异与结果、为何不是更高等级；
 3. 覆盖摘要：功能总数与 PASS/FAIL/BLOCKED/N-A 数量、核心旅程列表、测试盲区；

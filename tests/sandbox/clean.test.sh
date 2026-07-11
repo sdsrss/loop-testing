@@ -26,6 +26,8 @@ assert_ok $? "clean succeeds"
 
 assert_absent "$WT" "owned worktree removed"
 assert_exists "$REPO/docs/looptesting/runs/round-1.md" "evidence preserved"
+assert_absent "$REPO/docs/looptesting/.active" "stop-gate sentinel disarmed by clean"
+assert_absent "$REPO/docs/looptesting/.gate-count" "gate counter removed by clean"
 # qa branch (holds fix commits) must be kept
 if ( cd "$REPO" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
   PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: qa branch must be kept" >&2; fi

@@ -22,6 +22,10 @@ assert_exists "$REPO/docs/looptesting/ISSUES.md" "ISSUES.md seeded"
 assert_exists "$REPO/docs/looptesting/FEATURE_MATRIX.md" "FEATURE_MATRIX.md seeded"
 assert_exists "$REPO/docs/looptesting/.sandbox/ownership.env" "ownership marker written"
 assert_file_contains "$REPO/docs/looptesting/STATE.md" "converged_streak:" "STATE has machine field"
+assert_exists "$REPO/docs/looptesting/.active" "stop-gate sentinel armed by setup"
+if [ -f "$REPO/docs/looptesting/FINAL_REPORT.md" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: FINAL_REPORT.md must NOT be seeded at setup (exit-time only)" >&2
+else PASS=$((PASS+1)); echo "  ok: FINAL_REPORT.md not pre-seeded"; fi
 
 # --- idempotent: second run does not error, does not reset ------------------
 echo "USER EDIT" >> "$REPO/docs/looptesting/STATE.md"

@@ -1,0 +1,36 @@
+# Changelog
+
+## 0.1.0 — 2026-07-11
+
+Initial release.
+
+- **Core QA loop skill** (`skills/loop-testing/`): autonomous self-test / self-fix /
+  self-iterate loop with dual personas (novice / impatient power user ↔ rigorous
+  engineer), round-0 project analysis, 5-step round cycle, P0-P3 issue ledger with
+  replay-verified fixes, K=2 convergence exit with coverage-shrink guard,
+  MAX_ROUNDS=12 safety stop, file-based state protocol (resume-safe) under the
+  target project's `docs/looptesting/`.
+- **MoA decision engine** (`scripts/moa.mjs`): zero-dependency Node >= 20; OpenAI +
+  OpenRouter wire formats; env-only keys with redaction; explicit proxy support
+  (raw HTTP absolute-form / HTTPS CONNECT tunnel — undici is not importable
+  zero-dep on Node 22); parallel reference fan-out + aggregator; bounded
+  degradation chain (partial references → aggregator-only → exit 2).
+- **Mechanism-layer enforcement** (Claude Code, `hooks/`): stop-gate Stop hook
+  (sentinel + STATE.md machine fields, MAX_BLOCKS=3 under the platform's
+  8-consecutive-block force-allow, progress-aware counter reset, fail-closed on
+  unparseable state) and ledger-gate PreToolUse hook (blocks unverified VERIFIED
+  transitions incl. common Bash write paths; documented as cost-raiser, not a
+  complete gate). Escape hatches: `LOOP_TESTING_DISABLE_STOP_GATE=1`,
+  `LOOP_TESTING_DISABLE_LEDGER_GATE=1`.
+- **Dual-platform distribution**: Claude Code plugin (`.claude-plugin/`,
+  `claude plugin validate` passing) and Codex installer
+  (`install/install-codex.sh`, marker-based fail-closed uninstall). Verified in a
+  real codex-cli 0.144.1 session: installed skill is discovered and enters
+  round-0 correctly.
+- **Tests**: sandboxed shell suites (sandbox scripts 27 assertions, stop-gate
+  19, ledger-gate 8, installer 4 suites) + MoA `node --test` suite (14 tests);
+  single entry `tests/run-all.sh` (ALL GREEN at release).
+
+Known limitations (see README): Codex side has no mechanism-layer gate (prompt
+discipline only); default MoA model list requires release-time calibration and
+degrades gracefully on provider-allowlist 404s.

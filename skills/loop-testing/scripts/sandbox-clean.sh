@@ -59,6 +59,10 @@ if [ -n "$CREATED_WORKTREE" ]; then
   esac
 fi
 
+# Disarm the stop-gate sentinel + counter (loop is over; the gate must not
+# block the session's final stop). Evidence files are kept.
+rm -f "$TOP/docs/looptesting/.active" "$TOP/docs/looptesting/.gate-count"
+
 # Record cleanup time; keep the marker + evidence for the final report / resume.
 if ! grep -q "^CLEANED_AT=" "$MARKER" 2>/dev/null; then
   echo "CLEANED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$MARKER"

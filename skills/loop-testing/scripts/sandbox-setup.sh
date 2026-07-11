@@ -52,8 +52,16 @@ MARKER="$SB/ownership.env"
 seed_dirs_and_templates() {
   mkdir -p "$LT/runs" "$LT/decisions" "$SB"
   [ -f "$LT/.pids" ] || : > "$LT/.pids"
+  # Arm the stop-gate sentinel: while it exists, the Stop hook refuses to end
+  # the session until STATE.md reaches a terminal status. Harmless on Codex
+  # (no hook mechanism). Removed by the gate itself on terminal status and by
+  # sandbox-clean.sh.
+  [ -f "$LT/.active" ] || : > "$LT/.active"
   if [ -n "$TEMPLATES_DIR" ]; then
-    for f in STATE.md PLAN.md FEATURE_MATRIX.md ISSUES.md SUGGESTIONS.md FINAL_REPORT.md; do
+    # FINAL_REPORT.md is deliberately NOT seeded here: a pre-copied template
+    # reads as a (fake) final report mid-run; exit-and-report.md instantiates
+    # it from templates/ only at exit time.
+    for f in STATE.md PLAN.md FEATURE_MATRIX.md ISSUES.md SUGGESTIONS.md; do
       [ -f "$LT/$f" ] || { [ -f "$TEMPLATES_DIR/$f" ] && cp "$TEMPLATES_DIR/$f" "$LT/$f"; }
     done
   fi
