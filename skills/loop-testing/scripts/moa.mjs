@@ -113,6 +113,15 @@ function makeRedactor(secrets) {
 function normalizeModelEntry(entry) {
   if (typeof entry === 'string') return { model: entry };
   if (entry && typeof entry === 'object' && typeof entry.model === 'string') {
+    // Validate an explicit provider here (config-file entries are the only path
+    // that can carry one) so resolveConfig's try/catch surfaces a clean
+    // `error:` + exit 1 — not a fatal stack from resolveModelProvider's throw,
+    // which runs at three unguarded call sites (dry-run, aggregator, failed-ref).
+    // A falsy provider (absent/null/"") falls through to defaultProvider(), matching
+    // resolveModelProvider's `entry.provider || default` semantics.
+    if (entry.provider && !PROVIDERS[entry.provider]) {
+      throw new Error(`unknown provider "${entry.provider}" for model "${entry.model}" (valid: ${Object.keys(PROVIDERS).join(', ')})`);
+    }
     return { model: entry.model, provider: entry.provider };
   }
   throw new Error(`invalid model entry: ${JSON.stringify(entry)}`);

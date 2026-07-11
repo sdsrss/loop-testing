@@ -454,6 +454,32 @@ test('user error: invalid model entry in config -> clean message, no stack trace
   });
 });
 
+test('user error: unknown provider in config -> clean message, no stack trace', async () => {
+  await withWorkspace(async (dir) => {
+    const badPath = join(dir, 'moa.config.json');
+    await writeFile(badPath, JSON.stringify({ reference_models: [{ model: 'x', provider: 'opusrouter' }] }), 'utf8');
+    const res = await runMoa(
+      ['--dry-run', '--config', badPath],
+      { OPENAI_API_KEY: 'sk-fake' }, dir,
+    );
+    assertCleanUserError(res);
+    assert.match(res.stderr, /unknown provider/);
+  });
+});
+
+test('user error: unknown provider on aggregator -> clean message, no stack trace', async () => {
+  await withWorkspace(async (dir) => {
+    const badPath = join(dir, 'moa.config.json');
+    await writeFile(badPath, JSON.stringify({ aggregator: { model: 'a', provider: 'nope' } }), 'utf8');
+    const res = await runMoa(
+      ['--dry-run', '--config', badPath],
+      { OPENAI_API_KEY: 'sk-fake' }, dir,
+    );
+    assertCleanUserError(res);
+    assert.match(res.stderr, /unknown provider/);
+  });
+});
+
 test('dry-run: makes zero network calls', async () => {
   await withWorkspace(async (dir) => {
     const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));
