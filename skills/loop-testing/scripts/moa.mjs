@@ -70,6 +70,10 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const REFERENCE_MAX_TOKENS = 3000;
 const AGGREGATOR_MAX_TOKENS = 4000;
 const MAX_CONTEXT_CHARS = 16000;
+// Transport-level stop-loss: cap a single response body so a misconfigured or
+// hostile endpoint/proxy streaming unbounded data can't OOM a headless run.
+// Override via LOOP_TESTING_MOA_MAX_RESPONSE_BYTES (chat completions are KBs).
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 // Provider registry. Both are OpenAI chat-completions wire format.
 const PROVIDERS = {
@@ -233,17 +237,25 @@ function proxyAuthHeader(proxy) {
 
 // Establish a CONNECT tunnel through `proxy` to `target` (https origin), then
 // TLS over it. Calls cb(err) or cb(null, tlsSocket).
-function connectViaProxy(target, proxy, cb) {
+function connectViaProxy(target, proxy, cb, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const proxyPort = Number(proxy.port) || (proxy.protocol === 'https:' ? 443 : 80);
   const targetPort = Number(target.port) || 443;
   const socket = net.connect({ host: proxy.hostname, port: proxyPort });
   let settled = false;
+  let timer = null;
+  const clearTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
   const fail = (err) => {
     if (settled) return;
     settled = true;
+    clearTimer();
     socket.destroy();
     cb(err);
   };
+  // Own timeout covering TCP connect + CONNECT reply + TLS handshake. requestRaw's
+  // timer can't reach this socket until createConnection returns, so without this a
+  // proxy that TCP-connects but never answers CONNECT (or stalls the handshake)
+  // would orphan the socket until process exit.
+  timer = setTimeout(() => fail(new Error(`proxy CONNECT timeout after ${timeoutMs}ms`)), timeoutMs);
   socket.once('error', fail);
   socket.on('connect', () => {
     const lines = [
@@ -267,13 +279,19 @@ function connectViaProxy(target, proxy, cb) {
       return;
     }
     socket.removeListener('error', fail);
+    // Preserve any bytes the proxy pipelined after the CONNECT response header
+    // (e.g. the start of the tunneled TLS handshake) — they belong to the tunnel.
+    const leftover = buf.subarray(headerEnd + 4);
+    if (leftover.length) socket.unshift(leftover);
     const tlsSocket = tls.connect({ socket, servername: target.hostname }, () => {
+      clearTimer();
       settled = true;
       cb(null, tlsSocket);
     });
     tlsSocket.once('error', (e) => {
       if (!settled) {
         settled = true;
+        clearTimer();
         cb(e);
       }
     });
@@ -282,7 +300,7 @@ function connectViaProxy(target, proxy, cb) {
 }
 
 // Perform one HTTP request. Resolves { status, headers, body }.
-function requestRaw(urlStr, { method = 'POST', headers = {}, body = null, timeoutMs = DEFAULT_TIMEOUT_MS, proxyUrl = null } = {}) {
+function requestRaw(urlStr, { method = 'POST', headers = {}, body = null, timeoutMs = DEFAULT_TIMEOUT_MS, proxyUrl = null, maxBytes = MAX_RESPONSE_BYTES } = {}) {
   return new Promise((resolve, reject) => {
     const target = new URL(urlStr);
     const isHttps = target.protocol === 'https:';
@@ -304,7 +322,18 @@ function requestRaw(urlStr, { method = 'POST', headers = {}, body = null, timeou
 
     const onResponse = (res) => {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      let received = 0;
+      res.on('data', (c) => {
+        received += c.length;
+        if (received > maxBytes) {
+          // Stop-loss: don't buffer an unbounded body. Abort the request/response.
+          res.destroy();
+          if (req) req.destroy();
+          finish(new Error(`response body exceeded ${maxBytes} bytes — aborted`));
+          return;
+        }
+        chunks.push(c);
+      });
       res.on('end', () => finish(null, {
         status: res.statusCode,
         headers: res.headers,
@@ -329,7 +358,7 @@ function requestRaw(urlStr, { method = 'POST', headers = {}, body = null, timeou
         req = https.request(urlStr, {
           method,
           headers: outHeaders,
-          createConnection: (_opts, cb) => connectViaProxy(target, new URL(proxyUrl), cb),
+          createConnection: (_opts, cb) => connectViaProxy(target, new URL(proxyUrl), cb, timeoutMs),
         }, onResponse);
       } else {
         const mod = isHttps ? https : http;
@@ -355,7 +384,7 @@ function requestRaw(urlStr, { method = 'POST', headers = {}, body = null, timeou
 // Chat completion (one model, single bounded attempt — within the "no retries
 // beyond 1" ceiling; we deliberately do zero retries for deterministic behavior).
 // ===========================================================================
-async function chatComplete({ model, messages, temperature, maxTokens, resolved, timeoutMs, proxyResolver, redact }) {
+async function chatComplete({ model, messages, temperature, maxTokens, resolved, timeoutMs, maxBytes, proxyResolver, redact }) {
   if (!resolved.hasKey) {
     throw new Error(`missing API key for provider "${resolved.provider}" (env ${resolved.keyEnv})`);
   }
@@ -375,7 +404,7 @@ async function chatComplete({ model, messages, temperature, maxTokens, resolved,
 
   let res;
   try {
-    res = await requestRaw(url, { method: 'POST', headers, body: payload, timeoutMs, proxyUrl: proxyResolver(url) });
+    res = await requestRaw(url, { method: 'POST', headers, body: payload, timeoutMs, maxBytes, proxyUrl: proxyResolver(url) });
   } catch (e) {
     throw new Error(redact(`network error calling ${model}: ${e.message}`));
   }
@@ -589,6 +618,9 @@ async function main() {
   const timeoutMs = Number(env.LOOP_TESTING_MOA_TIMEOUT_MS) > 0
     ? Number(env.LOOP_TESTING_MOA_TIMEOUT_MS)
     : DEFAULT_TIMEOUT_MS;
+  const maxBytes = Number(env.LOOP_TESTING_MOA_MAX_RESPONSE_BYTES) > 0
+    ? Number(env.LOOP_TESTING_MOA_MAX_RESPONSE_BYTES)
+    : MAX_RESPONSE_BYTES;
 
   // --dry-run: print resolved config, make no network call.
   if (args['dry-run']) {
@@ -635,6 +667,7 @@ async function main() {
         maxTokens: REFERENCE_MAX_TOKENS,
         resolved,
         timeoutMs,
+        maxBytes,
         proxyResolver,
         redact,
       });
@@ -674,6 +707,7 @@ async function main() {
       maxTokens: AGGREGATOR_MAX_TOKENS,
       resolved: aggResolved,
       timeoutMs,
+      maxBytes,
       proxyResolver,
       redact,
     });
@@ -692,7 +726,16 @@ async function main() {
   });
 
   if (args.output) {
-    await writeFile(args.output, doc, 'utf8');
+    try {
+      await writeFile(args.output, doc, 'utf8');
+    } catch (e) {
+      // The reference + aggregator calls already ran (and were paid for). Do NOT
+      // discard the decision on a write failure — emit it to stdout and report a
+      // clean error so the caller can still capture the result.
+      process.stdout.write(doc + '\n');
+      process.stderr.write(`error: could not write --output ${args.output}: ${redact(e.message)} (decision emitted to stdout above)\n`);
+      return 1;
+    }
     process.stderr.write(`MoA decision written to ${args.output}${degraded.length ? ` (degraded: ${degraded.join(', ')})` : ''}\n`);
   } else {
     process.stdout.write(doc + '\n');

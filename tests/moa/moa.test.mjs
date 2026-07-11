@@ -13,7 +13,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import https from 'node:https';
+import net from 'node:net';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
@@ -130,6 +132,93 @@ const TWO_REF_CONFIG = {
   ],
   aggregator: { model: 'agg-model', provider: 'openai' },
 };
+
+// --- CONNECT-proxy tunnel helpers (for the https-origin CONNECT+TLS path) -----
+
+function hasOpenssl() {
+  try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); return true; } catch { return false; }
+}
+
+// Generate an ephemeral self-signed cert (CN=api.openai.com) into `dir`.
+async function genCert(dir) {
+  const key = join(dir, 'key.pem');
+  const cert = join(dir, 'cert.pem');
+  execFileSync('openssl', [
+    'req', '-x509', '-newkey', 'rsa:2048', '-keyout', key, '-out', cert,
+    '-days', '1', '-nodes', '-subj', '/CN=api.openai.com',
+  ], { stdio: 'ignore' });
+  return { key: await readFile(key, 'utf8'), cert: await readFile(cert, 'utf8') };
+}
+
+// A minimal HTTPS chat responder used behind the CONNECT tunnel.
+function tlsChatHandler({ aggModel }) {
+  return (req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      let model = '';
+      try { model = JSON.parse(Buffer.concat(chunks).toString('utf8')).model; } catch { /* ignore */ }
+      res.setHeader('content-type', 'application/json');
+      const content = model === aggModel
+        ? JSON.stringify({ summary: 'S', recommendation: 'R-reco', rationale: 'RA', risks: 'RK' })
+        : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+  };
+}
+
+// A CONNECT proxy stub. On CONNECT it either: hangs (never replies), returns a
+// non-200 status, or returns 200 and hands the socket to an in-process HTTPS
+// server (TLS terminated here) — capturing the CONNECT lines and the SNI names.
+function startConnectProxy({ key, cert, chatHandler: ch, status = '200 Connection established', hang = false } = {}) {
+  const connects = [];
+  const sni = [];
+  let httpsServer = null;
+  if (key && cert && ch) {
+    httpsServer = https.createServer(
+      { key, cert, SNICallback: (servername, cb) => { sni.push(servername); cb(null); } },
+      ch,
+    );
+    httpsServer.on('clientError', () => {});
+  }
+  return new Promise((resolve) => {
+    const server = net.createServer((sock) => {
+      sock.on('error', () => {});
+      sock.once('data', (chunk) => {
+        connects.push(chunk.toString('utf8').split('\r\n')[0]);
+        if (hang) return;                          // never reply -> exercise the own timeout
+        if (!status.startsWith('200')) {
+          sock.write(`HTTP/1.1 ${status}\r\n\r\n`); sock.end(); return;
+        }
+        sock.write('HTTP/1.1 200 Connection established\r\n\r\n');
+        if (httpsServer) httpsServer.emit('connection', sock);   // TLS + HTTP over the tunnel
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      resolve({
+        port: server.address().port,
+        url: `http://127.0.0.1:${server.address().port}`,
+        connects, sni,
+        close: () => new Promise((r) => server.close(r)),
+      });
+    });
+  });
+}
+
+const ONE_REF_HTTPS = {
+  reference_models: [{ model: 'ref-a', provider: 'openai' }],
+  aggregator: { model: 'agg-model', provider: 'openai' },
+};
+
+// Responds with a body larger than the size cap, to exercise the transport stop-loss.
+function bigBodyHandler(bytes = 2000) {
+  return (_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.statusCode = 200;
+    res.end('x'.repeat(bytes));
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -511,5 +600,121 @@ test('dry-run: reports proxy on/off and key presence as booleans (no values)', a
     assert.match(stdout, /OPENAI_API_KEY:\s*set/);
     assert.match(stdout, /OPENROUTER_API_KEY:\s*missing/);
     assert.ok(!stdout.includes('sk-should-not-print'), 'dry-run leaked key value');
+  });
+});
+
+// The https-origin CONNECT+TLS tunnel — the path every real proxied run takes,
+// previously untested (audit A2). Full end-to-end: CONNECT -> TLS handshake ->
+// tunneled HTTP, asserting the CONNECT target and SNI.
+test('proxy CONNECT tunnel: https origin routes through CONNECT+TLS; CONNECT target + SNI correct',
+  { skip: hasOpenssl() ? false : 'openssl unavailable (cannot mint a test cert)' },
+  async () => {
+    await withWorkspace(async (dir) => {
+      const { key, cert } = await genCert(dir);
+      const proxy = await startConnectProxy({ key, cert, chatHandler: tlsChatHandler({ aggModel: 'agg-model' }) });
+      try {
+        const input = await writeInput(dir);
+        const config = await writeConfig(dir, ONE_REF_HTTPS);
+        const out = join(dir, 'DEC.md');
+        const { code, stderr } = await runMoa(
+          ['--input', input, '--config', config, '--output', out],
+          {
+            OPENAI_API_KEY: 'sk-fake',
+            OPENAI_BASE_URL: 'https://api.openai.com/v1',   // https origin -> CONNECT branch
+            HTTPS_PROXY: proxy.url,
+            NODE_TLS_REJECT_UNAUTHORIZED: '0',              // accept the self-signed test cert
+          },
+        );
+        assert.equal(code, 0, `stderr: ${stderr}`);
+        const doc = await readFile(out, 'utf8');
+        assert.ok(doc.includes('R-reco'), 'aggregator reply did not come back through the tunnel');
+        assert.ok(
+          proxy.connects.some((l) => l === 'CONNECT api.openai.com:443 HTTP/1.1'),
+          `CONNECT line wrong: ${proxy.connects.join(' | ')}`,
+        );
+        assert.ok(proxy.sni.includes('api.openai.com'), `SNI not observed: [${proxy.sni.join(',')}]`);
+      } finally {
+        await proxy.close();
+      }
+    });
+  });
+
+test('proxy CONNECT tunnel: a non-200 CONNECT reply fails cleanly (exit 2, no stack)', async () => {
+  await withWorkspace(async (dir) => {
+    const proxy = await startConnectProxy({ status: '403 Forbidden' });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, ONE_REF_HTTPS);
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: 'https://api.openai.com/v1', HTTPS_PROXY: proxy.url },
+      );
+      assert.equal(code, 2, `expected exit 2, stderr: ${stderr}`);
+      assert.ok(!/^\s+at /m.test(stderr), `stack leaked: ${stderr}`);
+      assert.ok(proxy.connects.length >= 1, 'proxy never saw a CONNECT');
+    } finally {
+      await proxy.close();
+    }
+  });
+});
+
+test('proxy CONNECT tunnel: a proxy that never answers CONNECT times out cleanly, no hang', async () => {
+  await withWorkspace(async (dir) => {
+    const proxy = await startConnectProxy({ hang: true });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, ONE_REF_HTTPS);
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config],
+        {
+          OPENAI_API_KEY: 'sk-fake',
+          OPENAI_BASE_URL: 'https://api.openai.com/v1',
+          HTTPS_PROXY: proxy.url,
+          LOOP_TESTING_MOA_TIMEOUT_MS: '800',   // bound the wait so the test is fast
+        },
+      );
+      assert.equal(code, 2, `expected exit 2 (aggregator unreachable), stderr: ${stderr}`);
+      assert.ok(!/^\s+at /m.test(stderr), `stack leaked: ${stderr}`);
+    } finally {
+      await proxy.close();
+    }
+  });
+});
+
+test('response size cap: an oversized body is aborted, not buffered (exit 2, clean)', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer(bigBodyHandler(2000));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, ONE_REF_HTTPS);
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1`, LOOP_TESTING_MOA_MAX_RESPONSE_BYTES: '500' },
+      );
+      assert.equal(code, 2, `expected exit 2, stderr: ${stderr}`);
+      assert.match(stderr, /exceeded 500 bytes/);
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('output write failure: decision goes to stdout + clean error (exit 1), not discarded', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const badOut = join(dir, 'no-such-dir', 'DEC.md');   // parent dir missing -> ENOENT
+      const { code, stdout, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', badOut],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 1, `expected exit 1, stderr: ${stderr}`);
+      assert.match(stderr, /could not write/);
+      assert.ok(stdout.includes('R-reco'), 'decision not emitted to stdout on write failure');
+    } finally {
+      await stub.close();
+    }
   });
 });
