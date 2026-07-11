@@ -1,0 +1,29 @@
+{
+  "description": "loop-testing mechanism-layer hooks (Claude Code enhancement; the QA loop also runs on prompt discipline alone). Stop: while docs/looptesting/.active exists, block session stop until STATE.md status is terminal (CONVERGED/INCOMPLETE/BLOCKED); RUNNING or unparseable fails closed. Hard ceiling MAX_BLOCKS=3 (< platform's 8) so the gate never deadlocks; escape hatch LOOP_TESTING_DISABLE_STOP_GATE=1. PreToolUse: deny writes that stamp VERIFIED onto an ISSUE with no replay record in runs/round-*.md (cheat-cost raiser, not a hard gate); escape hatch LOOP_TESTING_DISABLE_LEDGER_GATE=1. NOTE: if plugin hooks.json auto-loading does not fire in your Claude Code version, register these hooks manually in settings.json — see README.",
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/ledger-gate.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
