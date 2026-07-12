@@ -71,9 +71,11 @@ mkdir -p "$LT"
 
 # Protect the installed skill from the full-access session; always restore.
 # Set the restore trap BEFORE the chmod so a signal in between can't leave the
-# dir read-only (only SIGKILL, which skips traps, can — unavoidable).
+# dir read-only. Trap EXIT + INT + TERM explicitly (don't rely on bash's implicit
+# EXIT-on-signal, which is version/platform-dependent); only SIGKILL, which skips
+# traps, can leave it read-only — unavoidable.
 if [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
-  trap 'chmod -R u+w "$SKILL_DIR" 2>/dev/null || true' EXIT
+  trap 'chmod -R u+w "$SKILL_DIR" 2>/dev/null || true' EXIT INT TERM
   chmod -R a-w "$SKILL_DIR" 2>/dev/null || true
 fi
 
