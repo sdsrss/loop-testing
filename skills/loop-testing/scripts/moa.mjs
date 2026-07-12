@@ -104,7 +104,17 @@ function collectSecrets(env) {
     if (!v || !v.trim()) continue;
     try {
       const u = new URL(v.trim());
+      // Redact every form the credential can take: the raw URL field, its
+      // percent-decoded value, AND the base64 `user:pass` blob that
+      // proxyAuthHeader() actually writes to the wire (that blob IS the
+      // credential — redacting only its parts would miss it if it ever surfaced).
       if (u.password) { secrets.push(u.password); secrets.push(decodeURIComponent(u.password)); }
+      if (u.username) { secrets.push(u.username); secrets.push(decodeURIComponent(u.username)); }
+      if (u.username) {
+        secrets.push(Buffer
+          .from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password || '')}`)
+          .toString('base64'));
+      }
     } catch { /* not a parseable URL — nothing to redact */ }
   }
   return secrets;

@@ -579,15 +579,22 @@ test('user error: empty aggregator model -> clean message, not a 400 (audit C12)
   });
 });
 
-test('proxy credentials: a password in *_PROXY never appears in output (audit C12)', async () => {
+test('proxy credentials: password, username, and the base64 auth blob never appear in output (audit C12)', async () => {
   await withWorkspace(async (dir) => {
     const input = await writeInput(dir);
+    const proxyUser = 'PROXYUSER';
+    const proxyPass = 'SUPERSECRETPW';
+    // The base64 `user:pass` blob is what proxyAuthHeader() puts on the wire, so
+    // it is itself a credential and must be redacted as a whole, not just its parts.
+    const authBlob = Buffer.from(`${proxyUser}:${proxyPass}`).toString('base64');
     const { stdout, code } = await runMoa(
       ['--input', input, '--dry-run'],
-      { OPENAI_API_KEY: 'sk-fake', HTTPS_PROXY: 'http://user:SUPERSECRETPW@127.0.0.1:9' }, dir,
+      { OPENAI_API_KEY: 'sk-fake', HTTPS_PROXY: `http://${proxyUser}:${proxyPass}@127.0.0.1:9` }, dir,
     );
     assert.equal(code, 0);
-    assert.ok(!stdout.includes('SUPERSECRETPW'), 'proxy password leaked to output');
+    assert.ok(!stdout.includes(proxyPass), 'proxy password leaked to output');
+    assert.ok(!stdout.includes(proxyUser), 'proxy username leaked to output');
+    assert.ok(!stdout.includes(authBlob), 'proxy base64 auth blob leaked to output');
     assert.match(stdout, /proxy:\s*on/i);
   });
 });
