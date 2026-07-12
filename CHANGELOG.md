@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.6 — 2026-07-12
+
+Code-review follow-up to the v0.2.5 driver concurrency lock (DR-4). A fresh-context
+review found the lock stole on ambiguity, which both re-admitted a race and violated
+the repo's fail-closed rule. Full suite `ALL GREEN` (driver-limits 23, codex-limits 24).
+
+- **fix(drivers)**: `acquire_lock` stole a present `.driver.lock` whenever the holder
+  PID was unreadable/empty — including the window where driver A has created the lock
+  dir but not yet written its pid, letting driver B steal A's *live* lock. It now
+  steals ONLY when the holder PID is readable AND confirmed dead (a crashed driver);
+  an unreadable/empty holder is treated as live and refused (fail-closed — never steal
+  on ambiguity). Kept byte-identical across both drivers. (+2 driver tests: an
+  ambiguous no-pid lock is refused, not stolen.) The lock remains a best-effort
+  accidental-double-launch guard, not a hard mutex (documented in README).
+- **docs(readme)**: the crash-recovery section now covers `docs/looptesting/.driver.lock`
+  — its purpose, auto-steal of a dead-holder lock, the best-effort caveat, and the
+  manual `rm -rf` recovery for a SIGKILL'd run whose lock pid is unreadable.
+
 ## 0.2.5 — 2026-07-12
 
 Audit batch 6 (part 2): the two remaining second-audit findings. Full suite

@@ -197,3 +197,5 @@ QA 循环本体离线可用。只有 MoA 多模型决策需要 LLM API（`OPENRO
 - **自动**：Stop-hook 会检测 `STATE.md` 超过 24 小时（默认，可用 `LOOP_TESTING_GATE_STALE_SECONDS` 覆盖，`0` 关闭）未更新的非终态运行，判为遗弃并放行、自动摘哨兵。
 - **手动即时**：删除哨兵 `rm docs/looptesting/.active`，或本次会话设 `LOOP_TESTING_DISABLE_STOP_GATE=1` 临时停用 gate。
 - **续跑**：重新触发技能即从 `STATE.md` 断点继续（不会重置轮数）。
+
+**无人值守驱动的并发锁 `docs/looptesting/.driver.lock`**：`unattended-*.sh` 启动时建此锁，避免两个驱动在同一项目上并发跑而互相污染 STATE/台账/worktree。正常退出即释放；崩溃残留（锁内记录的 PID 已不存活）会被下次启动自动偷用。这是**尽力而为的防误重启守卫，非硬互斥**（近乎同时启动的极端竞态不保证）。若某次被 `SIGKILL` 且锁内 PID 不可读，后续启动会**保守拒绝**（fail-closed）并提示手动清理——确认无驱动在跑后 `rm -rf docs/looptesting/.driver.lock` 即可。

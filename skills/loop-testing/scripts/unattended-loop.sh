@@ -118,10 +118,15 @@ acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
   local holder=""; [ -f "$LOCK_DIR/pid" ] && read -r holder < "$LOCK_DIR/pid" 2>/dev/null
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-    die "another loop-testing driver (pid $holder) is running on this project; refusing to run concurrently (remove $LOCK_DIR if it is stale)"
+  # Fail-closed: steal a present lock ONLY when its holder PID is readable AND
+  # confirmed no longer alive (a crashed driver). An unreadable/empty holder is
+  # treated as live and refused — never steal on ambiguity. (Two drivers starting in
+  # the same sub-ms window could still both steal a genuinely-stale lock; this is a
+  # best-effort accidental-double-launch guard, not a hard mutex — see README.)
+  if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then
+    die "another loop-testing driver is running on this project (lock held${holder:+ by pid $holder}); refusing to run concurrently — remove $LOCK_DIR by hand only if you are sure no driver is live"
   fi
-  rm -rf "$LOCK_DIR" 2>/dev/null   # stale lock from a crashed driver — steal it
+  rm -rf "$LOCK_DIR" 2>/dev/null   # holder PID confirmed dead (crashed driver) — steal
   if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
   die "could not acquire driver lock at $LOCK_DIR"
 }

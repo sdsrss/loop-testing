@@ -116,4 +116,13 @@ STUB_CONVERGE_AT=1 bash "$CODEX_DRIVER" --project "$WS11" --codex-bin "$stub" --
 assert_rc $? 0 "stale lock stolen -> run proceeds to convergence (exit 0)"
 if [ -e "$WS11/docs/looptesting/.driver.lock" ]; then FAIL=$((FAIL+1)); echo "  FAIL: lock not released on normal exit" >&2; else PASS=$((PASS+1)); fi
 
+# N. Fail-closed: a lock dir whose holder PID is unreadable/absent must be REFUSED,
+#    not stolen (DR-4 hardening from code review; mirrors loop driver L).
+WS12=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12"' EXIT
+mkdir -p "$WS12/docs/looptesting/.driver.lock"   # lock dir present, NO pid file
+stub=$(write_stub "$WS12"); write_state "$WS12" RUNNING 0
+bash "$CODEX_DRIVER" --project "$WS12" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
+assert_rc $? 2 "lock with no readable holder PID -> refused (fail-closed), not stolen"
+assert_eq "0" "$(sessions_in_log "$WS12")" "no session launched on an ambiguous lock"
+
 report "codex-limits.test.sh"
