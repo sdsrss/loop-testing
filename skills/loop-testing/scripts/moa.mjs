@@ -98,6 +98,15 @@ function collectSecrets(env) {
     const v = env[p.keyEnv];
     if (v && v.trim()) secrets.push(v);
   }
+  // Proxy credentials (user:pass@host in *_PROXY) must not surface in errors either.
+  for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy']) {
+    const v = env[name];
+    if (!v || !v.trim()) continue;
+    try {
+      const u = new URL(v.trim());
+      if (u.password) { secrets.push(u.password); secrets.push(decodeURIComponent(u.password)); }
+    } catch { /* not a parseable URL — nothing to redact */ }
+  }
   return secrets;
 }
 
@@ -115,8 +124,12 @@ function makeRedactor(secrets) {
 // Config resolution: defaults <- config file <- env overrides
 // ===========================================================================
 function normalizeModelEntry(entry) {
-  if (typeof entry === 'string') return { model: entry };
+  if (typeof entry === 'string') {
+    if (!entry.trim()) throw new Error('empty model name in config');
+    return { model: entry };
+  }
   if (entry && typeof entry === 'object' && typeof entry.model === 'string') {
+    if (!entry.model.trim()) throw new Error('empty model name in config entry');
     // Validate an explicit provider here (config-file entries are the only path
     // that can carry one) so resolveConfig's try/catch surfaces a clean
     // `error:` + exit 1 — not a fatal stack from resolveModelProvider's throw,

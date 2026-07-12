@@ -61,6 +61,8 @@ node skills/loop-testing/scripts/moa.mjs \
 
 provider 解析：config 可为每个模型单独指定 `provider`；未指定时，默认 provider = 有 `OPENROUTER_API_KEY` 则 `openrouter`，否则 `openai`。
 
+> **直连 `openai` provider 的参数限制**：默认参考/聚合模型经 OpenRouter 路由（provider 侧会规范化参数）。若在 config 里给某模型显式 `provider: openai` 且用的是 OpenAI 推理系模型（如 o 系列），该模型可能拒绝 `temperature`（要求 =1）或要求 `max_completion_tokens` 而非引擎发送的 `max_tokens`，返回 400。遇此改走 OpenRouter，或换非推理模型。默认组合不受影响。
+
 ---
 
 ## 4. 输出与归档

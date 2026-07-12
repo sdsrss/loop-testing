@@ -569,6 +569,29 @@ test('user error: unknown provider on aggregator -> clean message, no stack trac
   });
 });
 
+test('user error: empty aggregator model -> clean message, not a 400 (audit C12)', async () => {
+  await withWorkspace(async (dir) => {
+    const badPath = join(dir, 'moa.config.json');
+    await writeFile(badPath, JSON.stringify({ aggregator: '' }), 'utf8');
+    const res = await runMoa(['--dry-run', '--config', badPath], { OPENAI_API_KEY: 'sk-fake' }, dir);
+    assertCleanUserError(res);
+    assert.match(res.stderr, /empty model/);
+  });
+});
+
+test('proxy credentials: a password in *_PROXY never appears in output (audit C12)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const { stdout, code } = await runMoa(
+      ['--input', input, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-fake', HTTPS_PROXY: 'http://user:SUPERSECRETPW@127.0.0.1:9' }, dir,
+    );
+    assert.equal(code, 0);
+    assert.ok(!stdout.includes('SUPERSECRETPW'), 'proxy password leaked to output');
+    assert.match(stdout, /proxy:\s*on/i);
+  });
+});
+
 test('dry-run: makes zero network calls', async () => {
   await withWorkspace(async (dir) => {
     const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));
