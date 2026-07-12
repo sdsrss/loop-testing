@@ -179,7 +179,14 @@ async function resolveConfig(args, env) {
     } catch (e) {
       throw new Error(`config file is not valid JSON: ${configPath}: ${e.message}`);
     }
-    if (Array.isArray(parsed.reference_models)) {
+    // reference_models absent -> keep DEFAULT. Present -> must be a non-empty array:
+    // a non-array typo silently fell back to the DEFAULT (wrong, paid-for) models,
+    // and [] silently ran aggregator-only — both contradict "zero criteria -> refuse"
+    // and are now clean errors instead of silent degradation (audit MO-2 / MO-3).
+    if (parsed.reference_models !== undefined) {
+      if (!Array.isArray(parsed.reference_models) || parsed.reference_models.length === 0) {
+        throw new Error('config "reference_models" must be a non-empty array of model names');
+      }
       cfg.reference_models = parsed.reference_models.map(normalizeModelEntry);
     }
     if (parsed.aggregator != null) cfg.aggregator = normalizeModelEntry(parsed.aggregator);

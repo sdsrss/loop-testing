@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.2.4 — 2026-07-12
+
+Audit batch 6 (second-audit follow-up, functional/contract hardening). Lands the
+remaining actionable P2/P3 findings from the second production-readiness audit,
+each RED-first. Full suite `ALL GREEN` (MoA 30, stop-gate 26, driver-limits 17,
+codex-limits 18). Two findings are deferred with rationale (see below).
+
+**Behavior change to note:** an `moa.config.json` whose `reference_models` is an
+empty array or a non-array value now fails with a clean `error:` (exit 1) instead
+of silently running aggregator-only / falling back to the DEFAULT models. If you
+relied on that silent fallback, either omit `reference_models` (to use the DEFAULT
+set) or give it a non-empty array.
+
+- **fix(drivers)**: the no-progress fingerprint (`round | issues | converged_streak
+  | runs count+bytes`) could not observe round-0 progress — round 0 fills PLAN.md +
+  FEATURE_MATRIX.md before any `runs/round-N.md` exists, so a round 0 spanning ≥3
+  sessions on a large target fingerprinted as static and false-tripped NO_PROGRESS
+  (exit 5). The fingerprint now includes round-0 bootstrap bytes (PLAN +
+  FEATURE_MATRIX). Kept identical across both drivers. (+2 driver tests: a round-0
+  bootstrap run reaches --max-sessions instead of NO_PROGRESS.) PL-2.
+- **fix(moa)**: a config `reference_models` that is an empty array (silently ran
+  aggregator-only) or a non-array typo (silently fell back to the paid DEFAULT
+  models) now surfaces as a clean `error:` (exit 1) — aligning with the "zero
+  criteria → refuse" discipline. Absent `reference_models` still uses the DEFAULT.
+  (+2 MoA tests.) MO-2 / MO-3.
+- **docs(moa-decision)**: the reference now documents the exit-1 contract (user-side
+  config/argument/input/output-write errors) alongside 0 and 2, with the full exit-
+  code semantics and the "capture the stdout decision on an --output write failure"
+  rule. PL-3.
+- **test**: closed three previously-uncovered paths — the F6 coordinator-mode env
+  sanitization (the child must not inherit orchestration-only mode vars), the codex
+  driver's driver.log writability guard (unwritable → die exit 2 before any session),
+  and `LOOP_TESTING_GATE_STALE_SECONDS=0` disabling the stale-sentinel auto-disarm.
+
+Deferred (tracked): a driver concurrency lock (needs a portable mkdir-lock + PID
+liveness + trap composition across the two drivers' differing traps; P3), and making
+the skill/references state how to locate the installed script dir (LLM-visible
+metadata requiring a real-loop run to verify; P2).
+
 ## 0.2.3 — 2026-07-12
 
 Second full production-readiness audit (5-track parallel review + per-finding

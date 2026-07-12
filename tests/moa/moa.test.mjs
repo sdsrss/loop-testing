@@ -425,6 +425,35 @@ test('degradation: no keys at all -> exit code 2 with clear message', async () =
   });
 });
 
+test('config: empty reference_models array is a clean error, not silent aggregator-only (MO-2)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const config = await writeConfig(dir, { reference_models: [] });
+    const { code, stdout, stderr } = await runMoa(
+      ['--input', input, '--config', config, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-oa' }, dir,
+    );
+    assert.equal(code, 1, `expected exit 1, stderr: ${stderr}`);
+    assert.match(stderr, /reference_models/);
+    assert.doesNotMatch(stderr, /^\s+at /m, 'must be a clean error, not a stack trace');
+    assert.ok(!stdout.includes('default_provider'), 'must not proceed to a dry-run report');
+  });
+});
+
+test('config: non-array reference_models is a clean error, not a silent DEFAULT fallback (MO-3)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const config = await writeConfig(dir, { reference_models: 'gpt-5.6-sol' });
+    const { code, stderr } = await runMoa(
+      ['--input', input, '--config', config, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-oa' }, dir,
+    );
+    assert.equal(code, 1, `expected exit 1, stderr: ${stderr}`);
+    assert.match(stderr, /reference_models/);
+    assert.doesNotMatch(stderr, /^\s+at /m, 'must be a clean error, not a stack trace');
+  });
+});
+
 test('redaction: fake key never appears in stdout / output file (success path)', async () => {
   await withWorkspace(async (dir) => {
     const SECRET = 'sk-SECRET-abc123XYZ';

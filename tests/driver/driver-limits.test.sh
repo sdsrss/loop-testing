@@ -58,4 +58,39 @@ STUB_NO_STATE=1 bash "$DRIVER" --project "$WS5" --claude-bin "$stub" --max-sessi
 assert_rc $? 5 "absent STATE.md -> exit 5"
 assert_eq "1" "$(sessions_in_log "$WS5")" "exits after exactly 1 STATE-less session (not 2)"
 
+# H. Round-0 progress: round/issues/streak static and NO runs/ file, but PLAN.md +
+#    FEATURE_MATRIX.md grow each session (project-analysis phase). Must NOT trip
+#    NO_PROGRESS — the round+issues+streak+runs signal alone misread a multi-session
+#    round 0 as stuck (audit PL-2).
+WS6=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6"' EXIT
+stub=$(write_stub "$WS6")
+write_state "$WS6" RUNNING 0
+STUB_BOOTSTRAP=1 bash "$DRIVER" --project "$WS6" --claude-bin "$stub" --max-sessions 3 >/dev/null 2>&1
+assert_rc $? 3 "round-0 bootstrap progress (PLAN/FEATURE_MATRIX grow) -> runs to max-sessions, not NO_PROGRESS"
+
+# I. F6 coordinator-mode env sanitization: vars that would boot the child session in
+#    orchestration-only mode (Agent/SendMessage/TaskStop/Workflow, no Read/Bash/Edit/
+#    Write) must NOT reach the child. The stub records which survived into its own env.
+WS7=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7"' EXIT
+cat > "$WS7/envstub.sh" <<'ESTUB'
+#!/usr/bin/env bash
+set -u
+env | grep -aE '^CLAUDE_CODE_(COORDINATOR_MODE|EXPERIMENTAL_AGENT_TEAMS|CHILD_SESSION|SESSION_ID)=' \
+  > docs/looptesting/child-env.txt || true
+cat > docs/looptesting/STATE.md <<EOS
+# STATE
+round: 0
+converged_streak: 2
+status: CONVERGED
+max_rounds: 12
+EOS
+exit 0
+ESTUB
+chmod +x "$WS7/envstub.sh"
+CLAUDE_CODE_COORDINATOR_MODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 \
+CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=sess-abc \
+  bash "$DRIVER" --project "$WS7" --claude-bin "$WS7/envstub.sh" --max-sessions 1 >/dev/null 2>&1
+assert_rc $? 0 "converged after a sanitized session -> exit 0"
+assert_eq "" "$(cat "$WS7/docs/looptesting/child-env.txt" 2>/dev/null)" "coordinator-mode env vars unset for the child (F6)"
+
 report "driver-limits.test.sh"

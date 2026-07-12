@@ -24,7 +24,8 @@
 #   3  hit --max-sessions before terminal (driver-declared INCOMPLETE).
 #   4  hit --max-minutes before terminal (driver-declared INCOMPLETE).
 #   5  NO_PROGRESS: two consecutive sessions with no change in the composite
-#      progress fingerprint (round | issues | converged_streak | runs count+bytes).
+#      progress fingerprint (round | issues | converged_streak | runs count+bytes |
+#      round-0 bootstrap bytes).
 set -u
 
 PROJECT=""
@@ -90,10 +91,16 @@ runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth sig
   b=$(cat "$d"/*.md 2>/dev/null | wc -c | tr -d ' ')
   echo "$n:$b"
 }
-progress_sig() { # composite progress fingerprint: round|issues|streak|runsN:runsB
+bootstrap_sig() { # bytes of round-0 artifacts (PLAN + FEATURE_MATRIX)
+  # Round 0 fills PLAN.md + FEATURE_MATRIX.md BEFORE any runs/round-N.md exists, so
+  # without this a round 0 that spans sessions on a large target fingerprints as
+  # static (round/issues/streak/runs all 0) and false-trips NO_PROGRESS (audit PL-2).
+  cat "$LT/PLAN.md" "$LT/FEATURE_MATRIX.md" 2>/dev/null | wc -c | tr -d ' '
+}
+progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB|bootstrapB
   local s
   s="$(state_field converged_streak)"; [ -n "$s" ] || s=-1
-  printf '%s|%s|%s|%s' "$(round_of)" "$(issue_count)" "$s" "$(runs_sig)"
+  printf '%s|%s|%s|%s|%s' "$(round_of)" "$(issue_count)" "$s" "$(runs_sig)" "$(bootstrap_sig)"
 }
 
 mkdir -p "$LT"
@@ -182,10 +189,11 @@ while true; do
   fi
 
   # 4. No-progress circuit breaker. Progress = ANY change in the composite signal
-  #    (round, issue count, converged_streak, or runs/ evidence bytes+count). The
-  #    last two catch a long round that spans sessions appending evidence before
-  #    `round` ticks, and progress made by advancing convergence — cases the old
-  #    round+issues-only signal misread as stuck (audit A3).
+  #    (round, issue count, converged_streak, runs/ evidence bytes+count, or round-0
+  #    bootstrap bytes). These catch a long round that spans sessions appending
+  #    evidence before `round` ticks, progress made by advancing convergence, and a
+  #    round 0 filling PLAN/FEATURE_MATRIX before any runs/ file exists — cases the
+  #    old round+issues-only signal misread as stuck (audit A3 / PL-2).
   if [ "$cur_sig" = "$prev_sig" ]; then
     no_progress=$(( no_progress + 1 ))
   else
@@ -193,6 +201,6 @@ while true; do
   fi
   prev_sig="$cur_sig"
   if [ "$no_progress" -ge 2 ]; then
-    summary_exit 5 "NO_PROGRESS: 2 consecutive sessions with no change in round/issues/streak/runs (stuck)"
+    summary_exit 5 "NO_PROGRESS: 2 consecutive sessions with no change in round/issues/streak/runs/bootstrap (stuck)"
   fi
 done

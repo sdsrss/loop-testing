@@ -46,7 +46,15 @@ round=-1
 [ -f "$STATE" ] && round=$(grep -aE '^round:' "$STATE" | head -1 | sed 's/[^0-9-]//g')
 case "$round" in ''|*[!0-9-]*) round=-1 ;; esac
 streak=0
-if [ "${STUB_STREAK_ONLY:-0}" = "1" ]; then
+if [ "${STUB_BOOTSTRAP:-0}" = "1" ]; then
+  # Round-0 progress: round / issue count / converged_streak stay static and NO
+  # runs/round-N.md is created, but PLAN.md + FEATURE_MATRIX.md grow each call
+  # (the project-analysis phase before the loop proper). Exercises PL-2.
+  new_round=$round; [ "$new_round" -lt 0 ] && new_round=0
+  printf 'plan detail line for session\n' >> "$LT/PLAN.md"
+  printf '| feature | entry | scenario | PASS | R0 |\n' >> "$LT/FEATURE_MATRIX.md"
+  status=RUNNING
+elif [ "${STUB_STREAK_ONLY:-0}" = "1" ]; then
   # Progress via convergence + evidence only: round and issue count stay static,
   # but converged_streak advances and a runs/ evidence file grows each call.
   new_round=$round; [ "$new_round" -lt 0 ] && new_round=0

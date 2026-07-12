@@ -1,6 +1,6 @@
 {
   "name": "loop-testing",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Autonomous QA self-test loop for a finished project: Claude acts as a real user in a sandbox, exercising every feature to surface bugs, logic/flow/UX/security/hidden issues — fixing the safe low-risk ones with regression tests and atomic commits, and recording the rest with MoA multi-model decision advice — looping self-test → self-fix → self-iterate until two consecutive low-risk rounds converge. Use when the user wants hands-off acceptance testing / 自测 / 自我测试 / 验收 / QA 循环 / self-test loop / 自动测试并修复 of their app (CLI, API, Web, or library). Runs fully autonomous, pausing only for keys/payment/network permission, a suspected security vuln to report, or a total blocker.",
   "author": {
     "name": "sds"

@@ -94,4 +94,14 @@ run_stop "$WS11" false; run_stop "$WS11" false
 read -r lc _ < "$WS11/$CF"
 assert_eq "1" "$lc" "jq path resets counter on each fresh stop (HK-1)"
 
+# M. LOOP_TESTING_GATE_STALE_SECONDS=0 disables the stale-remnant escape: an old
+#    RUNNING remnant must still BLOCK (the auto-disarm must be opt-out-able — the
+#    `0` disable path was previously untested).
+WS12=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12"' EXIT
+arm "$WS12"; write_state "$WS12" RUNNING 2
+touch -d "@$(( $(date +%s) - 200000 ))" "$WS12/docs/looptesting/STATE.md"   # ~2.3 days old
+( cd "$WS12" && printf '{"stop_hook_active": false}' | LOOP_TESTING_GATE_STALE_SECONDS=0 bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 2 "GATE_STALE_SECONDS=0 disables disarm: old RUNNING remnant still blocks"
+assert_exists "$WS12/$ACT" "sentinel NOT disarmed when staleness is disabled"
+
 report "stop-gate.test.sh"

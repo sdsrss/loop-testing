@@ -29,7 +29,8 @@
 #   3  hit --max-sessions before terminal (driver-declared INCOMPLETE).
 #   4  hit --max-minutes before terminal (driver-declared INCOMPLETE).
 #   5  NO_PROGRESS: two consecutive sessions with no change in the composite
-#      progress fingerprint (round | issues | converged_streak | runs count+bytes).
+#      progress fingerprint (round | issues | converged_streak | runs count+bytes |
+#      round-0 bootstrap bytes).
 set -u
 
 PROJECT=""
@@ -92,9 +93,15 @@ runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth sig
   b=$(cat "$d"/*.md 2>/dev/null | wc -c | tr -d ' ')
   echo "$n:$b"
 }
-progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB
+bootstrap_sig() { # bytes of round-0 artifacts (PLAN + FEATURE_MATRIX)
+  # Round 0 fills PLAN.md + FEATURE_MATRIX.md BEFORE any runs/round-N.md exists, so
+  # without this a round 0 that spans sessions on a large target fingerprints as
+  # static (round/issues/streak/runs all 0) and false-trips NO_PROGRESS (audit PL-2).
+  cat "$LT/PLAN.md" "$LT/FEATURE_MATRIX.md" 2>/dev/null | wc -c | tr -d ' '
+}
+progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB|bootstrapB
   local s; s="$(state_field converged_streak)"; [ -n "$s" ] || s=-1
-  printf '%s|%s|%s|%s' "$(round_of)" "$(issue_count)" "$s" "$(runs_sig)"
+  printf '%s|%s|%s|%s|%s' "$(round_of)" "$(issue_count)" "$s" "$(runs_sig)" "$(bootstrap_sig)"
 }
 
 log() { echo "$*" >> "$DLOG"; }
@@ -166,9 +173,10 @@ while true; do
   fi
 
   # No-progress breaker: ANY change in the composite signal (round, issue count,
-  # converged_streak, runs/ evidence bytes+count) counts as progress — catches a
-  # long round spanning sessions and convergence progress the old round+issues
-  # signal misread as stuck (audit A3). Kept identical to unattended-loop.sh.
+  # converged_streak, runs/ evidence bytes+count, round-0 bootstrap bytes) counts as
+  # progress — catches a long round spanning sessions, convergence progress, and a
+  # round 0 filling PLAN/FEATURE_MATRIX before any runs/ file, all of which the old
+  # round+issues signal misread as stuck (audit A3 / PL-2). Identical to unattended-loop.sh.
   if [ "$cur_sig" = "$prev_sig" ]; then
     noprog=$(( noprog + 1 ))
   else
@@ -177,6 +185,6 @@ while true; do
   prev_sig="$cur_sig"
 
   if [ "$noprog" -ge 2 ]; then
-    summary_exit 5 "NO_PROGRESS: two consecutive sessions with no change in round/issues/streak/runs"
+    summary_exit 5 "NO_PROGRESS: two consecutive sessions with no change in round/issues/streak/runs/bootstrap"
   fi
 done

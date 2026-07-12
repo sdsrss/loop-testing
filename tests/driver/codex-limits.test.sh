@@ -78,4 +78,22 @@ STUB_NO_STATE=1 bash "$CODEX_DRIVER" --project "$WS7" --codex-bin "$stub" --no-p
 assert_rc $? 5 "absent STATE.md -> exit 5"
 assert_eq "1" "$(sessions_in_log "$WS7")" "exits after exactly 1 STATE-less session (not 2)"
 
+# J. Round-0 progress: round/issues/streak static and NO runs/ file, but PLAN.md +
+#    FEATURE_MATRIX.md grow each session. Must NOT trip NO_PROGRESS (audit PL-2).
+#    Mirrors loop driver H.
+WS8=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8"' EXIT
+stub=$(write_stub "$WS8")
+write_state "$WS8" RUNNING 0
+STUB_BOOTSTRAP=1 bash "$CODEX_DRIVER" --project "$WS8" --codex-bin "$stub" --no-protect --max-sessions 3 >/dev/null 2>&1
+assert_rc $? 3 "round-0 bootstrap progress (PLAN/FEATURE_MATRIX grow) -> max-sessions, not NO_PROGRESS"
+
+# K. driver.log not writable -> die exit 2 BEFORE any session (parity with the loop
+#    driver's writability guard; R16 gained this for codex but had no dedicated test).
+WS9=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9"' EXIT
+mkdir "$WS9/docs/looptesting/driver.log"   # append to a directory fails -> guard fires
+stub=$(write_stub "$WS9")
+bash "$CODEX_DRIVER" --project "$WS9" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
+assert_rc $? 2 "unwritable driver.log -> die exit 2"
+assert_eq "0" "$(sessions_in_log "$WS9")" "no session launched when driver.log is unwritable"
+
 report "codex-limits.test.sh"
