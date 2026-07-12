@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.2 — 2026-07-12
+
+Audit batch 4: two code-review follow-ups on the batch-3 hygiene work. Both are
+defensive robustness; behavior on the success path is unchanged and the full
+suite is `ALL GREEN`.
+
+- **fix(moa)**: proxy-credential redaction covered only the password. It now also
+  scrubs the proxy username (raw and percent-decoded) and the base64 `user:pass`
+  Basic-auth blob that `proxyAuthHeader()` writes to the wire — the blob is itself
+  the credential, so redacting only its parts could miss it if it ever surfaced in
+  an error excerpt. No active leak site existed; this is belt-and-suspenders.
+- **fix(install-codex)**: a reinstall killed (INT/TERM) between the staged copy and
+  the final atomic swap left a `loop-testing.staging.<pid>` orphan that no later run
+  reaps (each uses a fresh `$$`). A scoped `trap` now reaps the staging copy on
+  INT/TERM/EXIT, guarded to the `.staging.` basename so it can never touch `$DEST`.
+- **test**: black-box moa case now asserts username + base64 blob never appear in
+  output; new install signal-interrupt case proves the staging dir is reaped on
+  SIGTERM mid-copy (verified failing without the trap).
+
 ## 0.2.1 — 2026-07-11
 
 Production-readiness audit follow-up (batch 3 of 3): hygiene and robustness
