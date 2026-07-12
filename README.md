@@ -148,6 +148,7 @@ Two ways, both work from inside your target project:
   - `/loop-testing` — start or resume the loop
   - `/loop-testing status` — report progress from `STATE.md`
   - `/loop-testing report` — print `FINAL_REPORT.md`
+  - `/loop-testing <focus / round cap>` — optionally scope a run, e.g. `focus on the CLI` or `at most 3 rounds` (`最多 3 轮`); the round cap only lowers `max_rounds`, convergence still stops earlier. Omit for a full loop.
 - **Trigger phrase** — say any of these to the agent:
   > `自测` · `验收` · `QA 循环` · `自动测试并修复` · `self-test loop` · `autonomous QA` · `acceptance testing`
 

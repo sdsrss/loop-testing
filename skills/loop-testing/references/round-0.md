@@ -40,9 +40,11 @@
 
 ## 7. 建立沙箱（`scripts/sandbox-setup.sh`）
 
-- 优先 `git worktree`（隔离，主工作区脏也安全）；或独立分支 `qa/loop-testing`（要求工作区干净）。打基线标记 `qa-baseline`。
+> **铁律——绝不切换用户当前工作树的分支**：隔离一律经 `sandbox-setup.sh` 建立；**禁止手动 `git switch / checkout / branch / worktree` 或任何直接移动用户主工作树 HEAD 的命令**。默认且**强制 `git worktree` 模式**（另建同级隔离检出，主工作树原地不动、原分支不变，主工作区脏也安全）。`--mode branch` 会把用户当前工作树切到 `qa/loop-testing`、令其无法在原分支继续工作——**仅当用户显式要求分支模式时才允许**；**绝不因工作区脏就改用 branch**（脏正是必须用 worktree 的场景，不是改用 branch 的理由）。打基线标记 `qa-baseline`。
+
 - 先记录 `git status`、当前分支、现有修改与未跟踪文件——它们可能属于用户：**不覆盖、不清理、不 stash、不提交、不回滚**；无法安全隔离的文件不提交并记录原因。
-- 调用：`bash "$SKILL_DIR"/scripts/sandbox-setup.sh`（默认 worktree 模式；`--mode branch` 切分支）。`$SKILL_DIR` = 本技能安装目录——Claude：`${CLAUDE_PLUGIN_ROOT}/skills/loop-testing`，Codex：`~/.codex/skills/loop-testing`；定位与内联兜底见 SKILL.md「脚本与模板定位」。脚本幂等，会创建/复用 `docs/looptesting/` 并从 `templates/` 落盘状态文件。
+- 调用：`bash "$SKILL_DIR"/scripts/sandbox-setup.sh`（默认 worktree 模式；`--mode branch` 仅在用户显式要求时才加）。`$SKILL_DIR` = 本技能安装目录——Claude：`${CLAUDE_PLUGIN_ROOT}/skills/loop-testing`，Codex：`~/.codex/skills/loop-testing`；定位与内联兜底见 SKILL.md「脚本与模板定位」。脚本幂等，会创建/复用 `docs/looptesting/` 并从 `templates/` 落盘状态文件。
+- **隔离自证闸（改任何代码前必过）**：`sandbox-setup.sh` 返回后，**必须**核验 `docs/looptesting/.sandbox/ownership.env` 存在；worktree 模式还须 `git worktree list` 含新建的同级检出，且**主工作树仍在用户原分支**（建沙箱前后主仓 `git branch --show-current` 不变）。任一不满足＝隔离未成立：立即停止一切代码改动，按 §6/§8 的基线 `BLOCKED` 处置并记录原因，**绝不在用户主工作树上直接编辑或提交**。
 - **武装续跑哨兵（勿省略）**：确认 `docs/looptesting/.active` 存在——脚本会创建；**内联建沙箱时手动创建（`: > docs/looptesting/.active`）**。Claude Code 的 stop-gate 仅在该哨兵存在时生效，缺失则「未收敛禁止停止」的机制层护栏静默失效；Codex 无 hook，该文件无害且退出序照常清理它。
 - 验证测试环境确实与生产隔离；无法确认则停止一切可能产生外部副作用的动作，仅继续只读检查与本地测试。
 

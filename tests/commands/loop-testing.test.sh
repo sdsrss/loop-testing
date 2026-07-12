@@ -72,6 +72,18 @@ for f in "$CMD" "$PROMPT"; do
   block_has "$f" '^- \*\*.*(empty|start)' 'skill' "$n: skill routing sits INSIDE the start/resume block"
 done
 
+# ── optional scope hints: focus + round cap (additive; must not change default) ──
+# Both files must document the two optional hints identically so the interactive
+# path can lightly scope a run (focus area / round cap) without a driver.
+for f in "$CMD" "$PROMPT"; do
+  n="${f##*/}"
+  has "$f" 'focus'         "$n documents the optional focus/scope hint"
+  has "$f" '最多 3 轮'      "$n gives the round-cap usage example"
+  has "$f" 'max_rounds: N' "$n round-cap hint writes max_rounds into STATE.md"
+  # the hints are ADDITIVE — the empty-arg default must still be a full loop
+  block_has "$f" '^- \*\*.*(empty|start)' 'start from round 0' "$n: default (empty arg) still starts a full loop from round 0"
+done
+
 finish() {
   if [ "$_fails" -eq 0 ]; then printf '%s: PASS\n' "$_name"; exit 0
   else printf '%s: FAIL\n' "$_name"; exit 1; fi

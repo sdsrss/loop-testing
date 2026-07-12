@@ -28,5 +28,15 @@ Dispatch on the argument:
   does not exist but a run is in progress, say so and show the `/loop-testing status`
   summary instead.
 
-- **any other argument** — treat it as extra guidance for a start / resume run (for
-  example, a specific area or entry point to focus on).
+- **any other argument — optional scope hint(s) for a start / resume run.** Refines a
+  run; it never changes the default full-loop behavior when omitted. Two kinds, combinable:
+  - **focus** (free text, e.g. `只测 X` / `focus on the CLI`): still do the round-0
+    inventory, but prioritize scenario design and the round loop on the named area, and
+    record the narrowed scope in `PLAN.md` so coverage stays honest — do NOT report
+    un-scoped areas as covered.
+  - **round cap** (e.g. `最多 3 轮` / `at most 3 rounds`): on a START (no `STATE.md` yet)
+    write `max_rounds: N` into `STATE.md` instead of the default 12; on a RESUME keep the
+    recorded value unless the user restates it, and never set it below the current
+    `round:`. This only lowers the runaway cap — convergence still stops earlier
+    (`converged_streak` reaches 2 → `CONVERGED`); reaching the cap unconverged writes
+    `status: INCOMPLETE` (existing exit semantics, see `references/exit-and-report.md`).

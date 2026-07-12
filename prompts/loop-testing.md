@@ -16,3 +16,12 @@ only; `report` prints the final report only.
 
 - **`report`** — do NOT start a run: print and summarize
   `docs/looptesting/FINAL_REPORT.md` if it exists; otherwise show the status summary.
+
+- **any other argument — optional scope hint(s):** refines a start / resume run, never
+  changes the default behavior. **focus** (free text, e.g. `只测 X` / `focus on the CLI`):
+  do the round-0 inventory but prioritize the named area and record the narrowed scope in
+  `PLAN.md` (do NOT report un-scoped areas as covered). **round cap** (e.g. `最多 3 轮` /
+  `at most 3 rounds`): on a START write `max_rounds: N` into `STATE.md` instead of the
+  default 12 (on RESUME keep the recorded value unless restated, never below the current
+  `round:`); convergence still stops earlier, reaching the cap unconverged writes
+  `status: INCOMPLETE`.

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.1 — 2026-07-12
+
+Patch: sandbox-isolation hardening (product bug found in a real smoke run) plus an
+optional interactive scope hint for `/loop-testing`. No user-visible change to the
+default (no-argument) loop behavior. Full suite `ALL GREEN` (command 34, driver
+prompt-isolation 6).
+
+- **fix(sandbox-isolation)**: a real headless smoke run surfaced that under
+  `claude -p` / `codex exec` with `bypassPermissions` the agent could skip
+  `sandbox-setup.sh` and switch the user's MAIN worktree to the qa branch in place,
+  defeating worktree isolation and blocking the user from working. `round-0.md` §7
+  now makes worktree the **enforced default**, forbids any manual branch switch of
+  the user's tree, permits `--mode branch` only on explicit user request, and adds a
+  pre-edit **isolation-proof gate** (verify `.sandbox/ownership.env` + a registered
+  sibling worktree + the main tree still on the user's original branch). Both drivers'
+  `RESUME_PROMPT` carry the same worktree-mandatory clause; new
+  `tests/driver/prompt-isolation.test.sh` locks the clause in both.
+- **feat(command)**: `/loop-testing` accepts optional scope hints — a **focus** area
+  (e.g. `focus on the CLI`, recorded in `PLAN.md`) and/or a **round cap**
+  (e.g. `最多 3 轮` → writes `max_rounds: N`, only lowers the runaway cap; convergence
+  still stops earlier, hitting the cap unconverged writes `INCOMPLETE`). Empty-argument
+  default is unchanged. Mirrored in the Codex prompt; README (EN + zh) + tests updated.
+
 ## 0.6.0 — 2026-07-12
 
 Minor: audit batch 3 (roadmap R49–R56) — coverage hardening, sandbox/driver
