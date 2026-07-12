@@ -37,10 +37,12 @@ MoA（Mixture of Agents，委员会制）用于**需要决策而非当场修复*
 ## 3. 调用命令
 
 ```bash
-node skills/loop-testing/scripts/moa.mjs \
+node "$SKILL_DIR"/scripts/moa.mjs \
   --input docs/looptesting/decisions/DEC-007.context.md \
   --output docs/looptesting/decisions/DEC-007.md
 ```
+
+> `$SKILL_DIR` = 本技能安装目录（Claude：`${CLAUDE_PLUGIN_ROOT}/skills/loop-testing`；Codex：`~/.codex/skills/loop-testing`；定位详见 SKILL.md「脚本与模板定位」）。**先跑 `--dry-run` 确认配置与 key 就绪，再发起付费调用；引擎定位不到 ≠ MoA 不可用**——找不到脚本时先按上述路径解析，仍找不到才走 §5 的 `degraded: single-model` 降级。
 
 可选参数：
 

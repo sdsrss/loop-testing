@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.5.0 — 2026-07-12
+
+Minor: audit batch 7 second wave (roadmap R42–R48) — driver watchdog/shutdown
+hardening, prompt-contract cleanups, CI matrix. Full suite `ALL GREEN`
+(driver-limits 27, codex-limits 30).
+
+**Migration note — new default behavior:** the unattended drivers now REFUSE to
+start (exit 2) when neither `timeout` nor `gtimeout` is on PATH, instead of
+silently running every session unbounded (the wall-clock watchdog is the only
+bound on a hung session, and it simply didn't exist on such hosts). Install GNU
+coreutils, or pass the new `--no-watchdog` flag to explicitly accept unbounded
+sessions (a WARNING is recorded in driver.log). Hosts with either binary — the
+common case — see no change; the refusal message itself states both remedies.
+
+- **fix(drivers)**: no-watchdog refusal + `--no-watchdog` opt-out, identical across
+  both drivers. (+4 tests via a symlink-farm PATH with the watchdog binaries
+  removed: default → exit 2 with zero sessions; `--no-watchdog` → runs to
+  convergence with the WARNING logged.) DR-7.
+- **docs(drivers/readme)**: shutdown semantics documented (EN + zh + both driver
+  headers) — Ctrl-C stops driver and child immediately; a bare `kill -TERM
+  <driver-pid>` is honored only between sessions (worst-case latency = remaining
+  session budget); use `kill -TERM -- -<driver-pgid>` for prompt programmatic
+  shutdown. Chosen over killing the child from the trap: backgrounding the session
+  changes non-interactive signal inheritance (background jobs ignore SIGINT) — a
+  worse failure class than a bounded latency. DR-6.
+- **docs(references)**: script invocations now use a resolvable
+  `"$SKILL_DIR"/scripts/…` placeholder with locate notes (Claude:
+  `${CLAUDE_PLUGIN_ROOT}/skills/loop-testing`; Codex: `~/.codex/skills/loop-testing`)
+  — the 0.2.5 note fixed SKILL.md only, while progressive disclosure means the
+  reference file is what's in context at invocation time. moa-decision.md adds
+  "engine not located ≠ MoA unavailable", so a mislocated script no longer silently
+  degrades committee decisions to single-model. PL-10.
+- **docs(skill)**: startup seeds the 5 state files; `runs/` + `decisions/` are
+  created on demand; `FINAL_REPORT.md` is instantiated at exit ONLY (a mid-run
+  "final report" stub misleads resume and `/loop-testing report`). PL-8. The
+  "three pause reasons" are now mechanism-accurate: total blockage → terminal
+  BLOCKED; a suspected security vuln is filed as P0, surfaced prominently, and
+  testing continues; there is no wait-for-user state on Claude Code. PL-9.
+- **docs(references)**: resume now reconciles the qa-branch `git log` against the
+  ledger (fix commit present but unrecorded → advance the entry to
+  FIXED_UNVERIFIED and re-verify, never re-fix); convergence takes precedence over
+  the round cap when both fire on the same round. PL-11 / PL-12.
+- **ci**: Node 20 + 22 matrix (the claimed Node ≥ 20 floor now actually runs) and a
+  separate `plugin-validate` job running the official `claude plugin validate`.
+  macOS remains deferred with the reason recorded in ci.yml: the TEST fixtures are
+  GNU-only (`touch -d @epoch`, bare `timeout`) even though the product scripts are
+  BSD-portable — porting the fixtures is the tracked follow-up. TS-3 (partial).
+- NOTE: the prompt-text changes (PL-8/9/10/11/12, plus 0.4.2's PL-7) are
+  LLM-visible metadata — schema-validated and suite-green, but live-loop
+  behavioral verification is outstanding (one real run covers them all).
+
 ## 0.4.2 — 2026-07-12
 
 Patch: third production-readiness audit follow-up (audit batch 7). Closes the four

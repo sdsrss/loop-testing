@@ -273,6 +273,15 @@ accidental-double-launch guard, not a hard mutex. If a run was SIGKILL'd and its
 unreadable, later runs refuse (fail-closed) with a message — after confirming no driver is
 live, `rm -rf docs/looptesting/.driver.lock`.
 
+**Stopping an unattended run early:** Ctrl-C (SIGINT to the process group) stops the driver
+and its child session immediately. A bare `kill -TERM <driver-pid>` is honored only between
+sessions — bash defers the trap while the child session runs, so the worst-case latency is
+the remaining session budget (`--session-minutes`, watchdog-bounded). For prompt
+programmatic shutdown, signal the process group: `kill -TERM -- -<driver-pgid>`. Also note:
+without `timeout`/`gtimeout` on PATH the drivers now refuse to start (the wall-clock
+watchdog would be silently absent); pass `--no-watchdog` to explicitly accept unbounded
+sessions.
+
 ---
 
 ## 🔒 Red lines (in sync with `SKILL.md`; violating one stops the run)

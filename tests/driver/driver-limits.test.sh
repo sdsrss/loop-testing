@@ -125,4 +125,25 @@ bash "$DRIVER" --project "$WS10" --claude-bin "$stub" --max-sessions 1 >/dev/nul
 assert_rc $? 2 "lock with no readable holder PID -> refused (fail-closed), not stolen"
 assert_eq "0" "$(sessions_in_log "$WS10")" "no session launched on an ambiguous lock"
 
+# M. DR-7: neither `timeout` nor `gtimeout` on PATH -> the driver must REFUSE to
+#    start (exit 2, zero sessions) instead of silently running every session
+#    unbounded (--max-minutes is only checked between sessions). PATH is a
+#    symlink farm of the real bins MINUS the watchdog binaries.
+WS11=$(mk_proj); BINF=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-nowd.XXXXXX")
+trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF"' EXIT
+for p in /bin/* /usr/bin/*; do [ -x "$p" ] && ln -sf "$p" "$BINF/${p##*/}" 2>/dev/null; done
+rm -f "$BINF/timeout" "$BINF/gtimeout"
+stub=$(write_stub "$WS11"); write_state "$WS11" RUNNING 0
+( PATH="$BINF" bash "$DRIVER" --project "$WS11" --claude-bin "$stub" --max-sessions 1 ) >/dev/null 2>&1
+assert_rc $? 2 "no watchdog binary -> refuse to start (exit 2) (DR-7)"
+assert_eq "0" "$(sessions_in_log "$WS11")" "no session launched without a watchdog"
+
+# N. DR-7: --no-watchdog explicitly accepts unbounded sessions -> the run proceeds
+#    and a loud WARNING lands in driver.log.
+WS12=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF" "$WS12"' EXIT
+stub=$(write_stub "$WS12"); write_state "$WS12" RUNNING 0
+( PATH="$BINF" STUB_CONVERGE_AT=1 bash "$DRIVER" --project "$WS12" --claude-bin "$stub" --no-watchdog --max-sessions 3 ) >/dev/null 2>&1
+assert_rc $? 0 "--no-watchdog: run proceeds to convergence without a watchdog binary"
+assert_file_contains "$WS12/docs/looptesting/driver.log" "WARNING: no timeout/gtimeout" "driver.log warns that the watchdog is disabled"
+
 report "driver-limits.test.sh"

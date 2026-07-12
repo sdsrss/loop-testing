@@ -28,7 +28,7 @@
 
 ## 3. 保险停止（必须如实，禁止谎报 PASS）
 
-- `STATE.md` 的 `round:` 字段达到 `max_rounds`（默认 12）仍未收敛 → 写机器 `status: INCOMPLETE`（`round:` 从 0 起数，第 N 轮循环完成后为 N；达到上限即写，勿再起新一轮）；
+- `STATE.md` 的 `round:` 字段达到 `max_rounds`（默认 12）仍未收敛 → 写机器 `status: INCOMPLETE`（`round:` 从 0 起数，第 N 轮循环完成后为 N；达到上限即写，勿再起新一轮）。**例外：若此刻 `converged_streak` 已达 2，按 §2 写 `CONVERGED`——收敛优先于轮数上限，不得把真收敛写成 INCOMPLETE**；
 - 全部剩余有价值工作都被同一权限/环境边界阻塞 → **`BLOCKED`**。
 
 两者都必须先持久化状态，明确下一步与恢复入口。**以下都不是成功停止理由**：已做很多工作、所有已有测试通过、暂时想不到场景、上下文快满、某功能被阻塞、达到最大轮数、本轮没发现问题但覆盖仍不完整。
@@ -39,7 +39,7 @@
 
 1. 实例化并写完 `FINAL_REPORT.md`（结构见 §5）。
 2. **把 `STATE.md` 机器 `status:` 字段写为终态**（`CONVERGED` / `INCOMPLETE` / `BLOCKED`，映射见 §2）。stop-gate 一旦读到终态即自行解除哨兵 `.active` 并放行——此刻起会话可安全停止；即使后续清理被硬中断，也不会留下「哨兵已除但 `status:` 仍 RUNNING」的失护窗口（那会让 Claude Code 无护栏停在未收敛态、让无人值守驱动续跑到 `--max-sessions` 误报 INCOMPLETE）。
-3. 执行 `bash skills/loop-testing/scripts/sandbox-clean.sh`：停掉**自己启动的**进程（`docs/looptesting/.pids` 记录）、移除**自己创建且能确认归属的** worktree/临时数据；**保留 `docs/looptesting/` 全部证据与状态文档，保留 qa 分支（含修复 commit）与基线标记，绝不碰用户数据**。无归属标记时**失败即拒清**（fail-closed）。clean 会再删一次 `.active`——终态时它已被 stop-gate 移除，重复删除幂等无害。
+3. 执行 `bash "$SKILL_DIR"/scripts/sandbox-clean.sh`（`$SKILL_DIR` = 本技能安装目录，定位与内联兜底见 SKILL.md「脚本与模板定位」）：停掉**自己启动的**进程（`docs/looptesting/.pids` 记录）、移除**自己创建且能确认归属的** worktree/临时数据；**保留 `docs/looptesting/` 全部证据与状态文档，保留 qa 分支（含修复 commit）与基线标记，绝不碰用户数据**。无归属标记时**失败即拒清**（fail-closed）。clean 会再删一次 `.active`——终态时它已被 stop-gate 移除，重复删除幂等无害。
 
 ## 5. FINAL_REPORT.md 结构（模板见 templates/）
 

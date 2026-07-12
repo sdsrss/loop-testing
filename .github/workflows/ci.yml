@@ -8,7 +8,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  # NOTE (audit TS-3): macOS is deliberately NOT in the matrix yet. The product
+  # scripts are BSD-portable (stat -f %m fallbacks, gtimeout detection), but the
+  # TEST fixtures are not (`touch -d @<epoch>` in stop-gate tests, bare `timeout`
+  # in driver tests) — a macos-latest job would be red for test-infra reasons,
+  # not product ones. Tracked as roadmap R45 follow-up: port the fixtures, then
+  # add `os: [ubuntu-latest, macos-latest]`.
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']   # CLAUDE.md claims Node >= 20; run the floor, not just 22
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,7 +26,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node }}
 
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
@@ -48,3 +58,19 @@ jobs:
 
       - name: Run test suite
         run: bash tests/run-all.sh
+
+  # Schema-level manifest validation via the official CLI (JSON-valid != schema-
+  # valid). Separate job so a registry/network hiccup in the CLI install is
+  # immediately distinguishable from a product test failure.
+  plugin-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: claude plugin validate
+        run: |
+          npm install -g @anthropic-ai/claude-code@latest
+          claude plugin validate .

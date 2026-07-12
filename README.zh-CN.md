@@ -235,6 +235,12 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 的防误重启守卫,非硬互斥**。若某次被 `SIGKILL` 且锁内 PID 不可读,后续启动会**保守拒绝**并提示——
 确认无驱动在跑后 `rm -rf docs/looptesting/.driver.lock` 即可。
 
+**提前停掉无人值守长跑:** Ctrl-C(SIGINT 打到整个进程组)会立即停掉驱动与子会话。裸的
+`kill -TERM <driver-pid>` 只在**会话间隙**生效——bash 在前台子进程运行期间推迟 trap,最坏延迟
+= 剩余会话预算(`--session-minutes`,受看门狗封顶)。程序化即时停机请对进程组发信号:
+`kill -TERM -- -<driver-pgid>`。另外:PATH 上没有 `timeout`/`gtimeout` 时驱动现在**拒绝启动**
+(否则 wall-clock 看门狗会静默缺失);确要接受无界会话请显式传 `--no-watchdog`。
+
 ---
 
 ## 🔒 红线(与 `SKILL.md` 一致,违反即停)

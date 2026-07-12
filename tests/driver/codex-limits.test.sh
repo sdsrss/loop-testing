@@ -146,4 +146,23 @@ else
   PASS=$((PASS+1)); echo "  ok: refused concurrent driver leaves skill-dir protection intact (CX-1)"
 fi
 
+# P. DR-7: neither `timeout` nor `gtimeout` on PATH -> refuse to start (exit 2,
+#    zero sessions) instead of running sessions unbounded. Mirrors loop driver M.
+WS14=$(mk_proj); BINF=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-nowd.XXXXXX")
+trap 'chmod -R u+w "$FAKE13" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF"' EXIT
+for p in /bin/* /usr/bin/*; do [ -x "$p" ] && ln -sf "$p" "$BINF/${p##*/}" 2>/dev/null; done
+rm -f "$BINF/timeout" "$BINF/gtimeout"
+stub=$(write_stub "$WS14"); write_state "$WS14" RUNNING 0
+( PATH="$BINF" bash "$CODEX_DRIVER" --project "$WS14" --codex-bin "$stub" --no-protect --max-sessions 1 ) >/dev/null 2>&1
+assert_rc $? 2 "no watchdog binary -> refuse to start (exit 2) (DR-7)"
+assert_eq "0" "$(sessions_in_log "$WS14")" "no session launched without a watchdog"
+
+# Q. DR-7: --no-watchdog accepts unbounded sessions -> run proceeds + WARNING in
+#    driver.log. Mirrors loop driver N.
+WS15=$(mk_proj); trap 'chmod -R u+w "$FAKE13" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15"' EXIT
+stub=$(write_stub "$WS15"); write_state "$WS15" RUNNING 0
+( PATH="$BINF" STUB_CONVERGE_AT=1 bash "$CODEX_DRIVER" --project "$WS15" --codex-bin "$stub" --no-protect --no-watchdog --max-sessions 3 ) >/dev/null 2>&1
+assert_rc $? 0 "--no-watchdog: run proceeds to convergence without a watchdog binary"
+assert_file_contains "$WS15/docs/looptesting/driver.log" "WARNING: no timeout/gtimeout" "driver.log warns that the watchdog is disabled"
+
 report "codex-limits.test.sh"

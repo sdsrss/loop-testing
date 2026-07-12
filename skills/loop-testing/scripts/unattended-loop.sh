@@ -15,7 +15,14 @@
 # Usage:
 #   unattended-loop.sh --project <dir> [--max-sessions 15] [--max-minutes 240]
 #                      [--plugin-dir <path>] [--max-turns 300] [--claude-bin claude]
-#                      [--session-minutes 50]
+#                      [--session-minutes 50] [--no-watchdog]
+#
+# Shutdown: SIGINT (Ctrl-C) hits the whole process group and stops the child
+# session immediately. A bare `kill -TERM <driver-pid>` is honored only BETWEEN
+# sessions — bash defers the trap while the foreground child runs, so the
+# worst-case latency is the remaining session budget (--session-minutes,
+# watchdog-bounded). For prompt programmatic shutdown, signal the process
+# group: `kill -TERM -- -<driver-pgid>`. (audit DR-6)
 #
 # Exit codes:
 #   0  STATE reached a terminal status (CONVERGED / INCOMPLETE / BLOCKED) — the
@@ -35,6 +42,7 @@ SESSION_MINUTES=50
 MAX_TURNS=300
 CLAUDE_BIN="claude"
 PLUGIN_DIR=""
+NO_WATCHDOG=0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -50,7 +58,8 @@ while [ $# -gt 0 ]; do
     --max-turns)       MAX_TURNS="${2:-}"; shift; shift;;
     --plugin-dir)      PLUGIN_DIR="${2:-}"; shift; shift;;
     --claude-bin)      CLAUDE_BIN="${2:-}"; shift; shift;;
-    -h|--help)         sed -n '2,30p' "$0"; exit 0;;
+    --no-watchdog)     NO_WATCHDOG=1; shift 1;;
+    -h|--help)         sed -n '2,38p' "$0"; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done
@@ -152,6 +161,18 @@ summary_exit() { # code, verdict
 }
 
 log_line "driver start: project=$PROJECT max_sessions=$MAX_SESSIONS max_minutes=$MAX_MINUTES max_turns=$MAX_TURNS plugin_dir=$PLUGIN_DIR bin=$CLAUDE_BIN"
+
+# DR-7: without a watchdog binary a single hung session would hang the driver
+# forever (--max-minutes is only checked BETWEEN sessions). Refuse to start
+# unless the caller explicitly accepts unbounded sessions. Kept identical to
+# unattended-codex.sh.
+if [ -z "$TIMEOUT_BIN" ]; then
+  if [ "$NO_WATCHDOG" = "1" ]; then
+    log_line "WARNING: no timeout/gtimeout on PATH and --no-watchdog given — sessions run unbounded (wall-clock watchdog disabled)"
+  else
+    die "no timeout/gtimeout on PATH — the wall-clock watchdog cannot run (a hung session would hang the driver); install coreutils or pass --no-watchdog to accept unbounded sessions"
+  fi
+fi
 
 while true; do
   # 1. Terminal? (STATE must exist AND status be a terminal value.)

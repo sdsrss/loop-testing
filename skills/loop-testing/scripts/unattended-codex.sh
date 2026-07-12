@@ -22,6 +22,14 @@
 #   unattended-codex.sh --project <dir> [--max-sessions 15] [--max-minutes 90]
 #                       [--session-minutes 40] [--codex-bin codex]
 #                       [--skill-dir ~/.codex/skills/loop-testing] [--no-protect]
+#                       [--no-watchdog]
+#
+# Shutdown: SIGINT (Ctrl-C) hits the whole process group and stops the child
+# session immediately. A bare `kill -TERM <driver-pid>` is honored only BETWEEN
+# sessions — bash defers the trap while the foreground child runs, so the
+# worst-case latency is the remaining session budget (--session-minutes,
+# watchdog-bounded). For prompt programmatic shutdown, signal the process
+# group: `kill -TERM -- -<driver-pgid>`. (audit DR-6)
 #
 # Exit codes (mirror unattended-loop.sh):
 #   0  STATE reached a terminal status (CONVERGED / INCOMPLETE / BLOCKED).
@@ -40,6 +48,7 @@ SESSION_MINUTES=40
 CODEX_BIN="codex"
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/loop-testing"
 PROTECT=1
+NO_WATCHDOG=0
 
 die() { echo "unattended-codex: $*" >&2; exit 2; }
 is_uint() { case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
@@ -53,7 +62,8 @@ while [ $# -gt 0 ]; do
     --codex-bin)       CODEX_BIN="${2:-}"; shift; shift;;
     --skill-dir)       SKILL_DIR="${2:-}"; shift; shift;;
     --no-protect)      PROTECT=0; shift 1;;
-    -h|--help)         sed -n '2,31p' "$0"; exit 0;;
+    --no-watchdog)     NO_WATCHDOG=1; shift 1;;
+    -h|--help)         sed -n '2,39p' "$0"; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done
@@ -165,6 +175,18 @@ summary_exit() {
 TIMEOUT_BIN=""
 if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
 elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
+
+# DR-7: without a watchdog binary a single hung session would hang the driver
+# forever (--max-minutes is only checked BETWEEN sessions). Refuse to start
+# unless the caller explicitly accepts unbounded sessions. Kept identical to
+# unattended-loop.sh.
+if [ -z "$TIMEOUT_BIN" ]; then
+  if [ "$NO_WATCHDOG" = "1" ]; then
+    log "WARNING: no timeout/gtimeout on PATH and --no-watchdog given — sessions run unbounded (wall-clock watchdog disabled)"
+  else
+    die "no timeout/gtimeout on PATH — the wall-clock watchdog cannot run (a hung session would hang the driver); install coreutils or pass --no-watchdog to accept unbounded sessions"
+  fi
+fi
 
 while true; do
   st="$(state_field status)"

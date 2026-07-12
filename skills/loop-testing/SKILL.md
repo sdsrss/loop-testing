@@ -16,16 +16,16 @@ description: Autonomous QA self-test / self-fix / self-iterate loop. Use after a
 
 ## 工作纪律：全程自主推进
 
-不要停下来问用户。**仅以下三类可暂停**：
-1. 需要密钥 / 付费 / 外网权限；
-2. 疑似安全漏洞需立即上报；
-3. 阻塞性问题导致测试完全无法继续。
+不要停下来问用户。Claude Code 平台没有「中途等用户」状态——stop-gate 只认终态（`RUNNING` 之外的机器 `status:`）；下面三类特殊情况按机制语义处理：
+1. **需要密钥 / 付费 / 外网权限**：仅当它阻塞**全部**剩余有价值工作时，按 `references/exit-and-report.md` §3 写终态 `status: BLOCKED` 停止；只阻塞局部 → 相关条目记 `NEEDS_CONFIRMATION` / `BLOCKED`，继续测其余部分。
+2. **疑似安全漏洞**：P0 立案 + 在 `STATE.md`「阻塞项」与轮末进度中**显著上报**，只做本地非破坏性验证（`references/issue-rules.md` §3），然后**继续其他安全的测试**——除非同时落入第 1/3 条，安全漏洞本身不是停止理由。
+3. **阻塞性问题导致测试完全无法继续**：写终态 `BLOCKED` 停止。
 
 其余一切疑问 → 记入待确认清单（`ISSUES.md` 转 `NEEDS_CONFIRMATION`）后继续跑。
 
 ## 工作产物：docs/looptesting/
 
-启动即建（或复用本技能的 `sandbox-setup.sh`，定位见下方「脚本与模板定位」）。八个固定产物：
+启动先种 **5 个状态文件**（STATE / PLAN / FEATURE_MATRIX / ISSUES / SUGGESTIONS——或复用本技能的 `sandbox-setup.sh`，定位见下方「脚本与模板定位」）；`runs/` 与 `decisions/` 随用随建；**`FINAL_REPORT.md` 只在退出时实例化，启动不预建**（半路存在"最终报告"会误导续跑与 `report` 查询，见 `references/exit-and-report.md` §5）。八个固定产物一览：
 
 | 文件 | 作用 |
 |------|------|
