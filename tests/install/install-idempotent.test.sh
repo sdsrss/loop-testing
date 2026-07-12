@@ -38,4 +38,34 @@ if [ -z "$(ls -d "$sb2"/loop-testing.staging.* 2>/dev/null)" ]; then
   pass "atomicity: no .staging residue left behind"
 else fail "atomicity: staging dir residue remains"; fi
 
+# --- signal safety: an interrupt mid-copy reaps the staging dir, DEST intact (#4) ---
+sb3="$(make_sandbox)"; shim="$(make_sandbox)"
+trap 'chmod u+w "$sb2" 2>/dev/null; rm -rf "$sandbox" "$sb2" "$sb3" "$shim"' EXIT
+d3="$sb3/loop-testing"
+bash "$INSTALLER" --target "$sb3" >/dev/null 2>&1
+assert_eq "$?" "0" "signal: baseline install ok"
+
+# Shim `cp` so the staged copy completes and THEN lingers, opening a window to
+# signal the installer after the staging dir exists but before the final swap.
+# Only `cp` is shimmed; every other coreutil resolves from the real PATH.
+real_cp="$(command -v cp)"
+cat > "$shim/cp" <<EOF
+#!/usr/bin/env bash
+"$real_cp" "\$@"
+sleep 2
+EOF
+chmod +x "$shim/cp"
+
+PATH="$shim:$PATH" bash "$INSTALLER" --target "$sb3" >/dev/null 2>&1 &
+inst_pid=$!
+sleep 0.5
+kill -TERM "$inst_pid" 2>/dev/null   # single PID, not the group: the sleeping cp lives on
+wait "$inst_pid" 2>/dev/null
+
+assert_path "$d3/SKILL.md" "signal: existing install left intact after an interrupted reinstall"
+assert_no_path "$d3.bak"   "signal: interrupt before swap did not create a .bak"
+if [ -z "$(ls -d "$sb3"/loop-testing.staging.* 2>/dev/null)" ]; then
+  pass "signal: no .staging residue after interrupt"
+else fail "signal: staging dir residue remains after interrupt"; fi
+
 finish

@@ -41,6 +41,7 @@ readonly SRC="$REPO_ROOT/skills/$SKILL_NAME"
 MODE="install"
 TARGET=""
 DRY_RUN=0
+STAGING=""   # path of the in-flight staged copy; cleaned by cleanup_staging on interrupt
 
 usage() {
   sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -92,6 +93,19 @@ safe_remove() {
   if [ "$DRY_RUN" -eq 1 ]; then action "rm -rf $dir"; else rm -rf "$dir"; fi
 }
 
+# Remove a stranded staging copy if the install is interrupted (INT/TERM) or
+# dies between the copy and the final swap — otherwise a killed run leaves a
+# `<name>.staging.<pid>` orphan that no later run reaps (each uses a fresh $$).
+# Guarded to the exact `.staging.` basename so it can never touch $DEST.
+cleanup_staging() {
+  local s="$STAGING"
+  STAGING=""   # idempotent: a second firing (INT handler -> EXIT) is a no-op
+  [ -n "$s" ] || return 0
+  case "$s" in
+    */"$SKILL_NAME".staging.*) rm -rf "$s" ;;
+  esac
+}
+
 do_install() {
   [ -d "$SRC" ] || { echo "error: source skill not found: $SRC" >&2; exit 1; }
   [ -f "$SRC/SKILL.md" ] || { echo "error: source has no SKILL.md: $SRC/SKILL.md" >&2; exit 1; }
@@ -115,6 +129,11 @@ do_install() {
     # Stage the full copy first, so a mid-copy failure NEVER leaves a partial
     # (unmarked) $DEST that a later reinstall would refuse as "foreign" (audit C8).
     local staging="$DEST.staging.$$"
+    STAGING="$staging"
+    # Reap the staging copy if we're interrupted or die before the final swap.
+    trap 'cleanup_staging' EXIT
+    trap 'cleanup_staging; exit 130' INT
+    trap 'cleanup_staging; exit 143' TERM
     rm -rf "$staging"
     if ! cp -R "$SRC" "$staging"; then
       rm -rf "$staging"
@@ -128,6 +147,8 @@ do_install() {
       mv "$DEST" "$DEST.bak"
     fi
     mv "$staging" "$DEST"
+    STAGING=""            # swapped in; nothing to reap
+    trap - EXIT INT TERM
   fi
 
   log ""
