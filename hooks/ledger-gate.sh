@@ -93,13 +93,23 @@ esac
 
 [ "$TARGETS_LEDGER" -eq 1 ] || exit 0
 
-# Does the introduced text set a genuine VERIFIED status token? Word-boundary
-# match so *_UNVERIFIED (the legitimate FIXED_UNVERIFIED pre-replay status) does
-# NOT count — matching that substring false-DENIED normal writes.
-printf '%s\n' "$TEXT" | grep -awiqE 'VERIFIED' || exit 0
-
-# IDs on the introduced VERIFIED lines — the common full-line ledger write.
-IDS=$(printf '%s\n' "$TEXT" | grep -awiE 'VERIFIED' | grep -aoE 'ISSUE-[0-9]+' | sort -u)
+# Does the introduced text set a genuine VERIFIED status token? Match case-
+# sensitively — the status token is always uppercase, and `-i` false-DENIED prose
+# like "not yet verified" / "could not be VERIFIED" in an OPEN issue's title (HK-2).
+# For a file write the ledger row is `### ISSUE-NNN | Pn | STATUS | title`, so the
+# status token is anchored to the STATUS column (after a `|`, or the whole minimal
+# `FIXED_UNVERIFIED`->`VERIFIED` edit) — a bare "VERIFIED" in the free-text title
+# column must NOT trip it, and *_UNVERIFIED (preceded by `_`, not `|`) is excluded.
+# For a Bash command VERIFIED can appear in sed/perl substitution syntax
+# (s/OPEN/VERIFIED/) rather than a column, so keep a word-boundary match there.
+if [ "$TOOL" = "Bash" ]; then
+  printf '%s\n' "$TEXT" | grep -awqE 'VERIFIED' || exit 0
+  IDS=$(printf '%s\n' "$TEXT" | grep -awE 'VERIFIED' | grep -aoE 'ISSUE-[0-9]+' | sort -u)
+else
+  STATUS_RE='(^|\|)[[:space:]]*VERIFIED[[:space:]]*($|\|)'
+  printf '%s\n' "$TEXT" | grep -aqE "$STATUS_RE" || exit 0
+  IDS=$(printf '%s\n' "$TEXT" | grep -aE "$STATUS_RE" | grep -aoE 'ISSUE-[0-9]+' | sort -u)
+fi
 
 # A minimal Edit ("FIXED_UNVERIFIED" -> "VERIFIED") introduces VERIFIED with no
 # ID on the line, which used to slip through free. Recover the affected ID from

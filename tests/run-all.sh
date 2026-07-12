@@ -4,7 +4,6 @@
 #   2. shellcheck (errors only) when available
 #   3. every tests/**/*.test.sh shell test
 #   4. node --test tests/moa/*.test.mjs when that dir exists (glob form: bare-dir positional is not discovered on node v22)
-# Other milestones add tests/moa/ and tests/hooks/ without touching this file.
 set -u
 cd "$(dirname "$0")/.."
 

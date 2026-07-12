@@ -739,14 +739,19 @@ async function main() {
     return 2;
   }
 
-  const doc = buildDecisionMarkdown({
+  // Redact the assembled doc before it leaves the process. The doc embeds raw model
+  // output verbatim; a hostile/compromised or logging endpoint that reflects the
+  // request can echo the Authorization header into its completion, which would
+  // otherwise land the key in the archived DEC.md / stdout. Every error path is
+  // already redacted; the success doc was the one uncovered channel (audit MO-1).
+  const doc = redact(buildDecisionMarkdown({
     opinions,
     failedRefs,
     aggModel: cfg.aggregator.model,
     aggContent,
     degraded,
     defaultProviderName: defaultProvider(env),
-  });
+  }));
 
   if (args.output) {
     try {

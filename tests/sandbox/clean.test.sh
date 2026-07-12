@@ -21,8 +21,14 @@ sleep 30 & owned_pid=$!
 sleep 30 & foreign_pid=$!
 # a recorded process that IGNORES SIGTERM -> clean must escalate to SIGKILL (C7)
 ( trap '' TERM; while true; do sleep 0.5; done ) & stubborn_pid=$!
+# a recorded "server" that forks a worker child (dev-server->worker pattern); only
+# the parent PID is recorded. Killing just the recorded PID leaks the worker (DR-1).
+bash -c 'sleep 300 & echo $! > "'"$WS"'/worker.pid"; wait' & server_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$WS/worker.pid" ] && break; sleep 0.1; done
+worker_pid=$(cat "$WS/worker.pid" 2>/dev/null)
 echo "$owned_pid" >> "$REPO/docs/looptesting/.pids"
 echo "$stubborn_pid" >> "$REPO/docs/looptesting/.pids"
+echo "$server_pid" >> "$REPO/docs/looptesting/.pids"
 
 ( cd "$REPO" && bash "$CLEAN" ) >/dev/null 2>&1
 assert_ok $? "clean succeeds"
@@ -44,6 +50,10 @@ if kill -0 "$foreign_pid" 2>/dev/null; then
 # SIGTERM-ignoring recorded process must be escalated to SIGKILL
 if kill -0 "$stubborn_pid" 2>/dev/null; then
   FAIL=$((FAIL+1)); echo "  FAIL: SIGTERM-ignoring process should be SIGKILLed" >&2; kill -9 "$stubborn_pid" 2>/dev/null
+else PASS=$((PASS+1)); fi
+# forked worker child of a recorded server must NOT survive cleanup (DR-1)
+if [ -n "$worker_pid" ] && kill -0 "$worker_pid" 2>/dev/null; then
+  FAIL=$((FAIL+1)); echo "  FAIL: forked worker child leaked past cleanup (pid $worker_pid)" >&2; kill -9 "$worker_pid" 2>/dev/null
 else PASS=$((PASS+1)); fi
 
 # idempotent: second clean is a no-op success

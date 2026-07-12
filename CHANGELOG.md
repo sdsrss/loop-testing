@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.2.3 — 2026-07-12
+
+Second full production-readiness audit (5-track parallel review + per-finding
+code cross-verification at v0.2.2 baseline). No P0/P1; this release lands the four
+correctness/security P2s plus two stale-comment fixes. Each code fix was written
+RED-first (a new test reproduces the defect against the old code, then goes green).
+Full suite `ALL GREEN` (MoA 28, stop-gate 24, ledger-gate 16, clean 13).
+
+- **fix(stop-gate)**: the jq parse path used `.stop_hook_active // empty`, but jq's
+  `//` treats a literal `false` as empty, so a fresh stop left `stop_active`
+  "unknown" and the block-counter reset never fired on the primary parser (the C5
+  fix in 0.2.1 only reached the grep fallback). Independent fresh stops then
+  accumulated toward the deadlock valve, force-allowing sooner than the fail-closed
+  design intends. Now maps `true`→true and false/null/absent→false, matching the
+  grep/python3 paths. (+1 stop-gate test: jq present, two fresh stops keep count 1.)
+- **fix(ledger-gate)**: `grep -awiqE 'VERIFIED'` carried `-i`, so an OPEN issue whose
+  title contained the word "verified"/"VERIFIED" as prose (e.g. "not yet verified")
+  was false-denied. The status token is always uppercase; matching is now
+  case-sensitive and, for a file write, anchored to the `| STATUS |` column (a bare
+  VERIFIED in the free-text title column no longer trips it). Bash commands keep a
+  word-boundary match so `sed`/`perl` substitution syntax (`s/OPEN/VERIFIED/`) is
+  still caught. (+2 ledger-gate tests: uppercase/lowercase "verified" prose in an
+  OPEN title → allow.)
+- **fix(moa)**: the assembled decision doc was written to `--output`/stdout without
+  passing through `redact()` — every error path was redacted, but the success doc
+  was the one uncovered channel. A hostile/compromised or logging endpoint that
+  reflects the request could echo the `Authorization` header into its completion,
+  landing the raw key in the archived `DEC.md`. The doc is now redacted before it
+  leaves the process. (+1 MoA test: an endpoint echoing the auth header into the
+  success content cannot land the key in `DEC.md`/stdout — the prior success-path
+  redaction test was vacuous because its stub returned no auth material.)
+- **fix(sandbox-clean)**: teardown signalled only the bare recorded PID, so a dev
+  server's forked worker children (vite→esbuild, npm→node) survived cleanup holding
+  ports/CPU. It now snapshots each recorded PID's descendant tree via `pgrep -P`
+  (before signalling, so reparented children aren't lost), then SIGTERM→grace→SIGKILL
+  the whole set; falls back to the recorded PID where `pgrep` is absent. (+1 clean
+  test: a recorded parent that forks a worker — the worker must not survive.)
+- **docs**: both unattended drivers' exit-code-5 header now states the composite
+  progress fingerprint (round | issues | converged_streak | runs count+bytes) instead
+  of the pre-0.2.0 "round AND issues"; removed a stale dev-phase comment in
+  `tests/run-all.sh` (the C16 the 0.2.1 hygiene batch tracked but missed).
+
 ## 0.2.2 — 2026-07-12
 
 Audit batch 4: two code-review follow-ups on the batch-3 hygiene work. Both are

@@ -52,7 +52,12 @@ MAX_BLOCKS=3                     # keep < 8 (platform ceiling); see header
 # --- parse stop_hook_active from stdin (jq -> python3 -> grep fallback) -------
 stop_active="unknown"
 if command -v jq >/dev/null 2>&1; then
-  v=$(printf '%s' "$STDIN_JSON" | jq -r '.stop_hook_active // empty' 2>/dev/null)
+  # NOT `.stop_hook_active // empty`: jq's `//` treats a literal false as empty, so
+  # a fresh stop (stop_hook_active=false) yielded no output -> stop_active stayed
+  # "unknown" and the counter-reset never fired on the jq path. C5 was only applied
+  # to the grep fallback. Map true->true, everything else (false/null/absent)->false
+  # so a fresh stop resets exactly like grep/python3 (audit HK-1).
+  v=$(printf '%s' "$STDIN_JSON" | jq -r 'if .stop_hook_active == true then "true" else "false" end' 2>/dev/null)
   [ -n "$v" ] && stop_active="$v"
 elif command -v python3 >/dev/null 2>&1; then
   v=$(printf '%s' "$STDIN_JSON" | python3 -c 'import json,sys

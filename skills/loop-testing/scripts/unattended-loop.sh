@@ -23,7 +23,8 @@
 #   2  usage / argument error.
 #   3  hit --max-sessions before terminal (driver-declared INCOMPLETE).
 #   4  hit --max-minutes before terminal (driver-declared INCOMPLETE).
-#   5  NO_PROGRESS: two consecutive sessions with no change in round AND issues.
+#   5  NO_PROGRESS: two consecutive sessions with no change in the composite
+#      progress fingerprint (round | issues | converged_streak | runs count+bytes).
 set -u
 
 PROJECT=""

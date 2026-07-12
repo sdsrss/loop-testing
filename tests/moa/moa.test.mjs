@@ -89,6 +89,31 @@ function chatHandler({ aggModel, failModels = [] }) {
   };
 }
 
+// A success-path handler that echoes the Authorization header INTO the completion
+// content (both reference opinions and the aggregator's structured fields). Models
+// a hostile/compromised or logging endpoint that reflects the request — the exact
+// threat the redactor is defense-in-depth against. Used to prove the assembled
+// decision doc is redacted before it is written/emitted (MO-1).
+function echoAuthHandler({ aggModel }) {
+  return (req, res, body) => {
+    let model = '';
+    try { model = JSON.parse(body).model; } catch { /* ignore */ }
+    const auth = req.headers.authorization || '';
+    res.setHeader('content-type', 'application/json');
+    let content;
+    if (model === aggModel) {
+      content = JSON.stringify({
+        summary: `S ${auth}`, recommendation: `R ${auth}`,
+        rationale: `RA ${auth}`, risks: 'RK',
+      });
+    } else {
+      content = `opinion echoing ${auth}`;
+    }
+    res.statusCode = 200;
+    res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+  };
+}
+
 // Run moa.mjs as a subprocess with a *clean* env (only what we pass, plus PATH).
 function runMoa(args, env = {}, cwd) {
   return new Promise((resolve) => {
@@ -417,6 +442,31 @@ test('redaction: fake key never appears in stdout / output file (success path)',
       assert.ok(!stdout.includes(SECRET), 'secret leaked to stdout');
       assert.ok(!stderr.includes(SECRET), 'secret leaked to stderr');
       assert.ok(!doc.includes(SECRET), 'secret leaked to output file');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+test('redaction: an endpoint that echoes the auth header into the SUCCESS content cannot land the key in DEC.md / stdout (MO-1)', async () => {
+  await withWorkspace(async (dir) => {
+    const SECRET = 'sk-SECRETKEY-xyz789';
+    const stub = await startServer(echoAuthHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stdout, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: SECRET, OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      // The reflected key rides in on the model output, which is embedded verbatim
+      // into the decision doc — it must be scrubbed before write/emit.
+      assert.ok(!doc.includes(SECRET), 'reflected key leaked into DEC.md');
+      assert.ok(!stdout.includes(SECRET), 'reflected key leaked into stdout');
+      assert.ok(!stderr.includes(SECRET), 'reflected key leaked into stderr');
     } finally {
       await stub.close();
     }

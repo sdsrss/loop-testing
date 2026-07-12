@@ -26,28 +26,49 @@ fi
 mval() { grep -E "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-; }
 CREATED_WORKTREE="$(mval CREATED_WORKTREE)"
 
-# --- stop only processes we recorded ----------------------------------------
+# --- stop only processes we recorded (and their descendants) -----------------
+# A dev server started by the agent commonly forks worker children (vite->esbuild,
+# npm->node); signalling only the bare recorded PID leaves those workers holding
+# ports/CPU past teardown (audit DR-1). Snapshot each recorded PID's descendant
+# tree FIRST (before signalling anything, so children reparented by an early
+# parent-kill aren't lost), then SIGTERM the whole set, then SIGKILL any survivor.
+# (Residual: .pids stores bare PIDs captured live at start; descendant discovery
+# needs pgrep — absent it we fall back to the recorded PID only. A PID recycled by
+# an unrelated process between capture and clean could be signalled — the writer
+# verifies liveness + listening port at capture to minimize this.)
 if [ -f "$PIDS_FILE" ]; then
+  collect_tree() {   # print PID + all descendants, depth-first (needs pgrep)
+    printf '%s\n' "$1"
+    if command -v pgrep >/dev/null 2>&1; then
+      local child
+      for child in $(pgrep -P "$1" 2>/dev/null); do collect_tree "$child"; done
+    fi
+  }
+  TARGETS=""
   while IFS= read -r pid; do
     case "$pid" in
       ''|*[!0-9]*) continue ;;   # skip blanks / non-numeric lines
     esac
-    if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null && echo_info "sent SIGTERM to process $pid"
-      # Escalate to SIGKILL if it doesn't exit within a short grace, so a process
-      # that ignores SIGTERM doesn't leak past cleanup. (Residual: .pids stores
-      # bare PIDs captured live at start; a PID recycled by an unrelated process
-      # between capture and clean could be signalled — the writer verifies
-      # liveness + listening port at capture to minimize this.)
-      i=0
-      while [ "$i" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do
-        sleep 0.1; i=$(( i + 1 ))
-      done
-      if kill -0 "$pid" 2>/dev/null; then
-        kill -9 "$pid" 2>/dev/null && echo_info "escalated to SIGKILL for process $pid"
-      fi
-    fi
+    kill -0 "$pid" 2>/dev/null || continue
+    TARGETS="$TARGETS
+$(collect_tree "$pid")"
   done < "$PIDS_FILE"
+  TARGETS=$(printf '%s\n' "$TARGETS" | grep -E '^[0-9]+$' | sort -un)
+
+  for pid in $TARGETS; do
+    kill -0 "$pid" 2>/dev/null || continue
+    kill "$pid" 2>/dev/null && echo_info "sent SIGTERM to process $pid"
+  done
+  # Escalate to SIGKILL for any that ignore SIGTERM within a short grace.
+  for pid in $TARGETS; do
+    i=0
+    while [ "$i" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do
+      sleep 0.1; i=$(( i + 1 ))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null && echo_info "escalated to SIGKILL for process $pid"
+    fi
+  done
   : > "$PIDS_FILE"   # clear the ledger; keep the file for continued runs
 fi
 

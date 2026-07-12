@@ -83,4 +83,15 @@ done
 read -r kc _ < "$WS10/$CF"
 assert_eq "1" "$kc" "grep-fallback resets counter on each fresh stop (no jq/python3)"
 
+# L. jq path (jq present, the primary parser on most systems) must reset the block
+#    counter on a fresh stop just like the grep fallback. `.stop_hook_active //
+#    empty` treated false as empty (jq's // swallows false), so stop_active stayed
+#    "unknown" and the reset never fired on the primary path — C5 was only applied
+#    to grep (HK-1). Two independent fresh stops must NOT accumulate.
+WS11=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11"' EXIT
+arm "$WS11"; write_state "$WS11" RUNNING 1
+run_stop "$WS11" false; run_stop "$WS11" false
+read -r lc _ < "$WS11/$CF"
+assert_eq "1" "$lc" "jq path resets counter on each fresh stop (HK-1)"
+
 report "stop-gate.test.sh"

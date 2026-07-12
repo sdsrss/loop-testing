@@ -86,4 +86,18 @@ WS14=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS
 json='{"tool_name":"Bash","tool_input":{"command":"perl -i -pe \"s/OPEN/VERIFIED/ if /ISSUE-014/\" docs/looptesting/ISSUES.md"}}'
 run_ledger "$WS14" "$json"; assert_rc $? 2 "perl -i fabricating VERIFIED on ledger, no footprint -> deny"
 
+# 15. OPEN issue whose TITLE column contains the word "VERIFIED" as prose (e.g.
+#     "not yet VERIFIED by committee"). The status column is OPEN, so this is a
+#     legitimate write and must be allowed — the status token is anchored to the
+#     `| STATUS |` column, not matched anywhere on the line (HK-2).
+WS15=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15"' EXIT
+json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS15")\",\"new_string\":\"### ISSUE-015 | P2 | OPEN | repro not yet VERIFIED by committee\"}}"
+run_ledger "$WS15" "$json"; assert_rc $? 0 "OPEN issue with 'VERIFIED' in prose title -> allow (not false-deny)"
+
+# 16. Same, lowercase "verified" in the title -> allow (case-sensitive: the status
+#     token is always uppercase, so -i only false-matched prose) (HK-2).
+WS16=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16"' EXIT
+json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS16")\",\"new_string\":\"### ISSUE-016 | P2 | OPEN | crash could not be verified yet\"}}"
+run_ledger "$WS16" "$json"; assert_rc $? 0 "OPEN issue with 'verified' lowercase prose -> allow"
+
 report "ledger-gate.test.sh"
