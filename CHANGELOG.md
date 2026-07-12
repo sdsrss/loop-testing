@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.2 — 2026-07-12
+
+Patch: fix both unattended resume-drivers' `--help` output, found by a dogfooding
+`/loop-testing` run against this repo itself. Full suite `ALL GREEN`.
+
+- **fix(driver-help)**: `unattended-loop.sh` / `unattended-codex.sh` printed their
+  leading comment header as `--help` via a hardcoded `sed -n '2,Np'` line range that
+  drifted as the header changed length — `unattended-loop.sh` leaked source lines
+  (`set -u`, `PROJECT=""`) past the header, and `unattended-codex.sh` truncated its
+  own exit-code-5 explanation mid-sentence. Both now use one identical
+  `awk 'NR>1{if(/^#/)print;else exit}'` that prints the contiguous comment block
+  regardless of length (also making the two drivers' help logic truly identical).
+  New `tests/driver/driver-help.test.sh` asserts no code leak and a complete header
+  for both drivers.
+
 ## 0.6.1 — 2026-07-12
 
 Patch: sandbox-isolation hardening (product bug found in a real smoke run) plus an
