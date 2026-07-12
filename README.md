@@ -140,9 +140,17 @@ tells you when a newer tag exists.
 
 ### Start
 
-In your target project, say a trigger phrase to the installed agent:
+Two ways, both work from inside your target project:
 
-> `自测` · `验收` · `QA 循环` · `自动测试并修复` · `self-test loop` · `autonomous QA` · `acceptance testing`
+- **Slash command (deterministic, no trigger phrase needed):**
+  - `/loop-testing` — start or resume the loop
+  - `/loop-testing status` — report progress from `STATE.md`
+  - `/loop-testing report` — print `FINAL_REPORT.md`
+- **Trigger phrase** — say any of these to the agent:
+  > `自测` · `验收` · `QA 循环` · `自动测试并修复` · `self-test loop` · `autonomous QA` · `acceptance testing`
+
+On Codex the same `/loop-testing` prompt is installed (to `~/.codex/prompts/` under the
+default / `CODEX_HOME` layout) by `install-codex.sh`.
 
 ### Headless / long runs
 

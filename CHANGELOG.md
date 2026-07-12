@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0 — 2026-07-12
+
+Minor: adds a `/loop-testing` slash command so the loop can be started deterministically
+without a trigger phrase — on both Claude Code and Codex. Full suite `ALL GREEN` (16
+test files). Verified end-to-end: a real unattended run on a throwaway CLI project
+converged in 3 rounds (`CONVERGED_WITH_OPEN_ISSUES`, 9 issues found, 4 seeded + 5 extra,
+21 regression tests, honest reporting), and the SessionStart / slash-command wiring was
+confirmed to fire in a live `claude -p` session.
+
+- **feat(command)**: new `commands/loop-testing.md` — `/loop-testing` starts or resumes
+  the loop, `/loop-testing status` reports progress from `STATE.md`, `/loop-testing
+  report` prints `FINAL_REPORT.md`. Auto-discovered by Claude Code (invocable as
+  `/loop-testing`, fully qualified `/loop-testing:loop-testing`). No more relying only on
+  a trigger phrase or the model choosing to invoke the skill.
+- **feat(codex)**: `install-codex.sh` now also installs a matching `/loop-testing` prompt
+  to the Codex prompts dir (`~/.codex/prompts/` under the default / `CODEX_HOME` layout),
+  and removes it on `--uninstall`. With an explicit `--target <skills dir>` the prompts
+  location is unknown, so the prompt is skipped (skill still installs) — never resolving a
+  prompt path outside the target. (+4 install tests.)
+- **chore(hooks)**: aligned the SessionStart update-check matcher to the documented
+  `startup|resume|clear|compact` form. (The `0.3.0` `*` matcher also fired in testing —
+  this is the explicit, recommended form, not a bug fix.)
+- **docs(readme)**: the Start section (EN + zh) now leads with the `/loop-testing` slash
+  command alongside the trigger phrases, and notes the Codex prompt.
+
 ## 0.3.0 — 2026-07-12
 
 Minor: adds a notify-only update check (a new user-visible default behavior) and

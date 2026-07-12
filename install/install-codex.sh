@@ -74,6 +74,21 @@ resolve_skills_dir() {
 
 SKILLS_DIR="$(resolve_skills_dir)"
 DEST="$SKILLS_DIR/$SKILL_NAME"
+# Codex slash-command prompt: with the default / CODEX_HOME layout the prompts dir is a
+# known sibling of skills (e.g. ~/.codex/prompts), so installing `prompts/loop-testing.md`
+# there makes the loop startable with `/loop-testing`, not just a trigger phrase. With an
+# explicit --target <skills dir> the prompts location is unknown (and a bare dir would
+# resolve outside it), so we skip the prompt and only install the skill. Best-effort:
+# installing/removing the prompt never fails the skill install/uninstall.
+if [ -n "$TARGET" ]; then
+  PROMPTS_DIR=""
+elif [ -n "${CODEX_HOME:-}" ]; then
+  PROMPTS_DIR="$CODEX_HOME/prompts"
+else
+  PROMPTS_DIR="$HOME/.codex/prompts"
+fi
+PROMPT_SRC="$REPO_ROOT/prompts/$SKILL_NAME.md"
+PROMPT_DEST="${PROMPTS_DIR:+$PROMPTS_DIR/$SKILL_NAME.md}"
 
 log()    { printf '%s\n' "$*"; }
 action() { if [ "$DRY_RUN" -eq 1 ]; then printf '[dry-run] %s\n' "$*"; else printf '%s\n' "$*"; fi; }
@@ -153,6 +168,20 @@ do_install() {
     trap - EXIT INT TERM
   fi
 
+  # Best-effort: also install the /loop-testing slash-command prompt (only when the
+  # prompts dir is known — default / CODEX_HOME layout). A failure here must NOT fail
+  # the (already-completed) skill install.
+  if [ -n "$PROMPTS_DIR" ] && [ -f "$PROMPT_SRC" ]; then
+    action "install slash-command prompt -> $PROMPT_DEST"
+    if [ "$DRY_RUN" -eq 0 ]; then
+      if mkdir -p "$PROMPTS_DIR" 2>/dev/null && cp "$PROMPT_SRC" "$PROMPT_DEST" 2>/dev/null; then
+        log "  slash command: /$SKILL_NAME (Codex prompt at $PROMPT_DEST)"
+      else
+        log "  note: could not install the slash-command prompt at $PROMPT_DEST (skill install is unaffected)."
+      fi
+    fi
+  fi
+
   log ""
   if [ "$DRY_RUN" -eq 1 ]; then
     log "[dry-run] no changes made."
@@ -205,6 +234,11 @@ do_uninstall() {
   safe_remove "$DEST"
   # Also clear a backup left by a prior reinstall (marker-verified, not basename).
   if [ -e "$DEST.bak" ] && [ -f "$DEST.bak/$MARKER" ]; then safe_remove "$DEST.bak"; fi
+  # Remove the slash-command prompt we installed (a single named file). Best-effort;
+  # guarded to the exact basename so it can only ever touch our own prompt.
+  if [ -n "$PROMPT_DEST" ] && [ -f "$PROMPT_DEST" ] && [ "$(basename "$PROMPT_DEST")" = "$SKILL_NAME.md" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then action "rm $PROMPT_DEST"; else rm -f "$PROMPT_DEST" && log "  removed slash-command prompt $PROMPT_DEST"; fi
+  fi
   if [ "$DRY_RUN" -eq 1 ]; then
     log "[dry-run] no changes made."
   else
