@@ -1,6 +1,18 @@
 {
-  "description": "loop-testing mechanism-layer hooks (Claude Code enhancement; the QA loop also runs on prompt discipline alone). Stop: while docs/looptesting/.active exists, block session stop until STATE.md status is terminal (CONVERGED/INCOMPLETE/BLOCKED); RUNNING or unparseable fails closed. Hard ceiling MAX_BLOCKS=3 (< platform's 8) so the gate never deadlocks; escape hatch LOOP_TESTING_DISABLE_STOP_GATE=1. PreToolUse: deny writes that stamp VERIFIED onto an ISSUE with no replay record in runs/round-*.md (cheat-cost raiser, not a hard gate); escape hatch LOOP_TESTING_DISABLE_LEDGER_GATE=1. NOTE: if plugin hooks.json auto-loading does not fire in your Claude Code version, register these hooks manually in settings.json — see README.",
+  "description": "loop-testing mechanism-layer hooks (Claude Code enhancement; the QA loop also runs on prompt discipline alone). Stop: while docs/looptesting/.active exists, block session stop until STATE.md status is terminal (CONVERGED/INCOMPLETE/BLOCKED); RUNNING or unparseable fails closed. Hard ceiling MAX_BLOCKS=3 (< platform's 8) so the gate never deadlocks; escape hatch LOOP_TESTING_DISABLE_STOP_GATE=1. PreToolUse: deny writes that stamp VERIFIED onto an ISSUE with no replay record in runs/round-*.md (cheat-cost raiser, not a hard gate); escape hatch LOOP_TESTING_DISABLE_LEDGER_GATE=1. SessionStart: notify-only update check — prints an 'update available' notice when a newer git tag exists (at most once per 24h, silent/fast on offline/rate-limit, skipped in dev mode, never downloads/installs); opt out with LOOP_TESTING_DISABLE_UPDATE_CHECK=1. NOTE: if plugin hooks.json auto-loading does not fire in your Claude Code version, register these hooks manually in settings.json — see README.",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/update-check.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "*",

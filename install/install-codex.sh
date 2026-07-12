@@ -13,6 +13,7 @@
 # Usage:
 #   install/install-codex.sh [--target <skills-dir>] [--dry-run]
 #   install/install-codex.sh --uninstall [--target <skills-dir>] [--dry-run]
+#   install/install-codex.sh --check-update [--target <skills-dir>]
 #
 # Target skills-dir resolution (first match wins):
 #   1. --target <dir>
@@ -49,7 +50,8 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --uninstall) MODE="uninstall" ;;
+    --uninstall)    MODE="uninstall" ;;
+    --check-update) MODE="check-update" ;;
     --dry-run)   DRY_RUN=1 ;;
     --target)    shift; [ $# -gt 0 ] || { echo "error: --target needs a value" >&2; exit 2; }; TARGET="$1" ;;
     --target=*)  TARGET="${1#--target=}" ;;
@@ -210,7 +212,48 @@ do_uninstall() {
   fi
 }
 
+# Notify-only version check for the Codex install. Codex has no SessionStart hook,
+# so unlike the Claude side this is manual (`--check-update`). Reads the installed
+# marker's version and compares it to the latest git tag on GitHub (this repo ships
+# tags, not Releases). Never fails hard on network trouble. Honors the same test/
+# override env as hooks/update-check.sh (LOOP_TESTING_UPDATE_TAGS_URL / _SELFTEST_LATEST
+# / _TIMEOUT).
+do_check_update() {
+  if [ ! -f "$DEST/$MARKER" ]; then
+    echo "error: no loop-testing install at $DEST (run the installer first)." >&2
+    exit 1
+  fi
+  local cur latest newest
+  cur="$(grep -E '^version=' "$DEST/$MARKER" 2>/dev/null | head -1 | cut -d= -f2- \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  [ -n "$cur" ] || { echo "installed version is unknown (marker has no version) — reinstall to refresh."; exit 0; }
+  if [ -n "${LOOP_TESTING_UPDATE_SELFTEST_LATEST:-}" ]; then
+    latest="$LOOP_TESTING_UPDATE_SELFTEST_LATEST"
+  elif command -v curl >/dev/null 2>&1; then
+    latest="$(curl -fsS --max-time "${LOOP_TESTING_UPDATE_TIMEOUT:-5}" \
+      -H 'Accept: application/vnd.github+json' -H 'User-Agent: loop-testing-update-check' \
+      "${LOOP_TESTING_UPDATE_TAGS_URL:-https://api.github.com/repos/sdsrss/loop-testing/tags}" 2>/dev/null \
+      | grep -oE '"name"[[:space:]]*:[[:space:]]*"v?[0-9]+\.[0-9]+\.[0-9]+"' \
+      | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)"
+  else
+    echo "cannot check for updates: curl not available. Installed: $cur."; exit 0
+  fi
+  latest="$(printf '%s' "${latest:-}" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+  if [ -z "$latest" ]; then
+    echo "could not reach GitHub to check the latest version (offline or rate-limited). Installed: $cur."
+    exit 0
+  fi
+  newest="$(printf '%s\n%s\n' "$cur" "$latest" | sort -V | tail -1)"
+  if [ "$latest" != "$cur" ] && [ "$newest" = "$latest" ]; then
+    echo "loop-testing update available: $cur -> $latest."
+    echo "Codex has no auto-update — re-run 'bash install/install-codex.sh' from an updated checkout to refresh the skill copy."
+  else
+    echo "loop-testing is up to date (installed $cur, latest $latest)."
+  fi
+}
+
 case "$MODE" in
-  install)   do_install ;;
-  uninstall) do_uninstall ;;
+  install)      do_install ;;
+  uninstall)    do_uninstall ;;
+  check-update) do_check_update ;;
 esac

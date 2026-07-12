@@ -1,201 +1,284 @@
 # loop-testing
 
+**English | [简体中文](README.zh-CN.md)**
+
 [![CI](https://github.com/sdsrss/loop-testing/actions/workflows/ci.yml/badge.svg)](https://github.com/sdsrss/loop-testing/actions/workflows/ci.yml)
 
-> **自主 QA 循环技能** —— 让 Claude Code / Codex 以**真实用户身份**在沙箱里反复使用你的项目，自动发现 bug、自动修复、自动收敛。
->
-> *Autonomous self-testing, self-healing QA loop for Claude Code and Codex. One command, hands-off, converges on its own.*
+> **Autonomous QA loop for Claude Code & Codex.** An AI agent uses your finished
+> project like a *real user* in a sandbox — finding bugs, fixing the safe ones with
+> regression tests, and looping until it converges. One command, hands-off.
 
-项目开发完成后，一条命令启动。智能体交替扮演"瞎摸索的小白"和"脾气不好的老手"，把你项目的每一个功能都用一遍，发现 **bug / 逻辑 / 流程 / 隐蔽 / 安全 / 体验**等八类问题：能安全修的当场修（带回归测试 + 原子提交），需要拍板的记录在案并给出**多模型决策建议**，直到**连续两轮只剩无关紧要的小问题**才自动停止并输出总结报告。
-
-全程自主推进，仅三种情况会暂停问你：需要密钥 / 付费 / 外网权限、疑似安全漏洞需上报、阻塞性问题导致无法继续。
-
----
-
-## ✨ 优秀亮点
-
-- **真用，不是只读代码** —— 从真实用户入口实际操作（CLI 执行、API 调用、Web 点按），用真实感数据、会误操作、会不按套路来，而非静态扫代码或只跑现成测试。
-- **发现即修复** —— 低风险问题当场修：先复现 → 修根因 → 加回归断言 → 复验 → 单独原子提交（`fix(qa): [ISSUE-xxx]`）。
-- **多模型决策（MoA）** —— 需要产品决策的问题不擅自拍板：多个参考模型并行分析 → 聚合模型给最终建议 → 落盘成决策记录供你确认。
-- **反作弊收敛** —— 连续两轮"干净轮"才停，且第二轮必须换场景反证；覆盖量不许缩水、未重放不许标通过、达轮次上限如实报 `INCOMPLETE` 绝不谎报 PASS。
-- **断点续跑** —— 一切进度写在文件里，会话中断 / 上下文压缩后重新触发即从断点继续，不重置。
-- **机制层强化（Claude Code）** —— Stop-hook 机制性禁止未收敛就停会话（硬保证）；防伪写 hook 尽力抬高伪造"已验证"的成本——best-effort、可被绕过，残余靠红线纪律与人工 diff 审查兜底，并非硬拦截。
-- **双平台一份技能** —— Claude Code 与 Codex 共用同一 `SKILL.md`，一个仓库两处安装。
-- **安全内建** —— 沙箱隔离、失败即拒（fail-closed）、密钥只从环境变量读且日志脱敏、绝不 push/部署/碰生产。
+`loop-testing` is a dual-platform skill for [Claude Code](https://claude.com/claude-code)
+and [OpenAI Codex](https://openai.com/codex/). After your app is built, it drives an AI
+agent to exercise every feature from a real user's entry points (CLI, API, Web, library),
+surface **bug / logic / flow / edge-case / hidden / security / UX** issues, **fix the safe
+ones on the spot** (reproduce → fix root cause → add a regression test → replay-verify →
+atomic commit), route judgment calls to a **multi-model committee**, and stop only when
+**two consecutive rounds turn up nothing but trivia**. It runs fully autonomously, pausing
+only for keys / payment / network permission, a suspected security vuln, or a hard blocker.
 
 ---
 
-## 🧩 功能说明
+## ✨ Highlights
 
-| 能力 | 说明 |
-|------|------|
-| **双重身份** | 用产品时是真实用户（两个交替画像：不看文档的小白 / 追求效率的暴躁老手）；修问题时切换严谨工程师（最小改动、先复现再修、修完必验证、不顺手重构）。 |
-| **第 0 轮盘点** | 自动识别产品形态与入口，交叉盘点全部可达功能，设计正常 / 边界 / 误用 / 取消恢复场景，跑基线检查，产出 `PLAN.md` + `FEATURE_MATRIX.md`。 |
-| **每轮闭环** | 选场景 → 像真实用户使用 → 发现即立案 / 复现 / 分级（P0-P3）→ 分诊修复 + 回归保护 → 原样重放复验 → 轮末结算。 |
-| **问题台账** | 所有问题（含顺手发现的）先立案再处理，状态机全程可审计（OPEN / FIXING / VERIFIED / NEEDS_CONFIRMATION / BLOCKED / WONT_FIX / CANNOT_REPRODUCE）。 |
-| **MoA 决策引擎** | 零依赖 Node 脚本，支持 OpenAI / OpenRouter 双格式接入、代理优先、优雅降级，产出结构化决策记录。 |
-| **无头续跑驱动** | `unattended-loop.sh`（Claude）/ `unattended-codex.sh`（Codex）反复从断点续跑到收敛，带墙钟看门狗与熔断。 |
-| **沙箱建 / 清** | git worktree 隔离 + 归属标记；清理失败即拒（无标记不删），保留证据、不碰用户数据。 |
+- **Uses your product, not just reads the code.** Acts from real entry points with
+  realistic data, fat-fingers, cancels mid-flow, and goes off the happy path — instead of
+  statically scanning code or re-running existing tests.
+- **Finds a bug → fixes it.** Low-risk issues are fixed immediately: reproduce → fix root
+  cause → add a regression assertion → replay-verify → single atomic commit
+  (`fix(qa): [ISSUE-xxx]`).
+- **Multi-model decisions (MoA).** Product judgment calls aren't decided unilaterally:
+  several reference models analyze in parallel, an aggregator synthesizes a recommendation,
+  and it's archived as a decision record for you to approve.
+- **Anti-gaming convergence.** Stops only after two consecutive clean rounds, and the
+  second must use *different* scenarios to cross-check. Coverage may not shrink, unverified
+  fixes may not be marked passed, and a run that hits the round cap honestly reports
+  `INCOMPLETE` — it never fakes a `PASS`.
+- **Resume-safe.** All progress lives in files. After an interruption or context
+  compaction, re-triggering the skill continues from the checkpoint — rounds and ledger
+  are never reset.
+- **Mechanism-layer enforcement (Claude Code).** A Stop-hook *mechanically* forbids ending
+  the session before convergence (a hard guarantee). A companion hook raises the cost of
+  faking a "verified" fix — best-effort and bypassable by design, with the residue covered
+  by red-line discipline and human diff review; it is not a hard gate.
+- **One skill, two platforms.** Claude Code and Codex share the same `SKILL.md` — one repo,
+  two installs.
+- **Safe by construction.** Sandbox isolation, fail-closed cleanup, env-only keys with log
+  redaction, and never push / deploy / touch production.
 
 ---
 
-## 🆚 差异对比
+## 🧩 Features
 
-| | 单元测试 / CI | 一次性 AI 代码审查 | **loop-testing** |
+| Capability | What it does |
+|---|---|
+| **Dual persona** | Uses the product as a real user (two alternating profiles: a *novice* who ignores the docs, and an *impatient power user*); switches to a *rigorous engineer* to fix (smallest diff, reproduce-first, verify-after, no drive-by refactors). |
+| **Round 0 inventory** | Detects the product shape and entry points, cross-maps every reachable feature, designs normal / edge / misuse / cancel-recovery scenarios, runs a baseline check, and emits `PLAN.md` + `FEATURE_MATRIX.md`. |
+| **Per-round loop** | Pick a scenario → use it like a real user → file / reproduce / grade (P0–P3) on discovery → triage-fix with regression guard → replay-verify → settle the round. |
+| **Issue ledger** | Every issue (incidental ones included) is filed before it's touched; a fully auditable state machine (`OPEN / FIXING / FIXED_UNVERIFIED / VERIFIED / NEEDS_CONFIRMATION / BLOCKED / WONT_FIX / CANNOT_REPRODUCE`). |
+| **MoA decision engine** | Zero-dependency Node script; OpenAI + OpenRouter wire formats, proxy-first, graceful degradation; emits a structured decision record. |
+| **Unattended drivers** | `unattended-loop.sh` (Claude) / `unattended-codex.sh` (Codex) relaunch from the checkpoint until convergence, with a wall-clock watchdog, circuit breakers, and a concurrency lock. |
+| **Sandbox setup / clean** | `git worktree` isolation + ownership markers; cleanup is fail-closed (deletes nothing without a marker), preserves evidence, and never touches your data. |
+
+All state lives in `docs/looptesting/` inside the target project (kept but not committed,
+and your `.gitignore` is left untouched):
+
+| File | Purpose |
+|---|---|
+| `STATE.md` | Authoritative progress: round, convergence streak, status, next action, blockers. |
+| `PLAN.md` | Round 0: product shape, entry points, features, scenario design. |
+| `FEATURE_MATRIX.md` | Feature × entry × scenario × coverage × evidence. |
+| `ISSUES.md` | The issue ledger (filed on discovery, with the state machine). |
+| `SUGGESTIONS.md` | New directions / feature ideas + MoA decision links. |
+| `runs/round-N.md` | Per-round scenarios, commands, results, evidence, replay verification. |
+| `decisions/DEC-NNN.md` | MoA multi-model decision records. |
+| `FINAL_REPORT.md` | Final status + coverage summary + fix list (issue ↔ commit) + open items + blind spots. |
+
+---
+
+## 🆚 How it compares
+
+| | Unit tests / CI | One-shot AI code review | **loop-testing** |
 |---|---|---|---|
-| 发现方式 | 校验**已知**断言 | 静态读代码 | **实际使用**产品找**未知**问题 |
-| 覆盖视角 | 开发者写的用例 | 单次快照 | 真实用户 + 误操作 + 边界 + 恢复 |
-| 处理问题 | 只报红 | 给建议 | 安全的**当场修 + 回归 + 提交** |
-| 决策类问题 | 不涉及 | 单模型建议 | **MoA 多模型委员会** |
-| 何时停 | 跑完即止 | 单轮结束 | **收敛才停**（反作弊、诚实报告） |
-| 中断恢复 | 重跑 | 重来 | **文件断点续跑** |
+| How it finds issues | Checks **known** assertions | Reads code statically | **Actually uses** the product to find **unknown** issues |
+| Coverage angle | Developer-written cases | A single snapshot | Real user + misuse + edge cases + recovery |
+| Handling issues | Reports red | Suggests | **Fixes safe ones on the spot** + regression + commit |
+| Decision-type issues | N/A | Single-model opinion | **MoA multi-model committee** |
+| When it stops | When the run ends | After one pass | **When it converges** (anti-gaming, honest reporting) |
+| After interruption | Re-run | Start over | **File-based resume** |
 
-一句话：单元测试防回归，AI 审查看代码，**loop-testing 像真实用户一样把产品用崩再修好**。
+In one line: unit tests guard against regressions, AI review reads the code —
+**loop-testing uses the product like a real user until it breaks, then fixes it.**
 
 ---
 
-## 📦 安装方式
+## 📦 Installation
 
-### Claude Code（插件）
+### Claude Code (plugin)
 
 ```bash
 /plugin marketplace add sdsrss/loop-testing
 /plugin install loop-testing@loop-testing
 ```
 
-本地开发 / 未发布时直接以插件目录加载：
+Local / unreleased — load the plugin directory directly:
 
 ```bash
 claude --plugin-dir .
 ```
 
-> **机制增强层**（Stop-hook 强制续跑 + VERIFIED 防伪写的 best-effort 成本抬升）由 `hooks/` 提供，随插件自动加载。已实测确认 `/plugin install` 与 `--plugin-dir` 两种模式下 Stop hook 均自动生效；极旧版本若不自动加载，按 `hooks/` 内说明手动注册。
+The mechanism layer (Stop-hook resume enforcement + the best-effort anti-fake hook) ships
+in `hooks/` and loads automatically. Stop-hook auto-loading is verified for both
+`/plugin install` and `--plugin-dir`; on very old Claude Code versions that don't
+auto-load, register the hooks manually per `hooks/`.
 
-### Codex（技能目录）
+**Updating:** `claude plugin update loop-testing`. The plugin also prints a one-line
+**"update available"** notice at session start when your installed version trails the
+latest GitHub tag — notify-only (never auto-downloads), checked at most once per 24h,
+silent when offline or in local dev mode. Disable it with `LOOP_TESTING_DISABLE_UPDATE_CHECK=1`.
 
-Codex 与 Claude Code 共用同一 `SKILL.md` 格式，用随仓库脚本安装：
+### Codex (skills directory)
+
+Codex uses the same `SKILL.md` format; install with the bundled script:
 
 ```bash
-bash install/install-codex.sh                 # 装到 ~/.codex/skills/loop-testing
-bash install/install-codex.sh --target <dir>  # 指定技能目录
-bash install/install-codex.sh --dry-run       # 只打印动作，不写文件
-bash install/install-codex.sh --uninstall     # 卸载（fail-closed：非本插件目录拒删）
+bash install/install-codex.sh                 # install to ~/.codex/skills/loop-testing
+bash install/install-codex.sh --target <dir>  # custom skills dir
+bash install/install-codex.sh --dry-run       # print actions only
+bash install/install-codex.sh --check-update  # compare installed version vs latest tag
+bash install/install-codex.sh --uninstall     # uninstall (fail-closed: refuses foreign dirs)
 ```
 
-脚本**幂等**（重装先备份 `<dest>.bak`）、**只删自己装的目录**（依据 `.loop-testing-codex-install` 标记）。**更新技能后必须重跑此脚本**——Codex 侧无自动更新，否则会静默运行旧副本。
+The script is idempotent (backs up to `<dest>.bak` on reinstall) and only removes what it
+installed (via the `.loop-testing-codex-install` marker). **Re-run it after updating the
+skill** — Codex has no auto-update, so a stale copy would run silently. `--check-update`
+tells you when a newer tag exists.
 
 ---
 
-## 🚀 使用说明
+## 🚀 Usage
 
-### 启动
+### Start
 
-在目标项目里，对已安装的智能体说触发词即可：
+In your target project, say a trigger phrase to the installed agent:
 
 > `自测` · `验收` · `QA 循环` · `自动测试并修复` · `self-test loop` · `autonomous QA` · `acceptance testing`
 
-### 无头 / 长时运行
+### Headless / long runs
 
-`claude -p` 与 `codex exec` 都是单次调用，长循环可能未收敛就结束。无头运行请用外层续跑驱动，它反复从 `STATE.md` 断点续跑到终态：
+`claude -p` and `codex exec` are single-shot, so a long loop may end before it converges.
+For headless runs use the outer resume-driver, which relaunches from `STATE.md` until a
+terminal status:
 
 ```bash
-# Claude Code 无头
-bash skills/loop-testing/scripts/unattended-loop.sh --project <目标项目> \
-  --max-sessions 15 --max-minutes 240 --plugin-dir <本插件目录>
+# Claude Code
+bash skills/loop-testing/scripts/unattended-loop.sh --project <target> \
+  --max-sessions 15 --max-minutes 240 --plugin-dir <plugin dir>
 
-# Codex 无头
-bash skills/loop-testing/scripts/unattended-codex.sh --project <目标项目> \
+# Codex
+bash skills/loop-testing/scripts/unattended-codex.sh --project <target> \
   --max-minutes 90 --session-minutes 40
 ```
 
-退出码：`0` 技能自身收敛终态 · `2` 参数错误 · `3` 达 `--max-sessions` · `4` 达 `--max-minutes` · `5` 连续两会话无进展。每会话进度写入 `docs/looptesting/driver.log`。
+Exit codes: `0` skill reached a terminal status · `2` argument error · `3` hit
+`--max-sessions` · `4` hit `--max-minutes` · `5` two sessions with no progress. Per-session
+progress is appended to `docs/looptesting/driver.log`.
 
-### 工作产物
+### MoA decision configuration
 
-技能在目标项目下建立 `docs/looptesting/`（默认保留但不提交，也不改动你的 `.gitignore`）：
+Decision-type issues call `scripts/moa.mjs` (Node ≥ 20, no third-party deps).
+**API keys are read from the environment only and always redacted in logs.**
 
-| 文件 | 作用 |
-|------|------|
-| `STATE.md` | 权威进度：轮次、连续收敛轮数、状态、下一动作、阻塞项 |
-| `PLAN.md` | 第 0 轮：产品形态、入口、功能与场景设计 |
-| `FEATURE_MATRIX.md` | 功能 × 入口 × 场景 × 覆盖状态 × 证据位置 |
-| `ISSUES.md` | 问题总账（发现即立案，含状态机） |
-| `SUGGESTIONS.md` | 新方向 / 新功能建议 + MoA 决策链接 |
-| `runs/round-N.md` | 每轮场景、命令、结果、证据、复验重放 |
-| `decisions/DEC-NNN.md` | MoA 多模型决策记录 |
-| `FINAL_REPORT.md` | 最终报告：状态 + 覆盖摘要 + 修复清单（问题↔commit）+ 待确认清单 + 盲区 |
+| Env var | Purpose |
+|---|---|
+| `OPENROUTER_API_KEY` | OpenRouter key (default official base URL) |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI-compatible endpoint key + base |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | Route LLM calls through a proxy when set |
+| `LOOP_TESTING_MOA_MODELS` | Comma-separated reference-model override |
+| `LOOP_TESTING_MOA_AGGREGATOR` | Aggregator-model override |
+| `LOOP_TESTING_MOA_TIMEOUT_MS` | Per-call timeout in ms (default 120000) |
 
-### MoA 多模型决策配置
-
-需决策的问题走 `scripts/moa.mjs`（Node ≥ 20，零第三方依赖）。**API key 只从环境变量读，日志一律脱敏。**
-
-| 环境变量 | 作用 |
-|----------|------|
-| `OPENROUTER_API_KEY` | OpenRouter key（base 默认官方地址）|
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI 兼容端点 key 与 base |
-| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | 存在即 LLM 调用走代理 |
-| `LOOP_TESTING_MOA_MODELS` | 逗号分隔覆盖参考模型 |
-| `LOOP_TESTING_MOA_AGGREGATOR` | 覆盖聚合模型 |
-| `LOOP_TESTING_MOA_TIMEOUT_MS` | 单次调用超时毫秒（默认 120000）|
-
-也可用 `docs/looptesting/moa.config.json` 或 `--config <path>` 覆盖。**默认模型为发布时校准的顶级组合，会过时——请按需覆盖。**
+Config can also come from `docs/looptesting/moa.config.json` or `--config <path>`.
+**Default models are calibrated at release and will age — override as needed.**
 
 ```bash
 node skills/loop-testing/scripts/moa.mjs --input <ctx.md> --output <DEC.md>
-node skills/loop-testing/scripts/moa.mjs --input <ctx.md> --dry-run   # 只打印配置，不发请求
+node skills/loop-testing/scripts/moa.mjs --input <ctx.md> --dry-run   # print config, no requests
 ```
 
-**降级链**：部分参考模型失败 → 用其余继续；全部失败 → 仅聚合模型出建议；聚合失败 / 无 key → 退出码 2，编排层改单模型建议，**不阻塞循环**。
+**Degradation chain:** some reference models fail → continue with the rest → all fail →
+aggregator-only → aggregator fails / no key → exit 2, and the orchestrator falls back to a
+single-model recommendation. The loop is never blocked.
 
 ---
 
-## 🔒 红线（与 `SKILL.md` 一致，违反即停）
+## ❓ FAQ
 
-- **禁止** push / merge / 开 PR / 发布 / 部署 / force / rebase 到远端。
-- **禁止** 触碰生产系统、真实账号、真实用户数据、付费接口、真实第三方写操作。
-- **禁止** 用删功能 / 放宽断言 / 跳过测试 / 吞异常的方式"消灭"问题。
-- **禁止** 覆盖 / 清理 / 回滚用户已有未提交修改；无法安全隔离时不提交并记录。
-- **禁止** 为收敛而降级问题、少测凑"零新增"、未复验就标 VERIFIED、达上限谎报 PASS。
-- 疑似密钥**只记位置与风险类型，值一律脱敏**；安全测试只做本地非破坏性验证。
+**Q: How is this different from unit tests / CI?**
+Unit tests and CI verify assertions you **already wrote**, to prevent regressions.
+loop-testing **actually uses** your product like a real user to find bugs, UX, and logic
+issues you **didn't anticipate** — and fixes the safe ones. They're complementary.
+
+**Q: Will it change my code or break things?**
+It only works on a sandbox branch / worktree, and only makes low-risk, verifiable fixes
+that don't change product semantics; each fix is a separate, revertible atomic commit. It
+never pushes, deploys, touches production, or disturbs your uncommitted changes. Judgment
+calls are recorded, not acted on.
+
+**Q: Does it need network / API keys?**
+The QA loop itself runs offline. Only MoA multi-model decisions need an LLM API
+(`OPENROUTER_API_KEY` or an OpenAI-compatible endpoint); without a key it degrades to a
+single-model recommendation and doesn't block. A proxy in the environment is used
+automatically.
+
+**Q: What if a run is interrupted or the context fills up?**
+All progress is in `docs/looptesting/`. Re-trigger the skill to resume from `STATE.md` —
+rounds and ledger are preserved. For headless long runs, the `unattended-*.sh` drivers
+resume automatically until convergence.
+
+**Q: When is it "done"?**
+After two consecutive convergent low-risk rounds (no new P0–P2, full-feature regression
+with no coverage shrink), it stops and emits `FINAL_REPORT.md`. If it hits the round cap
+without converging, it honestly reports `INCOMPLETE` — never a fake `PASS`.
+
+**Q: Is the experience the same on Claude Code and Codex?**
+The core skill and artifacts are identical. Difference: Claude Code has the hooks
+mechanism layer (mechanically forbids stopping before convergence); Codex has no hooks and
+relies on prompt discipline + the unattended driver (see Known limitations).
 
 ---
 
-## ❓ 常见问题
+## ⚠️ Known limitations
 
-**Q：它和单元测试 / CI 有什么区别？**
-单元测试和 CI 校验你**已经写好**的断言，防止回归；loop-testing 像真实用户一样**实际使用**产品，去发现你**没想到**的 bug、体验和逻辑问题，能修的还顺手修掉。两者互补。
+- **Codex has no mechanism-layer gate.** Codex has no Stop-hook; resume and
+  "don't-stop-before-convergence" rest on prompt discipline. Verified once end-to-end in a
+  real Codex session, but that is a single-sample result — back it with `unattended-codex.sh`
+  multi-session resume.
+- **Codex stale install.** After changing the skill you must re-run `install-codex.sh`
+  (no auto-update); `--check-update` tells you when a newer tag exists.
+- **MoA default models age.** The default model list is release-time calibrated and 404s
+  gracefully on provider allowlists — override via env / config as needed.
+- **Headless single-shot truncation.** `claude -p` / `codex exec` may end before converging
+  — use the unattended driver for headless runs.
+- **Node ≥ 20 for MoA only.** The QA loop runs offline; without Node, MoA degrades to a
+  single-model recommendation.
 
-**Q：它会不会擅自改我的代码、把东西搞坏？**
-只在沙箱分支 / worktree 里改，且只做低风险、可验证、不改变产品语义的修复；每个修复单独原子提交、可回滚。全程禁止 push / 部署 / 碰生产 / 动你的未提交改动。需要决策的一律记录不擅动。
+### Recovering a stuck sentinel / crash residue
 
-**Q：需要联网 / API key 吗？**
-QA 循环本体离线可用。只有 MoA 多模型决策需要 LLM API（`OPENROUTER_API_KEY` 或 OpenAI 兼容端点）；没有 key 时自动降级为单模型建议，不阻塞。环境有代理会自动走代理。
+`docs/looptesting/.active` is the Stop-hook resume sentinel. It's removed on normal
+exit; if a run is SIGKILL'd with `STATE.md` non-terminal, it can linger and tax every stop.
+Recovery (any one):
 
-**Q：会话跑一半断了 / 上下文满了怎么办？**
-一切进度写在 `docs/looptesting/` 文件里。重新触发技能即从 `STATE.md` 断点续跑，不重置轮数、不清空台账。无头长跑用 `unattended-*.sh` 驱动自动续跑到收敛。
+- **Automatic:** the Stop-hook treats a non-terminal run whose `STATE.md` hasn't been
+  updated in 24h (override `LOOP_TESTING_GATE_STALE_SECONDS`, `0` disables) as abandoned —
+  it disarms the sentinel and allows the stop.
+- **Manual:** `rm docs/looptesting/.active`, or set `LOOP_TESTING_DISABLE_STOP_GATE=1` for
+  the session.
+- **Resume:** re-trigger the skill to continue from `STATE.md` (rounds are not reset).
 
-**Q：它什么时候算"做完"？**
-连续两轮"收敛低风险轮"（无新增 P0-P2、完成全功能回归且覆盖不缩水）才正常停止，输出 `FINAL_REPORT.md`。达轮次上限仍未收敛则如实标 `INCOMPLETE`，绝不把"用完轮次"写成"通过"。
-
-**Q：Claude Code 和 Codex 上体验一样吗？**
-核心技能与产物完全一致。区别：Claude Code 有 hooks 机制层（未收敛机制性禁止停止）；Codex 无 hooks，靠提示词纪律 + 无头驱动兜底（详见"已知限制"）。
+**Concurrency lock `docs/looptesting/.driver.lock`:** the unattended drivers take this lock
+to keep two drivers from racing the same project's STATE / ledger / worktree. It's released
+on normal exit and auto-stolen if the holding PID is dead. It's a best-effort
+accidental-double-launch guard, not a hard mutex. If a run was SIGKILL'd and its lock PID is
+unreadable, later runs refuse (fail-closed) with a message — after confirming no driver is
+live, `rm -rf docs/looptesting/.driver.lock`.
 
 ---
 
-## ⚠️ 已知限制
+## 🔒 Red lines (in sync with `SKILL.md`; violating one stops the run)
 
-- **Codex 无机制层 gate**：Codex 没有 Stop-hook，续跑与"未收敛禁止停止"仅靠提示词纪律。已实测一次真实 Codex 会话（`gpt-5.6-sol`）在无 gate 下把完整循环驱到合法收敛，但为 n=1 单模型单样例；建议以 `unattended-codex.sh` 多会话续跑兜底。
-- **决策类分流依赖模型判断**：模型可能把"这算不算问题"的语义可接受性自行拍板为"不是问题"。`references/issue-rules.md` 已加硬规则要求"静默接受异常输入必须立案、两解语义必进 `NEEDS_CONFIRMATION`"，并在真实 Codex 会话复测有效；副作用是偏向**过度立案**（安全方向，但增加待确认噪声）。
-- **Codex 侧 MoA 默认降级单模型**：即便 key 在场，Codex 默认把外网调用当"需授权"而降级；要真跑多模型委员会需在触发语显式授权外网。
-- **无头单次调用截断（F4）**：`claude -p` / `codex exec` 单次可能未收敛就结束——无头运行请用上文的续跑驱动。
-- **Node ≥ 20 仅 MoA 需要**：QA 循环本体离线可用；缺 Node 时 MoA 降级为单模型建议。
+- **Never** push / merge / open a PR / release / deploy / force / rebase to a remote.
+- **Never** touch production, real accounts, real user data, paid APIs, or real third-party
+  writes.
+- **Never** "eliminate" an issue by deleting features / loosening assertions / skipping
+  tests / swallowing exceptions.
+- **Never** overwrite / clean / revert your uncommitted changes; when isolation isn't safe,
+  don't commit and record it.
+- **Never** downgrade an issue to converge, under-test to fake "zero new", mark `VERIFIED`
+  without replay, or report `PASS` at the round cap.
+- Suspected secrets: **record only location and risk type; redact the value.** Security
+  testing stays local and non-destructive.
 
-### 卡住的哨兵 / 崩溃残留恢复
+---
 
-`docs/looptesting/.active` 是 Stop-hook 的续跑哨兵。正常收敛/退出时它会被自动摘除；若一次运行被强杀（如 `SIGKILL`）而 `STATE.md` 停在非终态，哨兵可能残留，导致该项目此后每次停止都被 gate 反复拦截。恢复方式（任一）：
-
-- **自动**：Stop-hook 会检测 `STATE.md` 超过 24 小时（默认，可用 `LOOP_TESTING_GATE_STALE_SECONDS` 覆盖，`0` 关闭）未更新的非终态运行，判为遗弃并放行、自动摘哨兵。
-- **手动即时**：删除哨兵 `rm docs/looptesting/.active`，或本次会话设 `LOOP_TESTING_DISABLE_STOP_GATE=1` 临时停用 gate。
-- **续跑**：重新触发技能即从 `STATE.md` 断点继续（不会重置轮数）。
-
-**无人值守驱动的并发锁 `docs/looptesting/.driver.lock`**：`unattended-*.sh` 启动时建此锁，避免两个驱动在同一项目上并发跑而互相污染 STATE/台账/worktree。正常退出即释放；崩溃残留（锁内记录的 PID 已不存活）会被下次启动自动偷用。这是**尽力而为的防误重启守卫，非硬互斥**（近乎同时启动的极端竞态不保证）。若某次被 `SIGKILL` 且锁内 PID 不可读，后续启动会**保守拒绝**（fail-closed）并提示手动清理——确认无驱动在跑后 `rm -rf docs/looptesting/.driver.lock` 即可。
+MIT License. Contributions and issues welcome.

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0 — 2026-07-12
+
+Minor: adds a notify-only update check (a new user-visible default behavior) and
+rewrites the README. Full suite `ALL GREEN` (15 test files; update-check 10/10,
+codex check-update 7/7).
+
+**Migration note — new default behavior:** once installed, the plugin now runs a
+`SessionStart` hook that prints a one-line "update available" notice when your
+installed version trails the latest GitHub tag. It is **notify-only** (never
+downloads or installs), checks the network **at most once per 24h**, is **silent and
+fast** when offline / rate-limited / in local `--plugin-dir` dev mode, and never
+blocks session start. **Opt out** with `LOOP_TESTING_DISABLE_UPDATE_CHECK=1`. No
+action is required to keep the previous behavior other than setting that env var.
+
+- **feat(update-check)**: new `hooks/update-check.sh` SessionStart hook + `hooks.json`
+  registration. Uses the GitHub **tags** API (this repo ships tags, not Releases),
+  picks the highest semver, caches to throttle, and emits a SessionStart
+  `additionalContext` notice only when a newer version exists. (+10 hook tests: the
+  GitHub API is stubbed via `file://` fixtures — no real network.)
+- **feat(install-codex)**: new `--check-update` mode — Codex has no SessionStart hook,
+  so it compares the installed marker version to the latest tag on demand and, when a
+  newer tag exists, tells the user to re-run the installer. (+7 install tests.)
+- **docs(readme)**: rewritten and split into English (`README.md`, the GitHub default
+  page) + Simplified Chinese (`README.zh-CN.md`) with a language switcher. Aligned to
+  current features (update notice, `--check-update`, driver concurrency lock,
+  stale-sentinel recovery); ledger-gate kept described as a best-effort cheat-cost
+  raiser (not a hard gate); env vars / flags / defaults cross-checked against the code.
+
 ## 0.2.6 — 2026-07-12
 
 Code-review follow-up to the v0.2.5 driver concurrency lock (DR-4). A fresh-context
