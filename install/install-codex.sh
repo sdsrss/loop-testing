@@ -100,24 +100,34 @@ do_install() {
   log "  source: $SRC"
   log "  dest:   $DEST"
 
-  if [ -e "$DEST" ]; then
-    if is_our_install "$DEST"; then
-      log "  existing loop-testing install found — backing up to $DEST.bak"
-      [ -e "$DEST.bak" ] && safe_remove "$DEST.bak"
-      if [ "$DRY_RUN" -eq 1 ]; then action "mv $DEST $DEST.bak"; else mv "$DEST" "$DEST.bak"; fi
-    else
-      echo "error: $DEST exists but is not a loop-testing install (no $MARKER marker)." >&2
-      echo "       refusing to overwrite a foreign directory. Move it aside and retry." >&2
-      exit 1
-    fi
+  # Refuse a foreign directory BEFORE touching anything.
+  if [ -e "$DEST" ] && ! is_our_install "$DEST"; then
+    echo "error: $DEST exists but is not a loop-testing install (no $MARKER marker)." >&2
+    echo "       refusing to overwrite a foreign directory. Move it aside and retry." >&2
+    exit 1
   fi
 
   action "mkdir -p $SKILLS_DIR"
-  action "cp -R $SRC -> $DEST"
+  action "cp -R $SRC -> $DEST (staged, then atomically swapped in)"
+  [ -e "$DEST" ] && action "backing up existing install to $DEST.bak"
   if [ "$DRY_RUN" -eq 0 ]; then
     mkdir -p "$SKILLS_DIR"
-    cp -R "$SRC" "$DEST"
-    write_marker
+    # Stage the full copy first, so a mid-copy failure NEVER leaves a partial
+    # (unmarked) $DEST that a later reinstall would refuse as "foreign" (audit C8).
+    local staging="$DEST.staging.$$"
+    rm -rf "$staging"
+    if ! cp -R "$SRC" "$staging"; then
+      rm -rf "$staging"
+      echo "error: copy failed — $DEST left unchanged." >&2
+      exit 1
+    fi
+    write_marker "$staging"
+    # Copy is complete and marked; now swap it in atomically.
+    if [ -e "$DEST" ]; then
+      [ -e "$DEST.bak" ] && safe_remove "$DEST.bak"
+      mv "$DEST" "$DEST.bak"
+    fi
+    mv "$staging" "$DEST"
   fi
 
   log ""
@@ -129,6 +139,7 @@ do_install() {
 }
 
 write_marker() {
+  local dir="${1:-$DEST}"
   local version
   version="$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$REPO_ROOT/.claude-plugin/plugin.json" 2>/dev/null \
     | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
@@ -138,7 +149,7 @@ write_marker() {
     printf 'installed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'source=%s\n' "$SRC"
     printf 'installer=install/install-codex.sh\n'
-  } > "$DEST/$MARKER"
+  } > "$dir/$MARKER"
 }
 
 verify_install() {
