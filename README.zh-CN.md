@@ -28,7 +28,8 @@
   通过、达轮次上限如实报 `INCOMPLETE`,绝不谎报 `PASS`。
 - **断点续跑。** 一切进度写在文件里,会话中断或上下文压缩后重新触发即从断点继续,不重置轮数、
   不清空台账。
-- **机制层强化(Claude Code)。** Stop-hook **机制性禁止**未收敛就停会话(硬保证);另一个 hook
+- **机制层强化(Claude Code)。** Stop-hook 拦截未收敛的停会话——fail-closed,带有界死锁阀
+  (同轮 3 次拦截后强制放行、24h 崩溃残留自动解除、`LOOP_TESTING_DISABLE_STOP_GATE=1` 退出);另一个 hook
   抬高伪造"已验证"的成本——best-effort、可被绕过,残余靠红线纪律与人工 diff 审查兜底,并非硬拦截。
 - **一份技能,两个平台。** Claude Code 与 Codex 共用同一 `SKILL.md`,一个仓库两处安装。
 - **安全内建。** 沙箱隔离、失败即拒(fail-closed)、密钥只从环境变量读且日志脱敏、绝不

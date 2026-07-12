@@ -26,6 +26,21 @@ fi
 
 INPUT=$(cat)
 
+# --- anchor to the project root (audit HK-7) ----------------------------------
+# Same anchoring as stop-gate.sh: the hook cwd is not guaranteed to be the
+# project root, and this gate's armed-check (.active) and replay lookup (runs/)
+# are cwd-relative. Precedence: $CLAUDE_PROJECT_DIR -> stdin "cwd" -> stay put.
+BASE="${CLAUDE_PROJECT_DIR:-}"
+if [ -z "$BASE" ] && command -v jq >/dev/null 2>&1; then
+  BASE=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+fi
+if [ -z "$BASE" ]; then
+  BASE=$(printf '%s' "$INPUT" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+fi
+if [ -n "$BASE" ] && [ -d "$BASE" ]; then
+  cd "$BASE" 2>/dev/null || true   # unresolvable -> stay in cwd (legacy)
+fi
+
 TOOL=""; FILE=""; NEWSTR=""; CONTENT=""; CMD=""; OLDSTR=""
 if command -v jq >/dev/null 2>&1; then
   TOOL=$(printf '%s' "$INPUT"    | jq -r '.tool_name // empty'                 2>/dev/null) || TOOL=""

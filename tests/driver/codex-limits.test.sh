@@ -125,4 +125,25 @@ bash "$CODEX_DRIVER" --project "$WS12" --codex-bin "$stub" --no-protect --max-se
 assert_rc $? 2 "lock with no readable holder PID -> refused (fail-closed), not stolen"
 assert_eq "0" "$(sessions_in_log "$WS12")" "no session launched on an ambiguous lock"
 
+# O. A REFUSED concurrent driver must not un-protect the running driver's skill
+#    dir (CX-1). Driver A is simulated by a live-holder lock ($$ — no background
+#    jobs, see DR-4 fixture lesson) plus an already read-only FAKE skill dir
+#    (mktemp, NEVER the real ~/.codex). Driver B runs WITHOUT --no-protect against
+#    that dir: it must exit 2 AND leave the dir non-writable — the old cleanup
+#    chmod'd it back to u+w on the way out of the refused run.
+WS13=$(mk_proj); FAKE13=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-fakeskill.XXXXXX")
+trap 'chmod -R u+w "$FAKE13" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13"' EXIT
+printf 'SKILL\n' > "$FAKE13/SKILL.md"
+chmod -R a-w "$FAKE13"                                    # driver A's protection in effect
+mkdir -p "$WS13/docs/looptesting/.driver.lock"
+echo "$$" > "$WS13/docs/looptesting/.driver.lock/pid"     # live holder = this test
+stub=$(write_stub "$WS13"); write_state "$WS13" RUNNING 0
+bash "$CODEX_DRIVER" --project "$WS13" --codex-bin "$stub" --skill-dir "$FAKE13" --max-sessions 1 >/dev/null 2>&1
+assert_rc $? 2 "live lock + protect on -> concurrent run still refused (exit 2)"
+if [ -w "$FAKE13/SKILL.md" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: refused driver un-protected the running driver's skill dir (CX-1)" >&2
+else
+  PASS=$((PASS+1)); echo "  ok: refused concurrent driver leaves skill-dir protection intact (CX-1)"
+fi
+
 report "codex-limits.test.sh"

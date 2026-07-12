@@ -40,6 +40,24 @@ if [ "${LOOP_TESTING_DISABLE_STOP_GATE:-0}" = "1" ]; then
   exit 0
 fi
 
+# --- anchor to the project root (audit HK-7) ----------------------------------
+# The hook process cwd is NOT guaranteed to be the directory holding
+# docs/looptesting/ (e.g. a session launched from a subdirectory). Resolving
+# cwd-relative made the whole gate silently fail OPEN in that topology.
+# Anchor precedence: $CLAUDE_PROJECT_DIR (set by Claude Code for hooks) ->
+# stdin JSON "cwd" field -> current cwd (legacy behavior, still exercised by
+# the driver topology which cd's into the project before launching).
+BASE="${CLAUDE_PROJECT_DIR:-}"
+if [ -z "$BASE" ] && command -v jq >/dev/null 2>&1; then
+  BASE=$(printf '%s' "$STDIN_JSON" | jq -r '.cwd // empty' 2>/dev/null)
+fi
+if [ -z "$BASE" ]; then
+  BASE=$(printf '%s' "$STDIN_JSON" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+fi
+if [ -n "$BASE" ] && [ -d "$BASE" ]; then
+  cd "$BASE" 2>/dev/null || true   # unresolvable -> stay in cwd (legacy)
+fi
+
 LT="docs/looptesting"
 ACTIVE="$LT/.active"
 STATE="$LT/STATE.md"

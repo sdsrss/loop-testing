@@ -104,4 +104,20 @@ touch -d "@$(( $(date +%s) - 200000 ))" "$WS12/docs/looptesting/STATE.md"   # ~2
 assert_rc $? 2 "GATE_STALE_SECONDS=0 disables disarm: old RUNNING remnant still blocks"
 assert_exists "$WS12/$ACT" "sentinel NOT disarmed when staleness is disabled"
 
+# N. HK-7: hook run from an UNRELATED cwd with $CLAUDE_PROJECT_DIR pointing at the
+#    armed workspace must still block a RUNNING stop — cwd-relative resolution
+#    used to miss the sentinel entirely and fail open (allow).
+WS13=$(mk_lt); OTHER=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-othercwd.XXXXXX")
+trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER"' EXIT
+arm "$WS13"; write_state "$WS13" RUNNING 1
+( cd "$OTHER" && printf '{"stop_hook_active": false}' | CLAUDE_PROJECT_DIR="$WS13" bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 2 "wrong cwd + CLAUDE_PROJECT_DIR -> still blocks RUNNING (HK-7)"
+
+# O. HK-7: same, but anchored via the stdin JSON "cwd" field (no env var) — the
+#    hook input's cwd is the fallback anchor when $CLAUDE_PROJECT_DIR is unset.
+WS14=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14"' EXIT
+arm "$WS14"; write_state "$WS14" RUNNING 1
+( cd "$OTHER" && printf '{"stop_hook_active": false, "cwd": "%s"}' "$WS14" | env -u CLAUDE_PROJECT_DIR bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 2 "wrong cwd + stdin cwd field -> still blocks RUNNING (HK-7)"
+
 report "stop-gate.test.sh"

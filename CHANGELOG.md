@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.4.2 — 2026-07-12
+
+Patch: third production-readiness audit follow-up (audit batch 7). Closes the four
+P2s the audit surfaced — all four the same shape: a guard correct on the main path
+but silently fail-open on an unclaimed side path. Each code fix landed RED-first.
+Full suite `ALL GREEN` (stop-gate 28, ledger-gate 18, codex-limits 26).
+
+- **fix(unattended-codex)**: a concurrent driver refused by the lock un-write-protected
+  the RUNNING driver's skill dir on its way out — `cleanup`'s `chmod -R u+w` was gated
+  only on `PROTECT`, and the trap is installed before `acquire_lock`, so the refused
+  run "restored" a protection it never applied. The restore is now gated on
+  `DID_PROTECT` (set only after this process actually applied the chmod), the same
+  ownership gating `release_lock` already had via `LOCK_OWNED`. (+2 codex driver
+  tests: a refused concurrent run exits 2 AND leaves the read-only skill dir
+  untouched.) CX-1.
+- **fix(hooks)**: stop-gate and ledger-gate resolved `docs/looptesting/` relative to
+  the hook process cwd, so a session whose hook cwd differs from the state dir (e.g.
+  launched from a subdirectory) made the whole mechanism layer silently fail OPEN —
+  stop-gate allowed the first stop, ledger-gate no-oped. Both hooks now anchor to
+  `$CLAUDE_PROJECT_DIR`, then the stdin JSON `cwd` field (jq with a sed fallback),
+  then the legacy cwd. (+4 hook tests: wrong-cwd RUNNING still blocks via both
+  anchors; wrong-cwd ledger allows a replay-footprinted VERIFIED and still denies an
+  armed bare-path fake.) HK-7.
+- **fix(tests)**: `run-all.sh` zero-discovery no longer passes — finding no `*.sh`,
+  no `*.test.sh`, or no `tests/moa` now fails the gate loudly, and a failed `cd`
+  exits 1. Previously only the shellcheck branch's empty-array check accidentally
+  caught an empty set, and only where shellcheck was installed — a moved/renamed
+  tests tree could report `ALL GREEN` having run nothing. Sandbox drill: the old
+  gate exits 0 on a tree with every test deleted; the new one exits 1. TS-1.
+- **docs(skill)**: the inline-fallback path (bundled scripts not locatable) now
+  instructs creating the `docs/looptesting/.active` sentinel, and round-0 §7 states
+  the sentinel requirement independently of `sandbox-setup.sh` — the sentinel's only
+  creator was the script, so the sanctioned inline path ran with the stop-gate
+  silently inert. NOTE: LLM-visible metadata; passes `claude plugin validate` and
+  the full suite, but the live-loop behavioral effect is NOT yet verified (same
+  caveat class as the 0.2.5 script-location note) — verification outstanding. PL-7.
+- **docs(readme)**: the stop-gate is no longer sold as "a hard guarantee" (EN + zh) —
+  it is fail-closed with a bounded deadlock valve (force-allow after 3 no-progress
+  blocks, 24h stale-run auto-disarm, `LOOP_TESTING_DISABLE_STOP_GATE=1` opt-out). DOC-1.
+
 ## 0.4.1 — 2026-07-12
 
 Patch: code-review follow-up on the v0.3.0/v0.4.0 work. Fixes an offline hard-fail in the

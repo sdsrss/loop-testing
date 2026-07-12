@@ -101,14 +101,21 @@ acquire_lock() {
 # signal in between can't leave the dir read-only. Trap EXIT + INT + TERM explicitly
 # (don't rely on bash's implicit EXIT-on-signal, which is version/platform-dependent);
 # only SIGKILL, which skips traps, can leave it read-only — unavoidable.
+# The restore is gated on DID_PROTECT, not PROTECT alone: a driver refused by
+# acquire_lock (another driver live on this project) never protected anything,
+# and must NOT chmod the RUNNING driver's skill dir back to writable on its way
+# out — that would strip the live run's protection (audit CX-1; same ownership
+# gating release_lock already has via LOCK_OWNED).
+DID_PROTECT=0
 cleanup() {
-  [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ] && chmod -R u+w "$SKILL_DIR" 2>/dev/null
+  [ "$DID_PROTECT" = "1" ] && [ -d "$SKILL_DIR" ] && chmod -R u+w "$SKILL_DIR" 2>/dev/null
   release_lock
 }
 trap cleanup EXIT INT TERM
 acquire_lock
 if [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
   chmod -R a-w "$SKILL_DIR" 2>/dev/null || true
+  DID_PROTECT=1
 fi
 
 RESUME_PROMPT='使用 loop-testing 技能：读取 docs/looptesting/STATE.md，从断点继续执行自测循环（若 STATE 不存在则从第 0 轮开始）。在当前会话内联执行整个循环，不要把循环委派给别的 agent 或 Task 工具。本会话尽量多完成整轮（选场景→像真实用户使用→发现即立案/复现/分级→修复+回归→复验+轮末结算），每轮末更新 STATE.md 的机器判读字段（round/converged_streak/status）。若已满足收敛判据（连续2轮收敛低风险轮）或保险停止条件，按 references/exit-and-report.md 写入终态（CONVERGED/INCOMPLETE/BLOCKED）并停止；否则显式声明「继续第 N+1 轮」。'

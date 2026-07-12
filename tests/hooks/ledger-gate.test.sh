@@ -100,4 +100,24 @@ WS16=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS
 json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS16")\",\"new_string\":\"### ISSUE-016 | P2 | OPEN | crash could not be verified yet\"}}"
 run_ledger "$WS16" "$json"; assert_rc $? 0 "OPEN issue with 'verified' lowercase prose -> allow"
 
+# 17. HK-7: hook run from an UNRELATED cwd with $CLAUDE_PROJECT_DIR pointing at the
+#     workspace. A legitimate VERIFIED (replay footprint EXISTS in the workspace's
+#     runs/) must be allowed — cwd-relative resolution used to look for runs/ under
+#     the wrong directory and false-deny.
+WS17=$(mk_lt); OTHER17=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-othercwd.XXXXXX")
+trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17"' EXIT
+echo "replayed ISSUE-021: repro cmd -> pass" > "$WS17/docs/looptesting/runs/round-1.md"
+json='{"tool_name":"Bash","tool_input":{"command":"printf \"### ISSUE-021 | P1 | VERIFIED | fixed\\n\" >> docs/looptesting/ISSUES.md"}}'
+( cd "$OTHER17" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$WS17" bash "$LEDGER" ) >/dev/null 2>&1
+assert_rc $? 0 "wrong cwd + CLAUDE_PROJECT_DIR: footprint in workspace runs/ -> allow (HK-7)"
+
+# 18. HK-7 fail-open direction: an ARMED loop's bare-ISSUES.md VERIFIED write (no
+#     footprint) must still be denied when the hook runs from an unrelated cwd —
+#     cwd-relative resolution missed the .active sentinel and let it through.
+WS18=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18"' EXIT
+: > "$WS18/docs/looptesting/.active"
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-022 | P1 | VERIFIED | faked\" >> ISSUES.md"}}'
+( cd "$OTHER17" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$WS18" bash "$LEDGER" ) >/dev/null 2>&1
+assert_rc $? 2 "wrong cwd + CLAUDE_PROJECT_DIR: armed bare-ISSUES.md VERIFIED w/o footprint -> deny (HK-7)"
+
 report "ledger-gate.test.sh"

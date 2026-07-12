@@ -42,19 +42,21 @@ arm()   { : > "$1/docs/looptesting/.active"; }        # create sentinel
 disarm(){ rm -f "$1/docs/looptesting/.active"; }
 
 # run_stop <ws> <stop_hook_active true|false> -> sets RC and prints stderr
+# CLAUDE_PROJECT_DIR is unset inside the subshell: these helpers exercise the
+# cwd-fallback anchor; the env/stdin-cwd anchors have dedicated HK-7 cases.
 run_stop() {
   local ws="$1" active="$2"
-  ( cd "$ws" && printf '{"stop_hook_active": %s}' "$active" | bash "$STOP" ) 2>/dev/null
+  ( cd "$ws" && printf '{"stop_hook_active": %s}' "$active" | env -u CLAUDE_PROJECT_DIR bash "$STOP" ) 2>/dev/null
 }
 run_stop_err() { # capture stderr
   local ws="$1" active="$2"
-  ( cd "$ws" && printf '{"stop_hook_active": %s}' "$active" | bash "$STOP" ) 2>&1 1>/dev/null
+  ( cd "$ws" && printf '{"stop_hook_active": %s}' "$active" | env -u CLAUDE_PROJECT_DIR bash "$STOP" ) 2>&1 1>/dev/null
 }
 
 # run_ledger <ws> <json> -> RC via $?; runs from ws cwd
 run_ledger() {
   local ws="$1" json="$2"
-  ( cd "$ws" && printf '%s' "$json" | bash "$LEDGER" ) >/dev/null 2>&1
+  ( cd "$ws" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" ) >/dev/null 2>&1
 }
 
 assert_rc()     { if [ "$1" -eq "$2" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — expected rc $2 got $1" >&2; fi; }

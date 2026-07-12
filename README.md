@@ -37,8 +37,10 @@ only for keys / payment / network permission, a suspected security vuln, or a ha
 - **Resume-safe.** All progress lives in files. After an interruption or context
   compaction, re-triggering the skill continues from the checkpoint — rounds and ledger
   are never reset.
-- **Mechanism-layer enforcement (Claude Code).** A Stop-hook *mechanically* forbids ending
-  the session before convergence (a hard guarantee). A companion hook raises the cost of
+- **Mechanism-layer enforcement (Claude Code).** A Stop-hook blocks ending the session
+  before convergence — fail-closed, with a bounded deadlock valve (force-allow after 3
+  no-progress blocks, 24h stale-run auto-disarm, `LOOP_TESTING_DISABLE_STOP_GATE=1`
+  opt-out). A companion hook raises the cost of
   faking a "verified" fix — best-effort and bypassable by design, with the residue covered
   by red-line discipline and human diff review; it is not a hard gate.
 - **One skill, two platforms.** Claude Code and Codex share the same `SKILL.md` — one repo,

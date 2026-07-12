@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Shared helpers for unattended-codex.sh (driver) tests. Source, don't execute.
 #
-# SAFETY: tests use a mktemp project + a STUB codex binary (--codex-bin) and
-# ALWAYS pass --no-protect so the real ~/.codex/skills is never chmod'd. The
-# real `codex` is NEVER invoked here. Each test cleans its own workspace.
+# SAFETY: tests use a mktemp project + a STUB codex binary (--codex-bin). The
+# real ~/.codex/skills is never chmod'd: tests either pass --no-protect, or
+# (protect-path cases) point --skill-dir at a mktemp FAKE dir. The real `codex`
+# is NEVER invoked here. Each test cleans its own workspace.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
