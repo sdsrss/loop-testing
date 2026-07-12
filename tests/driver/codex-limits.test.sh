@@ -165,4 +165,15 @@ stub=$(write_stub "$WS15"); write_state "$WS15" RUNNING 0
 assert_rc $? 0 "--no-watchdog: run proceeds to convergence without a watchdog binary"
 assert_file_contains "$WS15/docs/looptesting/driver.log" "WARNING: no timeout/gtimeout" "driver.log warns that the watchdog is disabled"
 
+# R. Watchdog KILL path (R49): a hung codex session is killed by the wall-clock
+#    watchdog (rc 124 in driver.log); two static sessions trip NO_PROGRESS.
+#    Mirrors loop driver O.
+WS16=$(mk_proj); trap 'chmod -R u+w "$FAKE13" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16"' EXIT
+printf '#!/usr/bin/env bash\nsleep 300\n' > "$WS16/hang-stub.sh"; chmod +x "$WS16/hang-stub.sh"
+write_state "$WS16" RUNNING 1
+bash "$CODEX_DRIVER" --project "$WS16" --codex-bin "$WS16/hang-stub.sh" --no-protect --session-minutes 0 --max-sessions 5 >/dev/null 2>&1
+assert_rc $? 5 "hung sessions killed by the watchdog -> NO_PROGRESS exit 5"
+assert_eq "2" "$(sessions_in_log "$WS16")" "watchdog bounded exactly 2 hung sessions"
+assert_file_contains "$WS16/docs/looptesting/driver.log" "exit=124" "driver.log records the watchdog kill (rc 124)"
+
 report "codex-limits.test.sh"

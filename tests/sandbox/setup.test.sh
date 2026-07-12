@@ -80,4 +80,50 @@ if ( cd "$REPO4" && git worktree list --porcelain | grep -qxF "worktree $WT4" );
   PASS=$((PASS+1)); echo "  ok: rebuilt worktree is a registered git worktree"
 else FAIL=$((FAIL+1)); echo "  FAIL: rebuilt worktree not in git worktree list" >&2; fi
 
+# --- R53: trailing value-flags fail-closed (exit 2), no silent default -------
+# Old behavior: a dangling --worktree-path/--branch/--baseline-tag silently fell
+# back to the computed default and PROCEEDED (built a worktree at the default
+# sibling path) — inconsistent with the drivers' fail-closed arg handling.
+WS5=$(mk_ws); trap 'rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5"' EXIT
+REPO5="$WS5/proj"
+for flag in --branch --worktree-path --baseline-tag; do
+  ( cd "$REPO5" && timeout 10 bash "$SETUP" --mode worktree "$flag" ) >/dev/null 2>&1
+  assert_eq "2" "$?" "trailing $flag -> exit 2 (fail-closed, no silent default)"
+done
+assert_absent "$WS5/proj-qa-loop" "no worktree built from a dangling flag"
+assert_absent "$REPO5/docs/looptesting/.sandbox/ownership.env" "no marker written from a dangling flag"
+
+# --- R52 (DR-9): branch-mode short-circuit re-verifies the current branch ----
+# setup(branch) -> user switches away -> setup(branch) again must REFUSE (the
+# loop would run/commit on the wrong branch), not report "already initialized";
+# switching back to the qa branch makes the short-circuit succeed again.
+WS6=$(mk_ws); trap 'rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6"' EXIT
+REPO6="$WS6/proj"
+orig_branch="$(cd "$REPO6" && git branch --show-current)"
+( cd "$REPO6" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
+assert_ok $? "branch-mode setup for the re-verify case"
+( cd "$REPO6" && git switch -q "$orig_branch" )
+( cd "$REPO6" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
+assert_eq "7" "$?" "short-circuit on the wrong branch -> refuse (exit 7), no phantom sandbox"
+assert_eq "$orig_branch" "$(cd "$REPO6" && git branch --show-current)" "refusal leaves the user's branch untouched"
+( cd "$REPO6" && git switch -q qa/loop-testing )
+( cd "$REPO6" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
+assert_ok $? "back on the qa branch -> short-circuit succeeds again"
+
+# --- R52 legacy marker: a pre-SANDBOX_BRANCH marker must NOT be refused --------
+# A branch-mode sandbox from before this change has no SANDBOX_BRANCH field; the
+# recorded branch is unknown, so the re-verify must SKIP (not guess the invocation
+# default and refuse a valid, correctly-positioned sandbox with wrong advice).
+WS7=$(mk_ws); trap 'rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7"' EXIT
+REPO7="$WS7/proj"
+( cd "$REPO7" && bash "$SETUP" --mode branch --branch qa/custom ) >/dev/null 2>&1
+assert_ok $? "setup on a custom branch for the legacy case"
+# Strip SANDBOX_BRANCH to simulate a marker written by the previous version.
+MK="$REPO7/docs/looptesting/.sandbox/ownership.env"
+grep -v '^SANDBOX_BRANCH=' "$MK" > "$MK.tmp" && mv "$MK.tmp" "$MK"
+# Tree correctly on qa/custom; resume with DEFAULT flags (branch would guess qa/loop-testing).
+( cd "$REPO7" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
+assert_ok $? "legacy marker (no SANDBOX_BRANCH) -> short-circuit, not a wrong-branch refusal"
+assert_eq "qa/custom" "$(cd "$REPO7" && git branch --show-current)" "legacy re-verify left the user's branch untouched"
+
 report "setup.test.sh"

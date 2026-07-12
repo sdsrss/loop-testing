@@ -74,6 +74,13 @@ const MAX_CONTEXT_CHARS = 16000;
 // hostile endpoint/proxy streaming unbounded data can't OOM a headless run.
 // Override via LOOP_TESTING_MOA_MAX_RESPONSE_BYTES (chat completions are KBs).
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+// Fan-out width guard (audit MO-7): every reference model is a parallel PAID
+// call. Duplicates are NOT collapsed — reference_temperature defaults to 0.6, so
+// a repeated model is a legitimate self-consistency sample; duplicates count
+// toward this cap. More entries than the cap is a clean error, not a silent
+// truncation — a committee that wide is a pasted typo, not intent (see
+// resolveConfig, which enforces this after all config/env sources are merged).
+const MAX_REFERENCE_MODELS = 8;
 
 // Provider registry. Both are OpenAI chat-completions wire format.
 const PROVIDERS = {
@@ -201,6 +208,18 @@ async function resolveConfig(args, env) {
   }
   if (env.LOOP_TESTING_MOA_AGGREGATOR && env.LOOP_TESTING_MOA_AGGREGATOR.trim()) {
     cfg.aggregator = { model: env.LOOP_TESTING_MOA_AGGREGATOR.trim() };
+  }
+
+  // Fan-out width guard (audit MO-7) — applied after all sources so config AND
+  // env lists are covered. A committee wider than the cap is a pasted typo; it
+  // is a clean error, not a silent truncation. Repeated models are NOT collapsed:
+  // reference_temperature defaults to 0.6, so re-listing a model is a legitimate
+  // self-consistency sample, not a redundant identical call — duplicates simply
+  // count toward the cap.
+  if (cfg.reference_models.length > MAX_REFERENCE_MODELS) {
+    throw new Error(
+      `config lists ${cfg.reference_models.length} reference_models — capped at ${MAX_REFERENCE_MODELS} parallel paid calls; trim the list`,
+    );
   }
 
   return cfg;
@@ -473,6 +492,12 @@ function referenceMessages(contextMd) {
   ];
 }
 
+// TRUST BOUNDARY (audit MO-6, accepted residual): reference-model output is
+// embedded verbatim below — a hostile/compromised reference endpoint can try to
+// steer the aggregator. Accepted because the output is advisory-only (the agent
+// archives decisions, never executes them), redacted, and human-reviewed; fence
+// markers were rejected as fakeable by the same adversary. Do not feed these
+// opinions into anything that acts without human review.
 function aggregatorMessages(contextMd, opinions) {
   const opinionBlock = opinions.length
     ? opinions.map((o, i) => `### 参考意见 ${i + 1}（模型：${o.model}）\n${o.content}`).join('\n\n')

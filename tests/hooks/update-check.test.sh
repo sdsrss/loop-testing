@@ -85,4 +85,14 @@ assert_empty "$out" "unparseable/offline response -> no notice"
 out=$(LOOP_TESTING_UPDATE_FORCE=1 bash "$UPDATE" 2>/dev/null)
 assert_empty "$out" "no CLAUDE_PLUGIN_ROOT -> silent"
 
+# 9. No curl on PATH -> silent exit 0 (the previously-untested no-curl branch).
+#    PATH is a symlink farm of the real bins minus curl.
+r=$(mkroot 0.2.6 c8); BINF="$WS/nobin"; mkdir -p "$BINF"
+for p in /bin/* /usr/bin/*; do [ -x "$p" ] && ln -sf "$p" "$BINF/${p##*/}" 2>/dev/null; done
+rm -f "$BINF/curl"
+out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 LOOP_TESTING_UPDATE_CACHE="$WS/cache8" \
+      PATH="$BINF" bash "$UPDATE" 2>/dev/null); rc=$?
+assert_empty "$out" "no curl on PATH -> silent"
+if [ "$rc" -eq 0 ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: no-curl branch must exit 0, got $rc" >&2; fi
+
 report "update-check.test.sh"

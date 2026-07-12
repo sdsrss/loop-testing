@@ -120,4 +120,17 @@ json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-022 | P1 | V
 ( cd "$OTHER17" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$WS18" bash "$LEDGER" ) >/dev/null 2>&1
 assert_rc $? 2 "wrong cwd + CLAUDE_PROJECT_DIR: armed bare-ISSUES.md VERIFIED w/o footprint -> deny (HK-7)"
 
+# 19. No jq AND no python3 -> the gate is documented to fail OPEN with a notice
+#     ("a gate must never brick a session") — previously untested.
+WS19=$(mk_lt); BINL=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-noparse.XXXXXX")
+trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL"' EXIT
+for b in bash grep sed head cut tr cat rm date printf dirname; do
+  p=$(command -v "$b" 2>/dev/null) && ln -sf "$p" "$BINL/$b"
+done
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-030 | P1 | VERIFIED | faked\" >> docs/looptesting/ISSUES.md"}}'
+err=$( cd "$WS19" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR PATH="$BINL" bash "$LEDGER" 2>&1 >/dev/null ); rc=$?
+assert_rc $rc 0 "no jq/python3 -> fail open (allow), never brick the session"
+if printf '%s' "$err" | grep -q 'gate inactive'; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: fail-open must announce itself ('gate inactive'), got [$err]" >&2; fi
+
 report "ledger-gate.test.sh"

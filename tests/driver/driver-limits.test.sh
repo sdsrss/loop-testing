@@ -91,6 +91,11 @@ CLAUDE_CODE_COORDINATOR_MODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 \
 CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=sess-abc \
   bash "$DRIVER" --project "$WS7" --claude-bin "$WS7/envstub.sh" --max-sessions 1 >/dev/null 2>&1
 assert_rc $? 0 "converged after a sanitized session -> exit 0"
+# Existence first: `assert_eq "" "$(cat … 2>/dev/null)"` alone passes on a MISSING
+# file exactly like an empty one, so it can't tell "stub never ran" from "vars
+# correctly sanitized" (vacuous-pass idiom, audit note).
+if [ -f "$WS7/docs/looptesting/child-env.txt" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: envstub did not run (child-env.txt missing) — F6 assert would be vacuous" >&2; fi
 assert_eq "" "$(cat "$WS7/docs/looptesting/child-env.txt" 2>/dev/null)" "coordinator-mode env vars unset for the child (F6)"
 
 # J. Concurrency guard: a second driver is refused while a LIVE holder holds the lock
@@ -145,5 +150,18 @@ stub=$(write_stub "$WS12"); write_state "$WS12" RUNNING 0
 ( PATH="$BINF" STUB_CONVERGE_AT=1 bash "$DRIVER" --project "$WS12" --claude-bin "$stub" --no-watchdog --max-sessions 3 ) >/dev/null 2>&1
 assert_rc $? 0 "--no-watchdog: run proceeds to convergence without a watchdog binary"
 assert_file_contains "$WS12/docs/looptesting/driver.log" "WARNING: no timeout/gtimeout" "driver.log warns that the watchdog is disabled"
+
+# O. Watchdog KILL path (R49): a session that HANGS is killed by the wall-clock
+#    watchdog (rc 124 recorded in driver.log), and two such fingerprint-static
+#    sessions trip NO_PROGRESS. This is the sole wall-clock bound on a hung
+#    session and was previously never exercised — only detection logic was.
+#    --session-minutes 0 clamps the per-session budget to 1s, so the test is fast.
+WS13=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF" "$WS12" "$WS13"' EXIT
+printf '#!/usr/bin/env bash\nsleep 300\n' > "$WS13/hang-stub.sh"; chmod +x "$WS13/hang-stub.sh"
+write_state "$WS13" RUNNING 1
+bash "$DRIVER" --project "$WS13" --claude-bin "$WS13/hang-stub.sh" --session-minutes 0 --max-sessions 5 >/dev/null 2>&1
+assert_rc $? 5 "hung sessions killed by the watchdog -> NO_PROGRESS exit 5"
+assert_eq "2" "$(sessions_in_log "$WS13")" "watchdog bounded exactly 2 hung sessions"
+assert_file_contains "$WS13/docs/looptesting/driver.log" "exit=124" "driver.log records the watchdog kill (rc 124)"
 
 report "driver-limits.test.sh"

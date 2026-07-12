@@ -199,6 +199,7 @@ function tlsChatHandler({ aggModel }) {
 function startConnectProxy({ key, cert, chatHandler: ch, status = '200 Connection established', hang = false } = {}) {
   const connects = [];
   const sni = [];
+  const headers = [];   // full CONNECT header blocks (for Proxy-Authorization asserts, R51)
   let httpsServer = null;
   if (key && cert && ch) {
     httpsServer = https.createServer(
@@ -211,7 +212,9 @@ function startConnectProxy({ key, cert, chatHandler: ch, status = '200 Connectio
     const server = net.createServer((sock) => {
       sock.on('error', () => {});
       sock.once('data', (chunk) => {
-        connects.push(chunk.toString('utf8').split('\r\n')[0]);
+        const text = chunk.toString('utf8');
+        connects.push(text.split('\r\n')[0]);
+        headers.push(text.split('\r\n\r\n')[0]);
         if (hang) return;                          // never reply -> exercise the own timeout
         if (!status.startsWith('200')) {
           sock.write(`HTTP/1.1 ${status}\r\n\r\n`); sock.end(); return;
@@ -224,7 +227,7 @@ function startConnectProxy({ key, cert, chatHandler: ch, status = '200 Connectio
       resolve({
         port: server.address().port,
         url: `http://127.0.0.1:${server.address().port}`,
-        connects, sni,
+        connects, sni, headers,
         close: () => new Promise((r) => server.close(r)),
       });
     });
@@ -564,6 +567,56 @@ test('config override: env LOOP_TESTING_MOA_* wins over config file', async () =
   });
 });
 
+test('fan-out guard: repeated reference_models are PRESERVED, not collapsed (MO-7)', async () => {
+  await withWorkspace(async (dir) => {
+    // reference_temperature defaults to 0.6, so re-listing a model is a valid
+    // self-consistency sample (N stochastic calls -> N opinions), not a redundant
+    // identical call. Under the cap it must pass through untouched, no "collapsed" note.
+    const input = await writeInput(dir);
+    const config = await writeConfig(dir, {
+      reference_models: ['dup-a', 'dup-a', 'dup-b', 'dup-a'],
+    });
+    const { code, stdout, stderr } = await runMoa(
+      ['--input', input, '--config', config, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-fake' }, dir,
+    );
+    assert.equal(code, 0, stderr);
+    assert.doesNotMatch(stderr, /collapsed/, 'must not silently collapse repeated models');
+    const occurrences = stdout.split('dup-a').length - 1;
+    assert.equal(occurrences, 3, `dup-a should appear 3× in the dry-run (all kept), saw ${occurrences}`);
+  });
+});
+
+test('fan-out guard: more than 8 reference_models -> clean error exit 1 (MO-7)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const config = await writeConfig(dir, {
+      reference_models: Array.from({ length: 9 }, (_, i) => `wide-${i}`),
+    });
+    const res = await runMoa(
+      ['--input', input, '--config', config, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-fake' }, dir,
+    );
+    assertCleanUserError(res);
+    assert.match(res.stderr, /capped at 8 parallel paid calls/);
+  });
+});
+
+test('fan-out guard: duplicates count toward the cap (9 copies of one model -> exit 1) (MO-7)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const config = await writeConfig(dir, {
+      reference_models: Array.from({ length: 9 }, () => 'same-model'),
+    });
+    const res = await runMoa(
+      ['--input', input, '--config', config, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-fake' }, dir,
+    );
+    assertCleanUserError(res);
+    assert.match(res.stderr, /capped at 8 parallel paid calls/);
+  });
+});
+
 // A user error (bad flag / bad config) must read as a clean one-line message,
 // never a leaked Node stack trace — the engine is invoked by the driver/skill
 // and stack noise pollutes decision archives and logs.
@@ -747,6 +800,35 @@ test('proxy CONNECT tunnel: https origin routes through CONNECT+TLS; CONNECT tar
       }
     });
   });
+
+test('proxy CONNECT tunnel: URL credentials are sent as Proxy-Authorization on the CONNECT (R51)', async () => {
+  await withWorkspace(async (dir) => {
+    // A 403 proxy is enough: we assert the CONNECT *request* carried the header
+    // (percent-decoded, base64-encoded), not that the tunnel succeeds.
+    const proxy = await startConnectProxy({ status: '403 Forbidden' });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, ONE_REF_HTTPS);
+      const blob = Buffer.from('tunneluser:tunnelpw!').toString('base64');
+      const { code } = await runMoa(
+        ['--input', input, '--config', config],
+        {
+          OPENAI_API_KEY: 'sk-fake',
+          OPENAI_BASE_URL: 'https://api.openai.com/v1',    // https origin -> CONNECT branch
+          HTTPS_PROXY: `http://tunneluser:tunnelpw%21@127.0.0.1:${proxy.port}`,
+        }, dir,
+      );
+      assert.equal(code, 2, 'refused CONNECT -> aggregator unavailable (exit 2)');
+      const hdrBlock = proxy.headers.join('\n');
+      assert.ok(
+        hdrBlock.includes(`Proxy-Authorization: Basic ${blob}`),
+        `CONNECT request lacked the expected Proxy-Authorization header:\n${hdrBlock}`,
+      );
+    } finally {
+      await proxy.close();
+    }
+  });
+});
 
 test('proxy CONNECT tunnel: a non-200 CONNECT reply fails cleanly (exit 2, no stack)', async () => {
   await withWorkspace(async (dir) => {

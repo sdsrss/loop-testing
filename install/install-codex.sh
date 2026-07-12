@@ -138,6 +138,24 @@ do_install() {
     exit 1
   fi
 
+  # Reap stale staging orphans from PRIOR runs (audit IN-1): a SIGKILL'd install
+  # skips traps and leaves `<name>.staging.<pid>`; each run stages under its own
+  # $$, so no later run ever removed them. Guards: exact basename shape, numeric
+  # pid suffix, and the owner PID confirmed DEAD — never reap a live parallel
+  # install's staging (same never-steal-on-ambiguity rule as the driver lock).
+  local orphan opid
+  for orphan in "$DEST".staging.*; do
+    [ -e "$orphan" ] || continue
+    opid="${orphan##*.}"
+    case "$opid" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$opid" 2>/dev/null && continue
+    case "$orphan" in
+      */"$SKILL_NAME".staging.*)
+        if [ "$DRY_RUN" -eq 1 ]; then action "rm -rf $orphan (stale staging orphan)"
+        else rm -rf "$orphan"; log "  reaped stale staging orphan: $orphan"; fi ;;
+    esac
+  done
+
   action "mkdir -p $SKILLS_DIR"
   action "cp -R $SRC -> $DEST (staged, then atomically swapped in)"
   [ -e "$DEST" ] && action "backing up existing install to $DEST.bak"

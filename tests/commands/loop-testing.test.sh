@@ -48,6 +48,30 @@ for f in "$CMD" "$PROMPT"; do
   has "$f" 'loop-testing` skill'       "$n references the loop-testing skill"
 done
 
+# ── R50: guards anchored to their OWN mode block, not just present anywhere ─────
+# A reordering edit that keeps every token but moves "do NOT start a run" out of
+# the status/report blocks (so `status` could start a run) used to pass the
+# global greps above. Extract each top-level bullet block and assert the guard
+# lives INSIDE the right block.
+block() { # file start-regex -> the bullet block from the matching '- ' line to the next '- '
+  awk -v s="$2" '
+    !inb && $0 ~ s { inb=1; print; next }
+    inb && /^- /   { exit }
+    inb            { print }
+  ' "$1"
+}
+block_has() { # file start-regex needle label
+  if block "$1" "$2" | tr '[:space:]' ' ' | tr -s ' ' | grep -qF "$3"; then pass "$4"
+  else fail "$4 (block '$2' in ${1##*/} lacks '$3')"; fi
+}
+for f in "$CMD" "$PROMPT"; do
+  n="${f##*/}"
+  block_has "$f" '^- \*\*.*status' 'do NOT start a run' "$n: no-run guard sits INSIDE the status block"
+  block_has "$f" '^- \*\*.*report' 'do NOT start a run' "$n: no-run guard sits INSIDE the report block"
+  block_has "$f" '^- \*\*.*(empty|start)' 'do NOT reset the round' "$n: no-reset guard sits INSIDE the start/resume block"
+  block_has "$f" '^- \*\*.*(empty|start)' 'skill' "$n: skill routing sits INSIDE the start/resume block"
+done
+
 finish() {
   if [ "$_fails" -eq 0 ]; then printf '%s: PASS\n' "$_name"; exit 0
   else printf '%s: FAIL\n' "$_name"; exit 1; fi

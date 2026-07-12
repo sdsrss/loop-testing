@@ -26,12 +26,14 @@ ALLOW_DIRTY=0
 
 die() { echo "sandbox-setup: $*" >&2; exit "${2:-1}"; }
 
+# Value-taking flags fail closed on a missing value (audit DR-10) — a dangling
+# trailing flag must never silently fall back to the computed default and proceed.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --mode)          MODE="${2:-}"; shift; shift ;;
-    --worktree-path) WT_PATH="${2:-}"; shift; shift ;;
-    --branch)        BRANCH="${2:-}"; shift; shift ;;
-    --baseline-tag)  BASELINE_TAG="${2:-}"; shift; shift ;;
+    --mode)          [ $# -ge 2 ] || die "missing value for --mode" 2;          MODE="$2"; shift; shift ;;
+    --worktree-path) [ $# -ge 2 ] || die "missing value for --worktree-path" 2; WT_PATH="$2"; shift; shift ;;
+    --branch)        [ $# -ge 2 ] || die "missing value for --branch" 2;        BRANCH="$2"; shift; shift ;;
+    --baseline-tag)  [ $# -ge 2 ] || die "missing value for --baseline-tag" 2;  BASELINE_TAG="$2"; shift; shift ;;
     --allow-dirty)   ALLOW_DIRTY=1; shift ;;
     *) die "unknown argument: $1" 2 ;;
   esac
@@ -82,6 +84,29 @@ if [ -f "$MARKER" ]; then
     [ -z "$WT_PATH" ] && WT_PATH="$RECORDED_WT"
     rm -f "$MARKER"
   else
+    # Branch-mode re-verify (audit DR-9): the user may have switched branches
+    # since setup; handing back "already initialized" would let the loop run
+    # (and commit) on whatever branch is checked out. Worktree mode needs no
+    # check — its isolation is the worktree itself, verified above.
+    RECORDED_MODE="$(grep -E '^MODE=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+    if [ "$RECORDED_MODE" = "branch" ]; then
+      # Only re-verify against the branch the marker ACTUALLY recorded. A legacy
+      # marker (written before SANDBOX_BRANCH existed) has no recorded branch, so
+      # the sandbox's branch is unknown — guessing the invocation default and
+      # refusing would break a valid custom-branch sandbox with wrong advice
+      # (and could false-pass onto the wrong branch). Skip the check for legacy
+      # markers; new sandboxes always record SANDBOX_BRANCH so they are covered.
+      want="$(grep -E '^SANDBOX_BRANCH=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+      if [ -n "$want" ]; then
+        # `branch --show-current` needs git >= 2.22; symbolic-ref is the portable
+        # equivalent — empty + nonzero on detached HEAD, exactly like --show-current
+        # — so older git can't misread a valid branch as detached and false-refuse.
+        cur="$(git -C "$TOP" symbolic-ref --short -q HEAD 2>/dev/null)"
+        if [ "$cur" != "$want" ]; then
+          die "branch-mode sandbox lives on '$want' but the tree is on '${cur:-<detached>}' — run 'git switch $want' (or sandbox-clean + re-setup); refusing a sandbox that would commit onto the wrong branch" 7
+        fi
+      fi
+    fi
     seed_dirs_and_templates   # re-create only files the user may have deleted
     echo "sandbox-setup: already initialized (marker present); left existing state untouched."
     exit 0
@@ -147,6 +172,7 @@ git -C "$TOP" status --porcelain > "$SB/git-status-baseline.txt" 2>/dev/null || 
 {
   echo "SANDBOX_VERSION=1"
   echo "MODE=$MODE"
+  echo "SANDBOX_BRANCH=$BRANCH"
   echo "TOP=$TOP"
   echo "CREATED_BRANCH=$CREATED_BRANCH"
   echo "CREATED_TAG=$CREATED_TAG"

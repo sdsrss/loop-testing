@@ -68,4 +68,23 @@ if [ -z "$(ls -d "$sb3"/loop-testing.staging.* 2>/dev/null)" ]; then
   pass "signal: no .staging residue after interrupt"
 else fail "signal: staging dir residue remains after interrupt"; fi
 
+# --- stale-orphan reap: a SIGKILL'd prior run's staging dir is reaped (IN-1) ---
+# SIGKILL skips traps, leaving `loop-testing.staging.<pid>`; each run stages
+# under its own $$, so before this fix no later run ever removed the orphan.
+# The reap must be liveness-gated: a staging dir whose pid suffix is a LIVE
+# process (a parallel install mid-flight) must not be touched.
+sb4="$(make_sandbox)"
+trap 'chmod u+w "$sb2" 2>/dev/null; rm -rf "$sandbox" "$sb2" "$sb3" "$shim" "$sb4"' EXIT
+d4="$sb4/loop-testing"
+dead_pid="$(bash -c 'echo $$')"                       # guaranteed-dead pid, no background job
+mkdir -p "$sb4/loop-testing.staging.$dead_pid"
+echo stale > "$sb4/loop-testing.staging.$dead_pid/SKILL.md"
+mkdir -p "$sb4/loop-testing.staging.$$"               # live "owner" = this test process
+bash "$INSTALLER" --target "$sb4" >/dev/null 2>&1
+assert_eq "$?" "0" "reap: install over stale orphans exits 0"
+assert_no_path "$sb4/loop-testing.staging.$dead_pid" "reap: dead-owner staging orphan reaped"
+assert_path    "$sb4/loop-testing.staging.$$"        "reap: live-owner staging dir NOT touched"
+assert_path    "$d4/SKILL.md"                        "reap: install itself completed normally"
+rm -rf "$sb4/loop-testing.staging.$$"
+
 finish

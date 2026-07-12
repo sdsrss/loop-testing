@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.6.0 — 2026-07-12
+
+Minor: audit batch 3 (roadmap R49–R56) — coverage hardening, sandbox/driver
+fail-closed fixes, MoA fan-out guard, plus two fixes from an independent
+workflow-backed code review. Full suite `ALL GREEN` (stop-gate 31, ledger 20,
+update-check 12, driver-limits 31, codex-limits 33, setup 39, moa 34).
+
+**Migration note — new default behavior:** the MoA engine now REFUSES (exit 1)
+when a config's `reference_models` list exceeds 8 entries, instead of firing that
+many parallel paid calls. A committee wider than 8 is almost always a paste error;
+the error names the count and says "trim the list." Duplicates are counted, not
+collapsed — re-listing a model is a legitimate self-consistency sample because
+`reference_temperature` defaults to 0.6. Configs with ≤8 models see no change.
+
+- **fix(moa)**: `MAX_REFERENCE_MODELS=8` fan-out guard — >8 reference_models is a
+  clean error (exit 1), applied after config+env merge; duplicates count toward
+  the cap and are NOT deduped (temp>0 makes a repeat a distinct sample). MO-7.
+- **fix(sandbox)**: branch-mode resume re-verifies the checked-out branch against
+  the marker's recorded `SANDBOX_BRANCH` and refuses (exit 7) a wrong-branch
+  resume that would commit onto the user's branch; legacy markers with no recorded
+  branch are skipped (not guessed). Branch check uses `symbolic-ref` (portable to
+  git < 2.22, empty-on-detached like `--show-current`). DR-9 + code-review fixes.
+- **fix(sandbox)**: value-taking flags (`--branch`/`--worktree-path`/`--baseline-tag`)
+  fail closed (exit 2) on a missing trailing value instead of silently building a
+  sandbox at the computed default. DR-10.
+- **fix(install-codex)**: stale staging-dir orphans are reaped only when the owning
+  PID is confirmed dead (`kill -0`), never while a parallel install holds it —
+  same "don't-steal-on-ambiguity" rule as the driver lock. IN-1.
+- **perf(drivers)**: `runs_sig`/`bootstrap_sig` compute byte totals via `wc -c`
+  path arithmetic (stat, not full-file read); identical across both drivers. DR-8.
+- **test**: coverage batch — stop-gate python3-only parse + `LOOP_TESTING_DISABLE_STOP_GATE`
+  escape hatch, ledger no-jq/python3 fail-open confession, update-check no-curl
+  branch, watchdog-kill path, CONNECT `Proxy-Authorization` assertion, slash-command
+  guard block-anchoring, install idempotency/orphan-reap. R49–R51, R56.
+
 ## 0.5.0 — 2026-07-12
 
 Minor: audit batch 7 second wave (roadmap R42–R48) — driver watchdog/shutdown

@@ -120,4 +120,26 @@ arm "$WS14"; write_state "$WS14" RUNNING 1
 ( cd "$OTHER" && printf '{"stop_hook_active": false, "cwd": "%s"}' "$WS14" | env -u CLAUDE_PROJECT_DIR bash "$STOP" ) >/dev/null 2>&1
 assert_rc $? 2 "wrong cwd + stdin cwd field -> still blocks RUNNING (HK-7)"
 
+# P. python3-only parser path (jq absent, python3 present): fresh stops must
+#    reset the counter exactly like the jq (L) and grep (K) paths — the third
+#    leg of the three-way parser was previously untested.
+WS15=$(mk_lt); BINP=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-py3bin.XXXXXX")
+trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP"' EXIT
+for b in bash grep sed head tr cat rm date stat timeout mktemp printf python3; do
+  p=$(command -v "$b" 2>/dev/null) && ln -sf "$p" "$BINP/$b"
+done
+arm "$WS15"; write_state "$WS15" RUNNING 1
+( cd "$WS15" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR PATH="$BINP" bash "$STOP" ) >/dev/null 2>&1
+( cd "$WS15" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR PATH="$BINP" bash "$STOP" ) >/dev/null 2>&1
+read -r pc _ < "$WS15/$CF"
+assert_eq "1" "$pc" "python3-only parser resets counter on each fresh stop (no jq)"
+
+# Q. LOOP_TESTING_DISABLE_STOP_GATE=1 escape hatch: allows the stop and leaves
+#    the sentinel untouched (the hook exits before reading any state).
+WS16=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16"' EXIT
+arm "$WS16"; write_state "$WS16" RUNNING 1
+( cd "$WS16" && printf '{"stop_hook_active": false}' | LOOP_TESTING_DISABLE_STOP_GATE=1 env -u CLAUDE_PROJECT_DIR bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 0 "escape hatch allows the stop on a RUNNING armed loop"
+assert_exists "$WS16/$ACT" "escape hatch leaves the sentinel in place (not a disarm)"
+
 report "stop-gate.test.sh"

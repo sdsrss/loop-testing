@@ -97,14 +97,22 @@ runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth sig
   local d="$LT/runs" n b
   [ -d "$d" ] || { echo "0:0"; return; }
   n=$(find "$d" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
-  b=$(cat "$d"/*.md 2>/dev/null | wc -c | tr -d ' ')
+  # Byte total via wc on the PATHS (a stat, not a full content read — audit DR-8;
+  # `cat | wc -c` re-read every evidence byte each session). Multi-file output
+  # ends with a "total" line, single-file has none: take the last line's leading
+  # number either way; empty (glob no-match) -> 0.
+  b=$(wc -c "$d"/*.md 2>/dev/null | tail -1 | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+  [ -n "$b" ] || b=0
   echo "$n:$b"
 }
 bootstrap_sig() { # bytes of round-0 artifacts (PLAN + FEATURE_MATRIX)
   # Round 0 fills PLAN.md + FEATURE_MATRIX.md BEFORE any runs/round-N.md exists, so
   # without this a round 0 that spans sessions on a large target fingerprints as
   # static (round/issues/streak/runs all 0) and false-trips NO_PROGRESS (audit PL-2).
-  cat "$LT/PLAN.md" "$LT/FEATURE_MATRIX.md" 2>/dev/null | wc -c | tr -d ' '
+  local b
+  b=$(wc -c "$LT/PLAN.md" "$LT/FEATURE_MATRIX.md" 2>/dev/null | tail -1 | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+  [ -n "$b" ] || b=0
+  echo "$b"
 }
 progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB|bootstrapB
   local s
