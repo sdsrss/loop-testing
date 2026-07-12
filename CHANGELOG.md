@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.2.1 — 2026-07-11
+
+Production-readiness audit follow-up (batch 3 of 3): hygiene and robustness
+cleanup. All backward-compatible; full suite `ALL GREEN`. (One item, an explicit
+`hooks` declaration in plugin.json, was deferred — it risks double-registering the
+Stop hook and needs a live-session smoke test; auto-discovery is verified working.)
+
+- **fix(stop-gate)**: without jq/python3 the grep fallback never emitted an explicit
+  `false` for `stop_hook_active`, so the block-counter reset didn't fire on a fresh
+  stop and independent stops accumulated toward the ceiling. Also dropped an unused
+  `converged_streak` grep.
+- **fix(ledger-gate)**: the Bash write-verb allowlist now also covers
+  `mv/cp/dd/perl/python`, so a command inlining a fabricated VERIFIED verdict via
+  e.g. `perl -i` on the ledger path is caught. Dropped a dead NotebookEdit case arm.
+- **fix(drivers)**: parity cleanup — the loop driver normalizes `round` like the codex
+  driver, the codex driver gained the loop driver's driver.log writability guard, and
+  watchdog kill-grace is unified to `-k 15`. A session that produces no STATE.md at all
+  now fails fast after 1 session instead of burning 2.
+- **fix(sandbox-clean)**: escalates SIGTERM to SIGKILL for a recorded process that
+  ignores SIGTERM, so it doesn't leak past cleanup.
+- **fix(install-codex)**: copies to a staging dir and swaps it in atomically, so a
+  mid-copy failure can't leave a partial/unmarked install that the next reinstall
+  refuses as "foreign".
+- **fix(moa)**: an empty model name in config is now a clean `error` (exit 1) instead
+  of a 400; a password in `*_PROXY` is added to the redaction set.
+- **fix(unattended-codex)**: the skill-dir write-protection restore trap is now wired
+  for `EXIT INT TERM` explicitly (not just implicit EXIT-on-signal), with test coverage.
+- **chore(template)**: the seeded ISSUES.md placeholder no longer counts as a live
+  issue (moved into an indented comment).
+- **docs**: round-0 states the unfixable-baseline → BLOCKED terminal action;
+  exit-and-report states the `round:` == `max_rounds` → INCOMPLETE rule precisely;
+  moa-decision notes the direct-openai reasoning-model parameter limits.
+
 ## 0.2.0 — 2026-07-11
 
 Production-readiness audit follow-up (batch 2 of 3): functional hardening that
