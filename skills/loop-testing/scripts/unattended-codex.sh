@@ -63,7 +63,7 @@ while [ $# -gt 0 ]; do
     --skill-dir)       SKILL_DIR="${2:-}"; shift; shift;;
     --no-protect)      PROTECT=0; shift 1;;
     --no-watchdog)     NO_WATCHDOG=1; shift 1;;
-    -h|--help)         sed -n '2,39p' "$0"; exit 0;;
+    -h|--help)         awk 'NR>1{if(/^#/)print;else exit}' "$0"; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done

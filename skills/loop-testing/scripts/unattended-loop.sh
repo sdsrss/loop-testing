@@ -59,7 +59,7 @@ while [ $# -gt 0 ]; do
     --plugin-dir)      PLUGIN_DIR="${2:-}"; shift; shift;;
     --claude-bin)      CLAUDE_BIN="${2:-}"; shift; shift;;
     --no-watchdog)     NO_WATCHDOG=1; shift 1;;
-    -h|--help)         sed -n '2,38p' "$0"; exit 0;;
+    -h|--help)         awk 'NR>1{if(/^#/)print;else exit}' "$0"; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done
