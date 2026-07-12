@@ -25,7 +25,7 @@ description: Autonomous QA self-test / self-fix / self-iterate loop. Use after a
 
 ## 工作产物：docs/looptesting/
 
-启动即建（或复用 `scripts/sandbox-setup.sh`）。八个固定产物：
+启动即建（或复用本技能的 `sandbox-setup.sh`，定位见下方「脚本与模板定位」）。八个固定产物：
 
 | 文件 | 作用 |
 |------|------|
@@ -39,6 +39,8 @@ description: Autonomous QA self-test / self-fix / self-iterate loop. Use after a
 | `FINAL_REPORT.md` | 最终报告 |
 
 **续跑协议**：启动时若 `STATE.md` 已存在 → 通读全部状态文件，从「下一动作」继续，**禁止重置轮数或清空总账**。模板在本技能 `templates/`。
+
+> **脚本与模板定位（重要）**：`sandbox-setup.sh` / `sandbox-clean.sh` / `moa.mjs` 及 `templates/` 位于**本技能自身的安装目录**，**不在目标项目里**。运行时 cwd 是目标项目，因此 references 里写成 `skills/loop-testing/scripts/…` 的路径**只是相对本技能目录的示意，不能在目标项目 cwd 下照抄执行**。按安装位置用绝对路径调用：Claude Code 插件的根一般经 `${CLAUDE_PLUGIN_ROOT}` 暴露（本插件的 hooks 即用此变量），脚本在 `${CLAUDE_PLUGIN_ROOT}/skills/loop-testing/`；Codex 在 `~/.codex/skills/loop-testing/`。若该变量在当前会话不可用或不确定，走下方兜底。**若一时无法定位这些脚本**：它们都是**可选便利工具**——直接内联完成等价动作即可，不阻塞循环：建 `docs/looptesting/` 目录与八个产物（模板照 `templates/` 结构手写）、用 `git worktree` 或 `qa/loop-testing` 分支隔离、清理时停掉自己启动的进程并删自建 worktree。MoA 不可用时按 `references/moa-decision.md` 降级单模型。
 
 ## 循环骨架（按需加载 references/，渐进披露以省上下文）
 

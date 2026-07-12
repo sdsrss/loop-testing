@@ -106,6 +106,28 @@ progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB|bootst
 mkdir -p "$LT"
 : >> "$DRIVER_LOG" || die "cannot write driver.log at $DRIVER_LOG"
 
+# Concurrency guard: refuse to run a second driver on the same target — two drivers
+# would race STATE.md / driver.log / ISSUES.md / the worktree and corrupt the
+# progress fingerprint and ledger. Portable atomic lock via mkdir (no flock — it is
+# absent on macOS). A crashed driver's lock (holder PID no longer alive) is stolen; a
+# live holder is refused (audit DR-4). Kept identical to unattended-codex.sh.
+LOCK_DIR="$LT/.driver.lock"
+LOCK_OWNED=0
+release_lock() { [ "$LOCK_OWNED" = 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null; LOCK_OWNED=0; }
+acquire_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
+  local holder=""; [ -f "$LOCK_DIR/pid" ] && read -r holder < "$LOCK_DIR/pid" 2>/dev/null
+  case "$holder" in ''|*[!0-9]*) holder="" ;; esac
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    die "another loop-testing driver (pid $holder) is running on this project; refusing to run concurrently (remove $LOCK_DIR if it is stale)"
+  fi
+  rm -rf "$LOCK_DIR" 2>/dev/null   # stale lock from a crashed driver — steal it
+  if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
+  die "could not acquire driver lock at $LOCK_DIR"
+}
+trap release_lock EXIT INT TERM
+acquire_lock
+
 START_EPOCH=$(date +%s)
 DEADLINE=$(( START_EPOCH + MAX_MINUTES * 60 ))
 

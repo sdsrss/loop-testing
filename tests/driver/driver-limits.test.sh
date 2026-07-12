@@ -93,4 +93,27 @@ CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=sess-abc \
 assert_rc $? 0 "converged after a sanitized session -> exit 0"
 assert_eq "" "$(cat "$WS7/docs/looptesting/child-env.txt" 2>/dev/null)" "coordinator-mode env vars unset for the child (F6)"
 
+# J. Concurrency guard: a second driver is refused while a LIVE holder holds the lock
+#    (two drivers would race STATE/ledger/worktree) -> exit 2 (audit DR-4). The live
+#    holder is THIS test process ($$), so no background fixture is needed.
+WS8=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8"' EXIT
+mkdir -p "$WS8/docs/looptesting/.driver.lock"
+echo "$$" > "$WS8/docs/looptesting/.driver.lock/pid"
+stub=$(write_stub "$WS8"); write_state "$WS8" RUNNING 0
+bash "$DRIVER" --project "$WS8" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
+assert_rc $? 2 "live driver holds the lock -> concurrent run refused (exit 2)"
+assert_eq "0" "$(sessions_in_log "$WS8")" "no session launched while the lock is held"
+
+# K. A stale lock (holder PID no longer alive) is stolen; the run proceeds and the
+#    lock is released on normal exit (audit DR-4). The dead PID is a just-exited
+#    child ($(bash -c 'echo $$')) — no background job (which would inherit the EXIT
+#    trap and delete the workspace mid-test).
+WS9=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9"' EXIT
+mkdir -p "$WS9/docs/looptesting/.driver.lock"
+echo "$(bash -c 'echo $$')" > "$WS9/docs/looptesting/.driver.lock/pid"
+stub=$(write_stub "$WS9"); write_state "$WS9" RUNNING 0
+STUB_CONVERGE_AT=1 bash "$DRIVER" --project "$WS9" --claude-bin "$stub" --max-sessions 3 >/dev/null 2>&1
+assert_rc $? 0 "stale lock (dead holder) stolen -> run proceeds to convergence (exit 0)"
+if [ -e "$WS9/docs/looptesting/.driver.lock" ]; then FAIL=$((FAIL+1)); echo "  FAIL: lock not released on normal exit" >&2; else PASS=$((PASS+1)); fi
+
 report "driver-limits.test.sh"

@@ -71,13 +71,38 @@ DLOG="$LT/driver.log"
 mkdir -p "$LT"
 : >> "$DLOG" || die "cannot write driver.log at $DLOG"
 
-# Protect the installed skill from the full-access session; always restore.
-# Set the restore trap BEFORE the chmod so a signal in between can't leave the
-# dir read-only. Trap EXIT + INT + TERM explicitly (don't rely on bash's implicit
-# EXIT-on-signal, which is version/platform-dependent); only SIGKILL, which skips
-# traps, can leave it read-only — unavoidable.
+# Concurrency guard: refuse to run a second driver on the same target — two drivers
+# would race STATE.md / driver.log / ISSUES.md / the worktree and corrupt the
+# progress fingerprint and ledger. Portable atomic lock via mkdir (no flock — it is
+# absent on macOS). A crashed driver's lock (holder PID no longer alive) is stolen; a
+# live holder is refused (audit DR-4). Kept identical to unattended-loop.sh.
+LOCK_DIR="$LT/.driver.lock"
+LOCK_OWNED=0
+release_lock() { [ "$LOCK_OWNED" = 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null; LOCK_OWNED=0; }
+acquire_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
+  local holder=""; [ -f "$LOCK_DIR/pid" ] && read -r holder < "$LOCK_DIR/pid" 2>/dev/null
+  case "$holder" in ''|*[!0-9]*) holder="" ;; esac
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    die "another loop-testing driver (pid $holder) is running on this project; refusing to run concurrently (remove $LOCK_DIR if it is stale)"
+  fi
+  rm -rf "$LOCK_DIR" 2>/dev/null   # stale lock from a crashed driver — steal it
+  if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
+  die "could not acquire driver lock at $LOCK_DIR"
+}
+
+# Protect the installed skill from the full-access session; always restore. Set the
+# combined cleanup trap (skill-dir restore + lock release) BEFORE the chmod so a
+# signal in between can't leave the dir read-only. Trap EXIT + INT + TERM explicitly
+# (don't rely on bash's implicit EXIT-on-signal, which is version/platform-dependent);
+# only SIGKILL, which skips traps, can leave it read-only — unavoidable.
+cleanup() {
+  [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ] && chmod -R u+w "$SKILL_DIR" 2>/dev/null
+  release_lock
+}
+trap cleanup EXIT INT TERM
+acquire_lock
 if [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
-  trap 'chmod -R u+w "$SKILL_DIR" 2>/dev/null || true' EXIT INT TERM
   chmod -R a-w "$SKILL_DIR" 2>/dev/null || true
 fi
 

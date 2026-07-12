@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.5 — 2026-07-12
+
+Audit batch 6 (part 2): the two remaining second-audit findings. Full suite
+`ALL GREEN` (MoA 30, stop-gate 26, driver-limits 21, codex-limits 22).
+
+**Behavior change to note:** running a second unattended driver on a project while
+one is already running is now refused (exit 2) instead of racing STATE.md / the
+ledger / the worktree. A crashed driver's leftover lock (holder PID no longer alive)
+is auto-stolen, so a normal relaunch after a crash is unaffected. Remove
+`docs/looptesting/.driver.lock` by hand only if a run was SIGKILL'd and you are sure
+no driver is live.
+
+- **fix(drivers)**: added a concurrency guard — a portable `mkdir`-based atomic lock
+  at `docs/looptesting/.driver.lock` (no `flock`; it is absent on macOS) with holder
+  PID-liveness: a live holder is refused (exit 2), a stale lock from a crashed driver
+  is stolen. Kept identical across both drivers (loop driver traps `release_lock`;
+  the codex driver folds it into its existing skill-dir-restore cleanup trap). DR-4.
+  (+4 driver tests: live-holder refusal and stale-lock steal, per driver.)
+- **docs(skill)**: SKILL.md now states that the bundled scripts and templates live
+  in the skill's own install dir (not the target project's cwd), so the
+  `skills/loop-testing/…` paths in the references are relative-to-skill hints, not
+  commands to copy verbatim under the target cwd. It gives the resolution (Claude:
+  `${CLAUDE_PLUGIN_ROOT}/skills/loop-testing/`; Codex: `~/.codex/skills/loop-testing/`)
+  and an inline-fallback: the scripts are optional conveniences — do the equivalent
+  setup/clean inline if they can't be located. PL-1 / PL-4. NOTE: this is
+  LLM-visible metadata; it passes `claude plugin validate` and does not regress the
+  suite, but its behavioral effect (does the agent resolve/fall back correctly in a
+  live loop) is NOT yet verified by a real-loop run — verification is outstanding.
+
 ## 0.2.4 — 2026-07-12
 
 Audit batch 6 (second-audit follow-up, functional/contract hardening). Lands the

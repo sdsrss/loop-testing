@@ -96,4 +96,24 @@ bash "$CODEX_DRIVER" --project "$WS9" --codex-bin "$stub" --no-protect --max-ses
 assert_rc $? 2 "unwritable driver.log -> die exit 2"
 assert_eq "0" "$(sessions_in_log "$WS9")" "no session launched when driver.log is unwritable"
 
+# L. Concurrency guard: a second codex driver is refused while a LIVE holder holds
+#    the lock -> exit 2 (audit DR-4; mirrors loop driver J). Live holder = $$.
+WS10=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10"' EXIT
+mkdir -p "$WS10/docs/looptesting/.driver.lock"
+echo "$$" > "$WS10/docs/looptesting/.driver.lock/pid"
+stub=$(write_stub "$WS10"); write_state "$WS10" RUNNING 0
+bash "$CODEX_DRIVER" --project "$WS10" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
+assert_rc $? 2 "live driver holds the lock -> concurrent codex run refused (exit 2)"
+assert_eq "0" "$(sessions_in_log "$WS10")" "no session launched while the lock is held"
+
+# M. Stale lock (dead holder) stolen; run proceeds and releases the lock on exit
+#    (audit DR-4; mirrors loop driver K). Dead holder = a just-exited child PID.
+WS11=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11"' EXIT
+mkdir -p "$WS11/docs/looptesting/.driver.lock"
+echo "$(bash -c 'echo $$')" > "$WS11/docs/looptesting/.driver.lock/pid"
+stub=$(write_stub "$WS11"); write_state "$WS11" RUNNING 0
+STUB_CONVERGE_AT=1 bash "$CODEX_DRIVER" --project "$WS11" --codex-bin "$stub" --no-protect --max-sessions 3 >/dev/null 2>&1
+assert_rc $? 0 "stale lock stolen -> run proceeds to convergence (exit 0)"
+if [ -e "$WS11/docs/looptesting/.driver.lock" ]; then FAIL=$((FAIL+1)); echo "  FAIL: lock not released on normal exit" >&2; else PASS=$((PASS+1)); fi
+
 report "codex-limits.test.sh"
