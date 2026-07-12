@@ -268,7 +268,7 @@ do_check_update() {
       -H 'Accept: application/vnd.github+json' -H 'User-Agent: loop-testing-update-check' \
       "${LOOP_TESTING_UPDATE_TAGS_URL:-https://api.github.com/repos/sdsrss/loop-testing/tags}" 2>/dev/null \
       | grep -oE '"name"[[:space:]]*:[[:space:]]*"v?[0-9]+\.[0-9]+\.[0-9]+"' \
-      | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)"
+      | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || true)"
   else
     echo "cannot check for updates: curl not available. Installed: $cur."; exit 0
   fi

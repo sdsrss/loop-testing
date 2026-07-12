@@ -30,4 +30,12 @@ out=$(LOOP_TESTING_UPDATE_SELFTEST_LATEST=9.9.9 bash "$INSTALLER" --target "$SB2
 assert_ne "$rc" 0 "check-update on a target with no install -> nonzero"
 assert_contains "$out" "no loop-testing install" "explains there is nothing installed"
 
+# 5. Offline / unreachable GitHub (real-curl branch, no SELFTEST override) -> graceful
+#    degrade: exit 0 with the "could not reach" message, NOT a bare set -e hard-fail.
+out=$(LOOP_TESTING_UPDATE_TAGS_URL="https://127.0.0.1:1/nope" LOOP_TESTING_UPDATE_TIMEOUT=2 \
+  bash "$INSTALLER" --target "$SB" --check-update 2>&1); rc=$?
+assert_eq "$rc" 0 "check-update degrades to exit 0 when GitHub is unreachable"
+assert_contains "$out" "could not reach GitHub" "prints the offline/rate-limited notice"
+assert_contains "$out" "Installed: $cur" "still reports the installed version when offline"
+
 finish

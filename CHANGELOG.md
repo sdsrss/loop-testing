@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.1 — 2026-07-12
+
+Patch: code-review follow-up on the v0.3.0/v0.4.0 work. Fixes an offline hard-fail in the
+Codex `--check-update` command and closes the test gap the review exposed. Full suite
+`ALL GREEN`.
+
+- **fix(install-codex)**: `--check-update` no longer aborts with a bare `exit 1` (no
+  message) when GitHub is unreachable. Under `set -euo pipefail` the `latest=$(curl … |
+  sort -V | tail -1)` assignment lacked the `|| true` its two sibling lines had, so an
+  offline/rate-limited curl tripped `set -e` before the graceful-degradation branch could
+  run — leaving that "could not reach GitHub (offline or rate-limited)" message as dead
+  code. Now it degrades cleanly to `exit 0` with the notice. The SessionStart hook
+  (`update-check.sh`, `set -u` only) was never affected.
+- **test(install)**: regression test for the offline `--check-update` path — exercises the
+  real-curl branch against an unreachable URL (no `SELFTEST_LATEST` override), which is how
+  the bug slipped through. RED before the fix (3 assertions), green after.
+- **test(command)**: new `tests/commands/loop-testing.test.sh` — the `/loop-testing` slash
+  command had no behavioral coverage. Static structural + parity guard: Claude frontmatter
+  (`name` / `description`), the three-mode dispatch (start/resume · `status` · `report`) in
+  both the Claude command and Codex prompt, the two safety guards ("status/report must not
+  start a run", "resume must not reset the round count"), skill reference, and
+  Claude↔Codex parity so the two prompt files can't silently diverge.
+
 ## 0.4.0 — 2026-07-12
 
 Minor: adds a `/loop-testing` slash command so the loop can be started deterministically
