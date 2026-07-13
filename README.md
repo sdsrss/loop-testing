@@ -261,7 +261,9 @@ git merge qa/loop-testing            # or cherry-pick selected hashes
 
 # 2. Purge everything the run owned (marker-gated, terminal runs only)
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
-#    a branch that still has unharvested fix commits is KEPT; waive explicitly:
+#    a branch with commits beyond the baseline is always KEPT — harvesting cannot
+#    be auto-detected (merging does not move the qa tip); once you have taken
+#    what you want, waive explicitly:
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
 ```
 

@@ -18,8 +18,9 @@
 #                    Refuses (exit 3) without an ownership marker or a terminal
 #                    STATE. Default behavior without --purge is unchanged.
 #
-# Exit codes: 0 cleaned (or nothing to clean) · 2 usage error · 3 --purge refused
-# (no marker / non-terminal STATE).
+# Exit codes: 0 cleaned (or nothing to clean) · 1 internal abort (re-anchored to
+# the main tree but cannot cd there — applies to both plain clean and --purge) ·
+# 2 usage error · 3 --purge refused (no marker / non-terminal STATE).
 set -u
 
 echo_info() { echo "sandbox-clean: $*"; }

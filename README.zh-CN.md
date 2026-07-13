@@ -231,7 +231,8 @@ git merge qa/loop-testing            # 或 cherry-pick 选定哈希
 
 # 2. 一键清扫本次运行的全部自建物(marker 门控,仅限终态运行)
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
-#    分支上还有未收割修复时会被保留;显式放弃修复:
+#    分支相对基线仍有 commit 就一律保留——收割无法自动检测
+#    (merge 不会移动 qa 分支指针);确认已合入所需修复后,显式放弃:
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
 ```
 

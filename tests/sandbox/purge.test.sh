@@ -88,4 +88,57 @@ assert_eq "2" "$?" "unknown argument -> exit 2"
 ( cd "$REPO5" && bash "$CLEAN" --discard-fixes ) >/dev/null 2>&1
 assert_eq "2" "$?" "--discard-fixes without --purge -> exit 2"
 
+# --- I. R66(a): --purge invoked from INSIDE the qa worktree --------------------
+# Locks the re-anchor + cd-out-before-remove behavior: the script must never rm
+# the directory it is standing in; purge must complete as if run from the main tree.
+WS6=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6"' EXIT
+REPO6="$WS6/proj"; WT6="$WS6/proj-qa-loop"
+( cd "$REPO6" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+mark_terminal "$REPO6"
+MAIN_BR6="$(cd "$REPO6" && git branch --show-current)"
+( cd "$WT6" && bash "$CLEAN" --purge ) >/dev/null 2>&1
+assert_ok $? "--purge from inside the qa worktree exits 0 (re-anchored)"
+assert_absent "$WT6" "purge-from-worktree removed the worktree it was invoked from"
+assert_absent "$REPO6/docs/looptesting" "purge-from-worktree removed the evidence dir"
+if ( cd "$REPO6" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  FAIL=$((FAIL+1)); echo "  FAIL: fix-less qa branch should be deleted (purge from worktree)" >&2
+else PASS=$((PASS+1)); fi
+if ( cd "$REPO6" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 ); then
+  FAIL=$((FAIL+1)); echo "  FAIL: baseline tag should be deleted (purge from worktree)" >&2
+else PASS=$((PASS+1)); fi
+assert_eq "$MAIN_BR6" "$(cd "$REPO6" && git branch --show-current)" "main tree branch untouched (purge from worktree)"
+
+# --- J. R66(b): --purge from an UNRELATED linked worktree of the same repo -----
+# Re-anchor must land on the main tree; only the recorded qa worktree is removed,
+# the unrelated worktree and its checked-out branch stay untouched.
+WS7=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7"' EXIT
+REPO7="$WS7/proj"; WT7="$WS7/proj-qa-loop"; OTHER7="$WS7/proj-other"
+( cd "$REPO7" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$REPO7" && git worktree add -b other "$OTHER7" ) >/dev/null 2>&1
+mark_terminal "$REPO7"
+( cd "$OTHER7" && bash "$CLEAN" --purge ) >/dev/null 2>&1
+assert_ok $? "--purge from an unrelated linked worktree exits 0 (re-anchored)"
+assert_absent "$WT7" "qa worktree removed (invoked from unrelated worktree)"
+assert_absent "$REPO7/docs/looptesting" "evidence dir removed (unrelated-worktree case)"
+assert_exists "$OTHER7/README.md" "unrelated worktree left intact"
+assert_eq "other" "$(cd "$OTHER7" && git branch --show-current)" "unrelated worktree branch untouched"
+
+# --- K. R66(c): --purge with the main repo on a DETACHED HEAD ------------------
+# Detached HEAD is not a checkout of the qa branch: purge must still complete
+# and must not move the user's HEAD.
+WS8=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8"' EXIT
+REPO8="$WS8/proj"; WT8="$WS8/proj-qa-loop"
+( cd "$REPO8" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+mark_terminal "$REPO8"
+( cd "$REPO8" && git checkout -q --detach ) >/dev/null 2>&1
+HEAD8="$(cd "$REPO8" && git rev-parse HEAD)"
+( cd "$REPO8" && bash "$CLEAN" --purge ) >/dev/null 2>&1
+assert_ok $? "--purge with the main repo on a detached HEAD exits 0"
+assert_absent "$WT8" "worktree removed (detached-HEAD case)"
+assert_absent "$REPO8/docs/looptesting" "evidence dir removed (detached-HEAD case)"
+if ( cd "$REPO8" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  FAIL=$((FAIL+1)); echo "  FAIL: qa branch should be deleted (detached HEAD is not a checkout of it)" >&2
+else PASS=$((PASS+1)); fi
+assert_eq "$HEAD8" "$(cd "$REPO8" && git rev-parse HEAD)" "purge did not move the detached HEAD"
+
 report "purge.test.sh"
