@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.1 — 2026-07-13
+
+Batch 7: three documentation clarifications in the skill references, surfaced by
+a real-loop A/B smoke test of the v0.8.0 prompts (two fresh agents, one on new
+prompts and one on v0.7.0, run against a planted-bug CLI). Each clarifies an
+*existing* mechanism that both agents inferred or tripped over — no behavior
+change. Full suite `ALL GREEN`.
+
+- **docs(skill / R73)**: `loop-round.md` §4 now states the evidence-tree vs
+  commit-tree split explicitly — `docs/looptesting/` lives in the MAIN worktree
+  (so it survives worktree cleanup) while code edits and `fix(qa)` commits happen
+  in the sandbox worktree on the qa branch. Both smoke agents inferred this from
+  setup output rather than reading it.
+- **docs(skill / R74)**: `issue-rules.md` §7 now documents the `ledger-gate.sh`
+  ordering it already enforces — the replay must be written to `runs/round-N.md`
+  BEFORE the ISSUES.md status is flipped to VERIFIED; the reverse order is
+  blocked (fail-closed). Both smoke agents ate one deny and reordered.
+- **docs(skill / R75)**: `moa-decision.md` §5 tightens the previously narrow
+  "real-key smoke test" wording — ANY real committee call when a key is present
+  (not just an explicit smoke test) is a paid/external action gated by FR-6.7;
+  a key present in the environment is NOT user authorization for the paid call.
+  Adds a `--dry-run` check step. `issue-rules.md` §9 clarifies a DEC link may be
+  left `待生成` for trivial suggestions rather than forcing a paid call each time.
+
 ## 0.8.0 — 2026-07-13
 
 Two batches: external prompt-benchmark adoption (roadmap batch 6, R67–R72 —
