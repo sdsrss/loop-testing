@@ -176,9 +176,20 @@ do_install() {
       exit 1
     fi
     write_marker "$staging"
-    # Copy is complete and marked; now swap it in atomically.
+    # Copy is complete and marked; now swap it in atomically. The rotated-out
+    # .bak is removed ONLY when it carries our marker (same gate do_uninstall
+    # already has — audit NEW-2/R58): a foreign `loop-testing.bak` (e.g. a
+    # user's manual backup) must never be silently deleted to make room.
     if [ -e "$DEST" ]; then
-      [ -e "$DEST.bak" ] && safe_remove "$DEST.bak"
+      if [ -e "$DEST.bak" ]; then
+        if [ -f "$DEST.bak/$MARKER" ]; then
+          safe_remove "$DEST.bak"
+        else
+          echo "error: $DEST.bak exists but is not a loop-testing backup (no $MARKER marker)." >&2
+          echo "       refusing to delete it to rotate the backup. Move it aside and retry." >&2
+          exit 1
+        fi
+      fi
       mv "$DEST" "$DEST.bak"
     fi
     mv "$staging" "$DEST"
@@ -267,7 +278,8 @@ do_uninstall() {
 # Notify-only version check for the Codex install. Codex has no SessionStart hook,
 # so unlike the Claude side this is manual (`--check-update`). Reads the installed
 # marker's version and compares it to the latest git tag on GitHub (this repo ships
-# tags, not Releases). Never fails hard on network trouble. Honors the same test/
+# tags, not Releases; ?per_page=100 — the semver scan sees up to 100 tags, audit
+# NEW-5/R60). Never fails hard on network trouble. Honors the same test/
 # override env as hooks/update-check.sh (LOOP_TESTING_UPDATE_TAGS_URL / _SELFTEST_LATEST
 # / _TIMEOUT).
 do_check_update() {
@@ -284,7 +296,7 @@ do_check_update() {
   elif command -v curl >/dev/null 2>&1; then
     latest="$(curl -fsS --max-time "${LOOP_TESTING_UPDATE_TIMEOUT:-5}" \
       -H 'Accept: application/vnd.github+json' -H 'User-Agent: loop-testing-update-check' \
-      "${LOOP_TESTING_UPDATE_TAGS_URL:-https://api.github.com/repos/sdsrss/loop-testing/tags}" 2>/dev/null \
+      "${LOOP_TESTING_UPDATE_TAGS_URL:-https://api.github.com/repos/sdsrss/loop-testing/tags?per_page=100}" 2>/dev/null \
       | grep -oE '"name"[[:space:]]*:[[:space:]]*"v?[0-9]+\.[0-9]+\.[0-9]+"' \
       | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || true)"
   else

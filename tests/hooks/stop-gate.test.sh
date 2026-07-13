@@ -142,4 +142,15 @@ arm "$WS16"; write_state "$WS16" RUNNING 1
 assert_rc $? 0 "escape hatch allows the stop on a RUNNING armed loop"
 assert_exists "$WS16/$ACT" "escape hatch leaves the sentinel in place (not a disarm)"
 
+# R. R59 (NEW-3): orphan sentinel with NO STATE.md at all — the stale escape must
+#    fall back to the sentinel's own mtime, or the orphan taxes every future stop
+#    forever (the STATE-mtime escape can never fire when STATE.md never existed).
+#    Case E already asserts the fresh-orphan side (recent .active, no STATE ->
+#    fail-closed block), so this only adds the aged-orphan release.
+WS17=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17"' EXIT
+arm "$WS17"   # deliberately NO STATE.md
+touch -d "@$(( $(date +%s) - 200000 ))" "$WS17/$ACT"   # ~2.3 days old
+run_stop "$WS17" false; assert_rc $? 0 "stale orphan .active (no STATE.md) -> allow stop (R59)"
+assert_absent "$WS17/$ACT" "stale orphan sentinel disarmed (R59)"
+
 report "stop-gate.test.sh"

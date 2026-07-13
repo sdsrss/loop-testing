@@ -60,4 +60,20 @@ else PASS=$((PASS+1)); fi
 ( cd "$REPO" && bash "$CLEAN" ) >/dev/null 2>&1
 assert_ok $? "second clean is idempotent"
 
+# --- R57 (NEW-1): clean invoked from INSIDE the worktree must still clean ------
+# Old behavior: TOP resolved to the worktree, the marker lookup missed the main
+# repo's marker, and the fail-closed "deleting nothing" path returned exit 0 —
+# a FAKE success that left the worktree (and any recorded processes) behind.
+WS2=$(mk_ws); trap 'rm -rf "$WS" "$WS2"' EXIT
+REPO2="$WS2/proj"
+WT2="$WS2/proj-qa-loop"
+( cd "$REPO2" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? "setup for the worktree-cwd clean case"
+assert_exists "$WT2" "worktree exists before the worktree-cwd clean"
+( cd "$WT2" && bash "$CLEAN" ) >/dev/null 2>&1
+assert_ok $? "clean from inside the worktree exits 0 (R57)"
+assert_absent "$WT2" "worktree removed even when clean ran from inside it (R57)"
+assert_absent "$REPO2/docs/looptesting/.active" "sentinel disarmed by worktree-cwd clean (R57)"
+assert_file_contains "$REPO2/docs/looptesting/.sandbox/ownership.env" "CLEANED_AT=" "CLEANED_AT recorded on the MAIN-tree marker (R57)"
+
 report "clean.test.sh"

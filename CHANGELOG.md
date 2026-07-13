@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.7.0 — 2026-07-13
+
+Audit batch 4 (fourth production-readiness audit, roadmap R57–R62): the last
+worktree-topology side path closed, plus a user-facing full-cleanup channel.
+Full suite `ALL GREEN` (new purge suite 24 asserts; stop-gate 33, sandbox setup
+44 / clean 19).
+
+- **fix(sandbox, P2 / R57)**: `sandbox-setup.sh` / `sandbox-clean.sh` resolved the
+  repo root via `git rev-parse --show-toplevel`, so when invoked from *inside* the
+  qa worktree, clean missed the main tree's ownership marker and returned a FAKE
+  success (exit 0, nothing cleaned — processes and worktree left behind), while
+  setup tried to nest a second `<wt>-qa-loop` worktree and died exit 6 with
+  misleading advice. Both scripts now detect the linked-worktree topology
+  (`--git-dir` vs `--git-common-dir`), re-anchor to the main tree, and cd out of
+  the directory being deleted. Validation failure keeps the old behavior.
+- **feat(sandbox / R62)**: `sandbox-clean.sh --purge [--discard-fixes]` — USER-run
+  full cleanup after a terminal run: deletes the evidence dir, the owned baseline
+  tag, and the owned qa branch. Refuses (exit 3) without a marker or a terminal
+  `STATE.md`; a branch holding unharvested fix commits is kept unless
+  `--discard-fixes`; a checked-out branch is never deleted. Default (no-flag)
+  behavior is byte-identical. The exit sequence explicitly forbids the agent from
+  passing `--purge` (user action only; prompt-contract line carries the usual
+  no-real-loop-verification caveat).
+- **docs(README / R61)**: new "Post-run artifacts & full cleanup" section (EN/zh)
+  — what a finished run deliberately keeps (evidence dir, qa branch, baseline
+  tag, update-check cache, Codex install artifacts) and the harvest-then-purge
+  runbook.
+- **fix(install / R58)**: the reinstall backup rotation deleted an existing
+  `loop-testing.bak` on basename alone; it is now marker-gated like uninstall — a
+  foreign `.bak` refuses the reinstall (exit 1) and is left untouched.
+- **fix(hooks / R59)**: the stop-gate 24h stale escape required `STATE.md` to
+  exist, so an orphan `.active` without STATE taxed every future stop forever; it
+  now falls back to the sentinel's own mtime (a fresh orphan still fail-closes).
+- **fix(update-check / R60)**: both tag checks (SessionStart hook and
+  `install-codex.sh --check-update`) now query the GitHub tags API with
+  `?per_page=100` — the highest-semver scan previously saw only page 1 (30 tags).
+
 ## 0.6.2 — 2026-07-12
 
 Patch: fix both unattended resume-drivers' `--help` output, found by a dogfooding

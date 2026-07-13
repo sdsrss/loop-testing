@@ -209,6 +209,42 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 
 ---
 
+## 🧹 运行后残留物与彻底清理
+
+循环结束(`sandbox-clean.sh` 已跑)后,以下产物**有意保留**:
+
+| 产物 | 位置 | 保留原因 |
+|---|---|---|
+| `docs/looptesting/` 证据目录——STATE / ISSUES / PLAN / FEATURE_MATRIX / SUGGESTIONS / `runs/` / `decisions/` / FINAL_REPORT.md,及 `driver.log`、清空的 `.pids`、盖了 `CLEANED_AT` 的 `.sandbox/ownership.env` | 目标项目 | 运行审计线索 + 断点续跑契约 |
+| `qa/loop-testing` 分支 | 目标仓库 | **承载全部修复 commit——只存在于该分支** |
+| `qa-baseline` tag | 目标仓库 | 标记跑前基线,便于 diff |
+| `~/.cache/loop-testing/latest-tag` | 用户缓存目录 | 更新检查 24h 节流(Claude Code hook),随时可删 |
+| `~/.codex/skills/loop-testing`(重装后另有 `.bak`)、`~/.codex/prompts/loop-testing.md` | Codex 主目录 | 已安装技能;`install/install-codex.sh --uninstall` 移除 |
+
+**先收割,再清扫**——修复 commit 只在 qa 分支上:
+
+```bash
+# 1. 收割:审阅并合入修复(在目标仓库执行;
+#    FINAL_REPORT.md §4 有 ISSUE ↔ commit 哈希对照表)
+git log qa-baseline..qa/loop-testing --oneline
+git merge qa/loop-testing            # 或 cherry-pick 选定哈希
+
+# 2. 一键清扫本次运行的全部自建物(marker 门控,仅限终态运行)
+bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
+#    分支上还有未收割修复时会被保留;显式放弃修复:
+bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
+```
+
+`--purge` 是**用户**动作,agent 绝不自行执行。缺 ownership marker 或 `STATE.md` 非终态
+(`CONVERGED / INCOMPLETE / BLOCKED`)时拒绝(exit 3);绝不删除当前检出的分支。也可手动等价清理:
+
+```bash
+git branch -D qa/loop-testing && git tag -d qa-baseline && rm -rf docs/looptesting
+rm -rf ~/.cache/loop-testing     # 可选:Claude Code 更新检查缓存
+```
+
+---
+
 ## ⚠️ 已知限制
 
 - **Codex 无机制层 gate。** Codex 没有 Stop-hook,续跑与"未收敛禁止停止"仅靠提示词纪律。已实测

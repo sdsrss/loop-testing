@@ -239,6 +239,43 @@ relies on prompt discipline + the unattended driver (see Known limitations).
 
 ---
 
+## 🧹 Post-run artifacts & full cleanup
+
+A finished run (after `sandbox-clean.sh`) **deliberately keeps** these artifacts:
+
+| Artifact | Where | Why it is kept |
+|---|---|---|
+| `docs/looptesting/` evidence dir — STATE / ISSUES / PLAN / FEATURE_MATRIX / SUGGESTIONS / `runs/` / `decisions/` / FINAL_REPORT.md, plus `driver.log`, an emptied `.pids`, and `.sandbox/ownership.env` (stamped `CLEANED_AT`) | target project | the run's audit trail and the resume contract |
+| `qa/loop-testing` branch | target repo | **holds the fix commits — they exist nowhere else** |
+| `qa-baseline` tag | target repo | marks the pre-run baseline for diffing |
+| `~/.cache/loop-testing/latest-tag` | user cache dir | 24h update-check throttle (Claude Code hook); safe to delete any time |
+| `~/.codex/skills/loop-testing` (+ a `.bak` after reinstalls), `~/.codex/prompts/loop-testing.md` | Codex home | the installed skill; removed by `install/install-codex.sh --uninstall` |
+
+**Harvest first, then purge** — the fix commits live only on the qa branch:
+
+```bash
+# 1. Harvest: review and take the fixes (run in the target repo;
+#    FINAL_REPORT.md §4 maps each ISSUE to its commit hash)
+git log qa-baseline..qa/loop-testing --oneline
+git merge qa/loop-testing            # or cherry-pick selected hashes
+
+# 2. Purge everything the run owned (marker-gated, terminal runs only)
+bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
+#    a branch that still has unharvested fix commits is KEPT; waive explicitly:
+bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
+```
+
+`--purge` is a **user** action, never run by the agent. It refuses (exit 3) unless the
+ownership marker exists and `STATE.md` is terminal (`CONVERGED / INCOMPLETE / BLOCKED`),
+and it never deletes a checked-out branch. Manual equivalent, if you prefer:
+
+```bash
+git branch -D qa/loop-testing && git tag -d qa-baseline && rm -rf docs/looptesting
+rm -rf ~/.cache/loop-testing     # optional: Claude Code update-check cache
+```
+
+---
+
 ## ⚠️ Known limitations
 
 - **Codex has no mechanism-layer gate.** Codex has no Stop-hook; resume and

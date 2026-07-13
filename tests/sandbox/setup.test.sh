@@ -126,4 +126,20 @@ grep -v '^SANDBOX_BRANCH=' "$MK" > "$MK.tmp" && mv "$MK.tmp" "$MK"
 assert_ok $? "legacy marker (no SANDBOX_BRANCH) -> short-circuit, not a wrong-branch refusal"
 assert_eq "qa/custom" "$(cd "$REPO7" && git branch --show-current)" "legacy re-verify left the user's branch untouched"
 
+# --- R57 (NEW-1): invoked from INSIDE the qa worktree must re-anchor ----------
+# From the worktree cwd, `git rev-parse --show-toplevel` is the WORKTREE, so the
+# old code missed the main repo's marker, fell through to full init, and tried
+# to nest a second `<wt>-qa-loop` worktree (dying exit 6 with misleading advice).
+# The fix re-anchors TOP to the main tree -> idempotent short-circuit (exit 0).
+WS8=$(mk_ws); trap 'rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8"' EXIT
+REPO8="$WS8/proj"
+WT8="$WS8/proj-qa-loop"
+( cd "$REPO8" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? "setup for the worktree-cwd case"
+( cd "$WT8" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_eq "0" "$?" "setup from inside the worktree -> re-anchored short-circuit (exit 0, R57)"
+assert_absent "$WS8/proj-qa-loop-qa-loop" "no nested worktree path created (R57)"
+assert_absent "$WT8/docs/looptesting/.sandbox" "no second marker written inside the worktree (R57)"
+assert_exists "$REPO8/docs/looptesting/.sandbox/ownership.env" "main-tree marker untouched (R57)"
+
 report "setup.test.sh"

@@ -7,7 +7,9 @@
 # and silent on any problem), and hits the network at most once per 24h (cached).
 #
 # This repo ships annotated git tags (no GitHub Releases), so the check queries the
-# tags API and picks the highest semver. Opt out: LOOP_TESTING_DISABLE_UPDATE_CHECK=1.
+# tags API (?per_page=100 — the highest-semver scan sees one page, i.e. up to 100
+# tags; revisit pagination only if the repo ever exceeds that, audit NEW-5/R60)
+# and picks the highest semver. Opt out: LOOP_TESTING_DISABLE_UPDATE_CHECK=1.
 #
 # Test/override env: LOOP_TESTING_UPDATE_CACHE (cache dir), LOOP_TESTING_UPDATE_TTL
 # (throttle seconds), LOOP_TESTING_UPDATE_TAGS_URL (fetch URL; file:// works),
@@ -61,7 +63,7 @@ if [ "$fetch_now" = 1 ]; then
   elif command -v curl >/dev/null 2>&1; then
     latest=$(curl -fsS --max-time "${LOOP_TESTING_UPDATE_TIMEOUT:-3}" \
       -H 'Accept: application/vnd.github+json' -H 'User-Agent: loop-testing-update-check' \
-      "${LOOP_TESTING_UPDATE_TAGS_URL:-https://api.github.com/repos/sdsrss/loop-testing/tags}" 2>/dev/null \
+      "${LOOP_TESTING_UPDATE_TAGS_URL:-https://api.github.com/repos/sdsrss/loop-testing/tags?per_page=100}" 2>/dev/null \
       | grep -oE '"name"[[:space:]]*:[[:space:]]*"v?[0-9]+\.[0-9]+\.[0-9]+"' \
       | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
   fi

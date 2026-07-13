@@ -115,15 +115,27 @@ block() { # increments counter (with reset logic) and blocks, or force-allows at
   # last_updated field and works whether or not the agent wrote it.
   local stale_secs="${LOOP_TESTING_GATE_STALE_SECONDS:-86400}"
   case "$stale_secs" in *[!0-9]*|"") stale_secs=86400 ;; esac
-  if [ "$stale_secs" -gt 0 ] && [ -f "$STATE" ]; then
-    local mtime now
-    mtime="$(stat -c %Y "$STATE" 2>/dev/null || stat -f %m "$STATE" 2>/dev/null)"
+  if [ "$stale_secs" -gt 0 ]; then
+    # Staleness source: STATE.md mtime when it exists; otherwise fall back to the
+    # sentinel's own mtime. Without the fallback an orphan .active whose STATE.md
+    # was never written (e.g. an inline bootstrap that armed the sentinel and
+    # crashed before seeding STATE) taxes EVERY future stop in the project
+    # forever — the STATE-mtime escape below could never fire (audit NEW-3/R59).
+    # A FRESH orphan still fail-closes into a block, exactly like case E.
+    local mtime="" now src=""
+    if [ -f "$STATE" ]; then
+      mtime="$(stat -c %Y "$STATE" 2>/dev/null || stat -f %m "$STATE" 2>/dev/null)"
+      src="STATE.md"
+    elif [ -f "$ACTIVE" ]; then
+      mtime="$(stat -c %Y "$ACTIVE" 2>/dev/null || stat -f %m "$ACTIVE" 2>/dev/null)"
+      src=".active sentinel (no STATE.md present)"
+    fi
     now="$(date +%s 2>/dev/null)"
     case "$mtime" in ''|*[!0-9]*) mtime="" ;; esac
     case "$now" in ''|*[!0-9]*) now="" ;; esac
     if [ -n "$mtime" ] && [ -n "$now" ] && [ "$((now - mtime))" -ge "$stale_secs" ]; then
       rm -f "$ACTIVE" "$COUNT_FILE"
-      echo "loop-testing stop-gate: STATE.md is stale ($((now - mtime))s since last update > ${stale_secs}s) with a non-terminal status — treating as an abandoned run: disarming the sentinel and allowing the stop. Re-trigger the skill to resume from STATE.md." >&2
+      echo "loop-testing stop-gate: $src is stale ($((now - mtime))s since last update > ${stale_secs}s) with a non-terminal status — treating as an abandoned run: disarming the sentinel and allowing the stop. Re-trigger the skill to resume from STATE.md." >&2
       exit 0
     fi
   fi

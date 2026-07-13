@@ -87,4 +87,25 @@ assert_path    "$sb4/loop-testing.staging.$$"        "reap: live-owner staging d
 assert_path    "$d4/SKILL.md"                        "reap: install itself completed normally"
 rm -rf "$sb4/loop-testing.staging.$$"
 
+# --- R58 (NEW-2): reinstall must NOT delete a foreign (marker-less) .bak ---
+# do_uninstall already marker-gates the .bak removal; the reinstall path only
+# checked the basename shape, so a user's own `loop-testing.bak` directory was
+# silently deleted to make room for the rotation (same sibling-guard-miss class
+# as CX-1). A foreign .bak must refuse the reinstall and be left untouched.
+sb5="$(make_sandbox)"
+trap 'chmod u+w "$sb2" 2>/dev/null; rm -rf "$sandbox" "$sb2" "$sb3" "$shim" "$sb4" "$sb5"' EXIT
+d5="$sb5/loop-testing"
+bash "$INSTALLER" --target "$sb5" >/dev/null 2>&1
+assert_eq "$?" "0" "bak-guard: baseline install ok"
+mkdir -p "$d5.bak"
+echo "user data" > "$d5.bak/precious.txt"   # foreign dir: no installer marker
+bash "$INSTALLER" --target "$sb5" >/dev/null 2>&1; rc5=$?
+assert_ne "$rc5" "0" "bak-guard: reinstall over a foreign .bak exits non-zero (R58)"
+assert_path "$d5.bak/precious.txt" "bak-guard: foreign .bak left untouched (R58)"
+assert_path "$d5/SKILL.md" "bak-guard: existing install left intact (R58)"
+assert_path "$d5/.loop-testing-codex-install" "bak-guard: existing install still marked (R58)"
+if [ -z "$(ls -d "$sb5"/loop-testing.staging.* 2>/dev/null)" ]; then
+  pass "bak-guard: no staging residue after the refusal"
+else fail "bak-guard: staging dir residue remains"; fi
+
 finish

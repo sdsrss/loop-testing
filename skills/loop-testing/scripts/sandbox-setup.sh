@@ -44,6 +44,25 @@ case "$MODE" in worktree|branch) : ;; *) die "invalid --mode: $MODE (worktree|br
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" \
   || die "not a git repository — refusing to build a sandbox that cannot be isolated" 3
 
+# --- re-anchor when invoked from inside a linked worktree (audit NEW-1 / R57) --
+# From inside the qa worktree, --show-toplevel is the WORKTREE: the marker lives
+# in the MAIN tree, so the idempotent short-circuit below would miss it, fall
+# through to full init, and try to nest a second `<wt>-qa-loop` worktree (git
+# refuses — branch already checked out — and the exit-6 message misleads).
+# Re-anchor to the main tree so a resume from the worktree cwd short-circuits
+# like any other resume. Validation failure keeps the original TOP untouched.
+GD="$(git rev-parse --git-dir 2>/dev/null)"
+GCD="$(git rev-parse --git-common-dir 2>/dev/null)"
+if [ -n "$GCD" ] && [ "$GD" != "$GCD" ]; then
+  case "$GCD" in /*) : ;; *) GCD="$(cd "$GCD" 2>/dev/null && pwd)" ;; esac
+  MAIN_TOP="$(git -C "$(dirname "$GCD")" rev-parse --show-toplevel 2>/dev/null)"
+  if [ -n "$MAIN_TOP" ] && [ "$MAIN_TOP" != "$TOP" ] && [ -d "$MAIN_TOP" ]; then
+    echo "sandbox-setup: invoked from inside a linked worktree — re-anchoring to the main tree: $MAIN_TOP"
+    TOP="$MAIN_TOP"
+    cd "$TOP" || die "cannot cd to re-anchored main tree $TOP" 3
+  fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATES_DIR="$(cd "$SCRIPT_DIR/../templates" && pwd 2>/dev/null)" || TEMPLATES_DIR=""
 
