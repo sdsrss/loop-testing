@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.8.0 — 2026-07-13
+
+Two batches: external prompt-benchmark adoption (roadmap batch 6, R67–R72 —
+systematic comparison against an 11-variant external loop-testing prompt
+collection; skeleton unchanged, six targeted additions) and v0.7.0 review
+follow-ups (batch 5, R64–R66). Full suite `ALL GREEN` (purge suite 24 → 40
+asserts). Prompt changes carry the usual no-real-loop-verification caveat and
+fold into the next real-loop smoke.
+
+- **feat(skill / R67–R69)**: `loop-round.md` step 2 gains two product-form
+  drivers — **plugin/extension** (host lifecycle: install/load, host calls,
+  config change, disable/uninstall cleanup, upgrade migration; no real host →
+  simulated-host scripts + declared blind spots) and **data/batch** (idempotency,
+  resume after interrupt, large files, encoding, corrupted input, reproducible
+  output). The CLI driver adds TTY vs non-TTY degradation and signal semantics;
+  the misuse checklist adds failure injection (dependency down / timeout / disk
+  full / permission denied — only when safely simulatable, otherwise recorded as
+  a blind spot, never faked).
+- **feat(skill / R70–R72)**: `issue-rules.md` gains an expectation-source ladder
+  (spec/requirements > code comments & types > existing tests > stable
+  conventions > general reasonableness; underivable = no oracle →
+  `NEEDS_CONFIRMATION`), a concrete P1 example (a public doc's main example
+  failing to run), and a three-strike addition — roll back the failed attempts'
+  working-tree residue before moving on, so half-done diffs never bleed into
+  later rounds' evidence.
+- **docs(clean / R64)**: `sandbox-clean.sh` header now documents exit 1
+  (internal abort: re-anchored to the main tree but cannot cd there — applies to
+  both plain clean and `--purge`).
+- **docs(README / R65)**: harvest wording fixed — a branch with commits beyond
+  the baseline is *always* kept; harvesting cannot be auto-detected (merging
+  does not move the qa tip), so waiving requires an explicit `--discard-fixes`.
+- **test(sandbox / R66)**: three re-anchor edge cases locked in
+  `tests/sandbox/purge.test.sh` — `--purge` from inside the qa worktree
+  (cd-out-before-remove), from an unrelated linked worktree (it and its branch
+  stay untouched), and with the main repo on a detached HEAD (HEAD not moved).
+
 ## 0.7.0 — 2026-07-13
 
 Audit batch 4 (fourth production-readiness audit, roadmap R57–R62): the last
