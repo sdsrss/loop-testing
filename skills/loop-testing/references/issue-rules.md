@@ -57,7 +57,7 @@ OPEN → FIXING → FIXED_UNVERIFIED → VERIFIED
    NEEDS_CONFIRMATION / BLOCKED / WONT_FIX / CANNOT_REPRODUCE
 ```
 
-- `VERIFIED` **只能由原样重放复现步骤产生**（重放命令与输出同轮记录于 `runs/round-N.md`）；未重放不得标 VERIFIED。
+- `VERIFIED` **只能由原样重放复现步骤产生**（重放命令与输出同轮记录于 `runs/round-N.md`）；未重放不得标 VERIFIED。**机制次序（`ledger-gate.sh` 强制，勿颠倒）**：重放命令与输出必须**先**写入 `runs/round-N.md`，PreToolUse 的 `ledger-gate` 才放行把 `ISSUES.md` 该条状态改为 `VERIFIED`；先改状态、后补重放会被拦截（fail-closed）。
 - `NEEDS_CONFIRMATION` / `BLOCKED` / `WONT_FIX` / `CANNOT_REPRODUCE` **必须有完整证据与明确下一步**，不能当作方便停止的「问题停车场」。
 - `CANNOT_REPRODUCE` 必须附尝试记录，不许编故事。
 
@@ -67,4 +67,4 @@ OPEN → FIXING → FIXED_UNVERIFIED → VERIFIED
 
 ## 9. 建议类 → SUGGESTIONS.md
 
-新方向 / 新功能建议不进 `ISSUES.md`，存 `SUGGESTIONS.md`，每条附一条 MoA 决策建议链接（`decisions/DEC-NNN.md`）。**不擅自实现建议类内容**。
+新方向 / 新功能建议不进 `ISSUES.md`，存 `SUGGESTIONS.md`，每条附一条 MoA 决策建议链接（`decisions/DEC-NNN.md`；**琐碎 / 低风险建议可暂标 `待生成`**，不必为每条都发一次付费委员会调用——付费授权边界见 `moa-decision.md` §5）。**不擅自实现建议类内容**。
