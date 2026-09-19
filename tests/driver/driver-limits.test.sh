@@ -42,6 +42,15 @@ assert_rc $? 2 "trailing --project -> exit 2 (no hang)"
 timeout 10 bash "$DRIVER" --project /tmp --max-turns >/dev/null 2>&1
 assert_rc $? 2 "trailing --max-turns -> exit 2 (no hang)"
 
+# E2. the validation error must name the REAL flag (--max-sessions), not the
+# internal variable lowercased (--max_sessions) — a user copy-pasting the name
+# out of the message gets "unknown argument".
+OUT=$(timeout 10 bash "$DRIVER" --project /tmp --max-sessions abc 2>&1)
+case "$OUT" in
+  *"--max-sessions"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: validation error must name --max-sessions — got: $OUT" >&2 ;;
+esac
+
 # F. Progress via convergence + evidence only (round AND issue count static, but
 #    converged_streak advances and runs/ evidence grows) must NOT trip NO_PROGRESS
 #    — the old round+issues-only signal misread this as stuck (audit A3).
@@ -163,5 +172,47 @@ bash "$DRIVER" --project "$WS13" --claude-bin "$WS13/hang-stub.sh" --session-min
 assert_rc $? 5 "hung sessions killed by the watchdog -> NO_PROGRESS exit 5"
 assert_eq "2" "$(sessions_in_log "$WS13")" "watchdog bounded exactly 2 hung sessions"
 assert_file_contains "$WS13/docs/looptesting/driver.log" "exit=124" "driver.log records the watchdog kill (rc 124)"
+
+# P. Documented shutdown: `kill -TERM -- -<driver-pgid>` must actually STOP the
+#    driver. `trap release_lock EXIT INT TERM` ran the handler and RETURNED into
+#    the loop, so the signal only dropped the concurrency lock while the driver
+#    kept launching sessions — the guard silently void, the user's Ctrl-C ignored.
+if command -v setsid >/dev/null 2>&1; then
+  WS14=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF" "$WS12" "$WS13" "$WS14"' EXIT
+  WS17="$WS14"
+  LT17="$WS17/docs/looptesting"; mkdir -p "$LT17/runs"
+  cat > "$WS17/slow-stub.sh" <<'SLOW'
+#!/usr/bin/env bash
+sleep 2
+printf '# STATE\nround: 0\nconverged_streak: 0\nstatus: RUNNING\n' > docs/looptesting/STATE.md
+printf 'evidence %s\n' "$(date +%s%N)" >> docs/looptesting/runs/round-0.md
+SLOW
+  chmod +x "$WS17/slow-stub.sh"
+  write_state "$WS17" RUNNING 0
+  setsid bash "$DRIVER" --project "$WS17" --claude-bin "$WS17/slow-stub.sh" \
+    --max-sessions 50 --max-minutes 5 >/dev/null 2>&1 &
+  DRV17=""
+  for _ in $(seq 1 40); do
+    [ -f "$LT17/.driver.lock/pid" ] && read -r DRV17 < "$LT17/.driver.lock/pid" 2>/dev/null
+    case "$DRV17" in ''|*[!0-9]*) DRV17="" ;; *) break ;; esac
+    sleep 0.25
+  done
+  if [ -n "$DRV17" ]; then
+    PGID17=$(ps -o pgid= -p "$DRV17" 2>/dev/null | tr -d ' ')
+    kill -TERM -- -"$PGID17" 2>/dev/null
+    for _ in $(seq 1 40); do kill -0 "$DRV17" 2>/dev/null || break; sleep 0.25; done
+    if kill -0 "$DRV17" 2>/dev/null; then
+      FAIL=$((FAIL+1)); echo "  FAIL: SIGTERM to the driver process group did not stop the driver" >&2
+      kill -9 "$DRV17" 2>/dev/null
+      for c in $(pgrep -P "$DRV17" 2>/dev/null); do kill -9 "$c" 2>/dev/null; done
+    else
+      PASS=$((PASS+1))
+    fi
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: driver never wrote its lock pid — cannot exercise the shutdown path" >&2
+  fi
+else
+  echo "  skip: setsid unavailable — process-group shutdown test not run"
+fi
 
 report "driver-limits.test.sh"

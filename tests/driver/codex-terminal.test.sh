@@ -38,9 +38,14 @@ if [ -w "$FAKE/SKILL.md" ]; then
   PASS=$((PASS+1)); echo "  ok: protect restores skill-dir writability on normal exit"
 else FAIL=$((FAIL+1)); echo "  FAIL: skill-dir left read-only after normal exit" >&2; fi
 
-# E. the restore trap is wired for signal interrupts (INT/TERM), not just EXIT (C18).
-if grep -qE "trap .* EXIT INT TERM" "$CODEX_DRIVER"; then
-  PASS=$((PASS+1)); echo "  ok: protect restore trap covers EXIT INT TERM"
-else FAIL=$((FAIL+1)); echo "  FAIL: protect trap not wired for INT/TERM" >&2; fi
+# E. the restore trap is wired for signal interrupts (INT/TERM), not just EXIT (C18),
+# AND the signal handlers terminate: a bash trap handler otherwise returns into the
+# loop, un-protecting the skill dir and dropping the lock while full-access sessions
+# keep launching. End-to-end behavior is covered by codex-limits.test.sh T.
+if grep -qE "^trap +cleanup +EXIT" "$CODEX_DRIVER" \
+   && grep -qE "^trap +'cleanup; exit [0-9]+' +INT" "$CODEX_DRIVER" \
+   && grep -qE "^trap +'cleanup; exit [0-9]+' +TERM" "$CODEX_DRIVER"; then
+  PASS=$((PASS+1)); echo "  ok: cleanup trap covers EXIT and terminates on INT/TERM"
+else FAIL=$((FAIL+1)); echo "  FAIL: protect trap not wired for INT/TERM (or handler does not exit)" >&2; fi
 
 report "codex-terminal.test.sh"

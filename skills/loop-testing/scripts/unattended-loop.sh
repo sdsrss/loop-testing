@@ -67,7 +67,12 @@ done
 [ -n "$PROJECT" ] || die "--project <dir> is required"
 [ -d "$PROJECT" ] || die "--project is not a directory: $PROJECT"
 for v in MAX_SESSIONS MAX_MINUTES SESSION_MINUTES MAX_TURNS; do
-  eval "val=\$$v"; is_uint "$val" || die "--${v,,} must be a non-negative integer, got: $val"
+  # Name the flag the user typed (--max-sessions), not the variable (MAX_SESSIONS).
+  # `tr`, not ${v,,} + ${flag//_/-}: case-modification expansion is bash 4.0+ and a
+  # FATAL bad substitution on stock macOS bash 3.2 — and this line runs on every
+  # invocation, not just the error path (tests/portability/bash3.test.sh guards it).
+  eval "val=\$$v"; flag=$(printf '%s' "$v" | tr 'A-Z_' 'a-z-')
+  is_uint "$val" || die "--$flag must be a non-negative integer, got: $val"
 done
 # Default plugin-dir = this plugin's repo root (scripts/ -> loop-testing/ -> skills/ -> root).
 [ -n "$PLUGIN_DIR" ] || PLUGIN_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -84,8 +89,12 @@ state_field() { # key -> value (trimmed) ; empty if absent/unparseable
   [ -f "$STATE" ] || return 0
   grep -aE "^$1:" "$STATE" 2>/dev/null | head -1 | sed "s/^$1:[[:space:]]*//" | tr -d '[:space:]'
 }
-round_of() { # normalized integer round (tolerates a trailing annotation); -1 if none
-  local r; r=$(state_field round | sed 's/[^0-9-]//g'); [ -n "$r" ] && echo "$r" || echo -1;
+round_of() { # first integer in `round:` (tolerates an annotation); -1 if none
+  # Take the first integer RUN, don't strip every non-digit: `round: 3 of 12`
+  # glued both numbers into 312 — a round that never existed, reported as fact
+  # in driver.log and the summary line.
+  local r; r=$(state_field round | sed -n 's/^[^0-9-]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p')
+  [ -n "$r" ] && echo "$r" || echo -1
 }
 issue_count() {
   [ -f "$ISSUES" ] || { echo 0; return; }
@@ -132,7 +141,12 @@ LOCK_DIR="$LT/.driver.lock"
 LOCK_OWNED=0
 release_lock() { [ "$LOCK_OWNED" = 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null; LOCK_OWNED=0; }
 acquire_lock() {
-  if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
+  # LOCK_OWNED is set BEFORE the pid write, at both mkdir sites: a signal landing
+  # between them now terminates (the handlers exit), and with the flag still unset
+  # release_lock would skip its rm — leaving a pid-less lock dir that every later
+  # run reads as a live holder and refuses, locking the project out until a human
+  # deletes it by hand. The pid file is advisory; this flag authorises cleanup.
+  if mkdir "$LOCK_DIR" 2>/dev/null; then LOCK_OWNED=1; echo "$$" > "$LOCK_DIR/pid"; return 0; fi
   local holder=""; [ -f "$LOCK_DIR/pid" ] && read -r holder < "$LOCK_DIR/pid" 2>/dev/null
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
   # Fail-closed: steal a present lock ONLY when its holder PID is readable AND
@@ -144,10 +158,19 @@ acquire_lock() {
     die "another loop-testing driver is running on this project (lock held${holder:+ by pid $holder}); refusing to run concurrently — remove $LOCK_DIR by hand only if you are sure no driver is live"
   fi
   rm -rf "$LOCK_DIR" 2>/dev/null   # holder PID confirmed dead (crashed driver) — steal
-  if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
+  if mkdir "$LOCK_DIR" 2>/dev/null; then LOCK_OWNED=1; echo "$$" > "$LOCK_DIR/pid"; return 0; fi
   die "could not acquire driver lock at $LOCK_DIR"
 }
-trap release_lock EXIT INT TERM
+# A bash trap handler RETURNS into the interrupted flow — `trap release_lock INT
+# TERM` therefore only dropped the lock and let the loop keep launching sessions:
+# the documented process-group shutdown never stopped anything, and the
+# concurrency guard was silently void while the driver ran on. Clean up, then
+# terminate with the conventional 128+n status (same shape as install-codex.sh).
+# release_lock is idempotent (LOCK_OWNED=0), so the EXIT trap firing after these
+# is a no-op.
+trap release_lock EXIT
+trap 'release_lock; exit 130' INT
+trap 'release_lock; exit 143' TERM
 acquire_lock
 
 START_EPOCH=$(date +%s)
@@ -163,8 +186,10 @@ prev_sig="$(progress_sig)"
 
 log_line() { printf '%s\n' "$1" >> "$DRIVER_LOG"; }
 summary_exit() { # code, verdict
-  echo "unattended-loop: $2 (sessions=$session, elapsed=$(( ($(date +%s) - START_EPOCH) / 60 ))m, round=$(state_field round), status=$(state_field status), issues=$(issue_count))"
-  log_line "driver end: $2 sessions=$session round=$(state_field round) status=$(state_field status) issues=$(issue_count)"
+  # round via round_of (normalized), not the raw field — parity with unattended-codex.sh
+  # and with the per-session log lines below, which already use round_of.
+  echo "unattended-loop: $2 (sessions=$session, elapsed=$(( ($(date +%s) - START_EPOCH) / 60 ))m, round=$(round_of), status=$(state_field status), issues=$(issue_count))"
+  log_line "driver end: $2 sessions=$session round=$(round_of) status=$(state_field status) issues=$(issue_count)"
   exit "$1"
 }
 

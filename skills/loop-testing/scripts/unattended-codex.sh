@@ -15,8 +15,12 @@
 #     read-only/workspace-write bwrap sandboxes fail in containers lacking user
 #     namespaces (RTM_NEWADDR); full-access + cwd containment + skill-dir
 #     write-protection is the working combination.
-#   - The installed skill dir is chmod'd read-only for the run and restored on
-#     EXIT, so a full-access session cannot rewrite the skill it is executing.
+#   - The installed skill dir has its OWNER write bit cleared for the run and
+#     restored on EXIT. This is a SPEED BUMP against the full-access session
+#     casually rewriting the skill it is executing, not a guarantee: the session
+#     runs as the owner, so `chmod -R u+w` undoes it in one command, and under
+#     root the bits are ignored outright. A real control needs a read-only bind
+#     mount or a different uid. Group/other bits are left untouched.
 #
 # Usage:
 #   unattended-codex.sh --project <dir> [--max-sessions 15] [--max-minutes 90]
@@ -71,7 +75,12 @@ done
 [ -n "$PROJECT" ] || die "--project <dir> is required"
 [ -d "$PROJECT" ] || die "--project is not a directory: $PROJECT"
 for v in MAX_SESSIONS MAX_MINUTES SESSION_MINUTES; do
-  eval "val=\$$v"; is_uint "$val" || die "--${v,,} must be a non-negative integer, got: $val"
+  # Name the flag the user typed (--max-minutes), not the variable (MAX_MINUTES).
+  # `tr`, not ${v,,} + ${flag//_/-}: case-modification expansion is bash 4.0+ and a
+  # FATAL bad substitution on stock macOS bash 3.2 — and this line runs on every
+  # invocation, not just the error path (tests/portability/bash3.test.sh guards it).
+  eval "val=\$$v"; flag=$(printf '%s' "$v" | tr 'A-Z_' 'a-z-')
+  is_uint "$val" || die "--$flag must be a non-negative integer, got: $val"
 done
 
 LT="$PROJECT/docs/looptesting"
@@ -90,7 +99,10 @@ LOCK_DIR="$LT/.driver.lock"
 LOCK_OWNED=0
 release_lock() { [ "$LOCK_OWNED" = 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null; LOCK_OWNED=0; }
 acquire_lock() {
-  if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
+  # LOCK_OWNED before the pid write at both mkdir sites (see unattended-loop.sh):
+  # a signal in that window terminates, and an unset flag would leave a pid-less
+  # lock dir that later runs read as a live holder and refuse forever.
+  if mkdir "$LOCK_DIR" 2>/dev/null; then LOCK_OWNED=1; echo "$$" > "$LOCK_DIR/pid"; return 0; fi
   local holder=""; [ -f "$LOCK_DIR/pid" ] && read -r holder < "$LOCK_DIR/pid" 2>/dev/null
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
   # Fail-closed: steal a present lock ONLY when its holder PID is readable AND
@@ -102,7 +114,7 @@ acquire_lock() {
     die "another loop-testing driver is running on this project (lock held${holder:+ by pid $holder}); refusing to run concurrently — remove $LOCK_DIR by hand only if you are sure no driver is live"
   fi
   rm -rf "$LOCK_DIR" 2>/dev/null   # holder PID confirmed dead (crashed driver) — steal
-  if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; LOCK_OWNED=1; return 0; fi
+  if mkdir "$LOCK_DIR" 2>/dev/null; then LOCK_OWNED=1; echo "$$" > "$LOCK_DIR/pid"; return 0; fi
   die "could not acquire driver lock at $LOCK_DIR"
 }
 
@@ -117,21 +129,64 @@ acquire_lock() {
 # out — that would strip the live run's protection (audit CX-1; same ownership
 # gating release_lock already has via LOCK_OWNED).
 DID_PROTECT=0
+RO_SNAPSHOT=""   # paths under SKILL_DIR that were ALREADY non-owner-writable
+CLEANED=0
 cleanup() {
-  [ "$DID_PROTECT" = "1" ] && [ -d "$SKILL_DIR" ] && chmod -R u+w "$SKILL_DIR" 2>/dev/null
+  # Idempotent: the INT/TERM handlers exit, which fires the EXIT trap too, so this
+  # runs TWICE on every Ctrl-C. A second blanket `chmod -R u+w` after the snapshot
+  # has been consumed would silently re-grant write to files the user froze.
+  # The flag is set only AFTER the restore completes, so an interrupted pass still
+  # retries rather than being skipped.
+  if [ "$CLEANED" = "1" ]; then release_lock; return 0; fi
+  if [ "$DID_PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
+    chmod -R u+w "$SKILL_DIR" 2>/dev/null
+    # Blanket restore first (guaranteed half: a failure there can only leave the
+    # dir writable, never locked), then put back the owner-read-only bits the
+    # user had set before the run — a 0444 file coming back 0644 is a permission
+    # grant nobody asked for.
+    if [ -n "$RO_SNAPSHOT" ] && [ -f "$RO_SNAPSHOT" ]; then
+      while IFS= read -r -d '' p; do
+        [ -e "$p" ] && chmod u-w "$p" 2>/dev/null
+      done < "$RO_SNAPSHOT"
+    fi
+  fi
+  CLEANED=1
+  [ -n "$RO_SNAPSHOT" ] && rm -f "$RO_SNAPSHOT" 2>/dev/null
   release_lock
 }
-trap cleanup EXIT INT TERM
+# A bash trap handler RETURNS into the interrupted flow, so `trap cleanup INT
+# TERM` un-protected the skill dir and dropped the lock while the loop kept
+# launching full-access sessions. Clean up, then terminate with the conventional
+# 128+n status. cleanup is idempotent, so the EXIT trap after these is a no-op.
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 acquire_lock
 if [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
-  chmod -R a-w "$SKILL_DIR" 2>/dev/null || true
+  # Arm the restore BEFORE the chmod, not after: the INT/TERM handlers now exit,
+  # so a signal delivered while `chmod -R` is still walking the tree would reach
+  # cleanup with DID_PROTECT=0, skip the restore, and leave the installed skill
+  # dir read-only for good. Setting it first can only over-restore (a no-op
+  # chmod +w on a dir we never took write off).
   DID_PROTECT=1
+  # Snapshot what was already read-only BEFORE clearing anything, so the restore
+  # can be faithful instead of blanket. Absent mktemp -> skip the fidelity half,
+  # never the restore itself.
+  RO_SNAPSHOT="$(mktemp "${TMPDIR:-/tmp}/loop-testing-ro.XXXXXX" 2>/dev/null || echo "")"
+  [ -n "$RO_SNAPSHOT" ] && find "$SKILL_DIR" ! -perm -u+w -print0 > "$RO_SNAPSHOT" 2>/dev/null
+  # `u-w`, not `a-w`: the session runs as THIS user, and POSIX checks the owner
+  # bits for the owner, so clearing owner-write is what actually blocks it. `a-w`
+  # additionally cleared group/other write, which the `u+w` restore cannot give
+  # back — silently downgrading a shared, group-writable install on every run.
+  chmod -R u-w "$SKILL_DIR" 2>/dev/null || true
 fi
 
 RESUME_PROMPT='使用 loop-testing 技能：读取 docs/looptesting/STATE.md，从断点继续执行自测循环（若 STATE 不存在则从第 0 轮开始）。若需从第 0 轮建沙箱：必须经 sandbox-setup.sh 用 worktree 模式隔离，禁止手动 git switch/checkout/branch 或以任何方式切换用户主工作树所在分支（改代码前先核验 docs/looptesting/.sandbox/ownership.env 存在且主树仍在原分支）。在当前会话内联执行整个循环，不要把循环委派给别的 agent 或 Task 工具。本会话尽量多完成整轮（选场景→像真实用户使用→发现即立案/复现/分级→修复+回归→复验+轮末结算），每轮末更新 STATE.md 的机器判读字段（round/converged_streak/status）。若已满足收敛判据（连续2轮收敛低风险轮）或保险停止条件，按 references/exit-and-report.md 写入终态（CONVERGED/INCOMPLETE/BLOCKED）并停止；否则显式声明「继续第 N+1 轮」。'
 
 state_field() { grep -aE "^$1:" "$STATE" 2>/dev/null | head -1 | sed "s/^$1:[[:space:]]*//" | tr -d '[:space:]'; }
-round_of()  { local r; r=$(state_field round | sed 's/[^0-9-]//g'); [ -n "$r" ] && echo "$r" || echo -1; }
+# First integer RUN in `round:`, not "every non-digit stripped" — the latter glued
+# `round: 3 of 12` into 312, a round that never existed. Kept identical to unattended-loop.sh.
+round_of()  { local r; r=$(state_field round | sed -n 's/^[^0-9-]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p'); [ -n "$r" ] && echo "$r" || echo -1; }
 issue_count() { [ -f "$ISSUES" ] && { grep -acE '^### ISSUE-' "$ISSUES" 2>/dev/null || true; } || echo 0; }
 runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth signal
   local d="$LT/runs" n b
