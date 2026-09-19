@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.1 — 2026-09-19
+
+Patch: one safety fix. It was found by a converge maintenance round against this
+repo, and then hardened by an independent pre-ship review of that round's own
+output — the same author-≠-reviewer step that caught eighteen defects inside the
+ten fixes behind `0.9.0`. The review rejected the round's two other fixes: both
+introduced regressions in the worktree / evidence-dir ownership logic, so only
+this one ships and the rest go back for rework. Two mutants confirm the new
+test's assertions are load-bearing rather than decorative. Full suite
+`ALL GREEN` (337 shell assertions across 22 suites, up from 324 across 21; the
+new `tests/sandbox/clean-pid-guard.test.sh` accounts for all 13; moa unchanged
+at 41 node tests).
+
+**What changes for you.** Nothing you can depend on: no flag, exit code, file
+format or default moves. The only new output is a single
+`sandbox-clean: refusing to signal PID … from .pids` line, on a code path that
+previously terminated your shell instead.
+
+- **fix(sandbox)**: `sandbox-clean.sh` filtered the PIDs recorded in
+  `docs/looptesting/.pids` by *shape* (all-numeric) rather than by *value*, so a
+  `0` line reached `kill "$pid"` — and `kill 0` signals every process in the
+  sender's own process group: the agent session, the unattended driver, and any
+  sibling jobs, mid-cleanup, before the worktree is ever removed. That file is
+  written by the agent from parsed `lsof -t -i :PORT` / `ss -ltnp` output, which
+  is exactly where a stray `0` comes from, so this was reachable input rather
+  than a hypothetical. `00` slipped through the same way; PID `1` was masked
+  only by `kill -0` failing for non-root. The guard now compares the value and
+  strips leading zeros first, so `0000123` is still stopped as the real PID 123
+  it is.
+
 ## 0.9.0 — 2026-09-19
 
 Minor: an eight-round dogfooding `/loop-testing` run against this repo itself,
