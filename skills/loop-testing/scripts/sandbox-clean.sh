@@ -176,7 +176,13 @@ if [ "$PURGE" = 1 ]; then
   P_TAG="$(mval CREATED_TAG)"
   P_BRANCH="$(mval CREATED_BRANCH)"
   P_BASE="$(mval BASELINE_HEAD)"
+  # Refs a PRIOR lifecycle created and this one only re-used. Ownership is recorded
+  # by name, so the ref standing there now may be the user's own — never delete an
+  # adopted ref, just say it is there and what is on it.
+  P_ADOPT_BRANCH="$(mval ADOPTED_BRANCH)"
+  P_ADOPT_TAG="$(mval ADOPTED_TAG)"
   kept_branch=""
+  adopted_note=""
 
   if [ -n "$P_TAG" ] && git -C "$TOP" rev-parse -q --verify "refs/tags/$P_TAG" >/dev/null 2>&1; then
     git -C "$TOP" tag -d "$P_TAG" >/dev/null 2>&1 && echo_info "purge: deleted baseline tag $P_TAG"
@@ -199,11 +205,56 @@ if [ "$PURGE" = 1 ]; then
       fi
     else
       if [ "$fixes" -gt 0 ] 2>/dev/null; then
-        kept_branch="$P_BRANCH (holds $fixes fix commit(s) beyond the baseline — harvest them first, or re-run with --purge --discard-fixes)"
+        # Needs git >= 2.7 for `for-each-ref --contains`; older git prints nothing
+        # (stderr suppressed) and falls through to the conservative wording below,
+        # so the degradation is graceful rather than a failure.
+        # Merging (or pushing) does not move the qa tip, but it does make that tip
+        # reachable from the other ref — so a COMPLETED harvest is detectable, and
+        # a user who just merged must not be told to go harvest again. The branch
+        # is still KEPT either way: deleting commits stays the user's explicit
+        # call. A cherry-pick harvest rewrites the commits, so it does not match
+        # here and falls back to the conservative advice.
+        # Exclude the branch's OWN mirrors: `git push origin qa/loop-testing` as a
+        # backup lists origin/qa/loop-testing here, and calling that a completed
+        # harvest invites --discard-fixes on commits that exist nowhere else. Also
+        # drop the bare `origin` that refs/remotes/origin/HEAD shortens to. The -F
+        # suffix match is deliberately broad: a false "not harvested" only keeps a
+        # branch, while a false "harvested" loses commits.
+        harvested_by="$(git -C "$TOP" for-each-ref --contains "refs/heads/$P_BRANCH" \
+          --format='%(refname:short)' refs/heads refs/tags refs/remotes 2>/dev/null \
+          | grep -vxF "$P_BRANCH" | grep -vF "/$P_BRANCH" | grep -vxF origin | head -1)"
+        if [ -n "$harvested_by" ]; then
+          # State the observation, not a verdict: a remote-tracking ref is a local
+          # cache that may be stale, and another branch cut from the same tip also
+          # satisfies --contains. Reachability is evidence the user can check, not
+          # proof the harvest is done.
+          kept_branch="$P_BRANCH (holds $fixes fix commit(s); the tip is also reachable from '$harvested_by' — if that is where you harvested them, re-run with --purge --discard-fixes to drop the branch)"
+        else
+          kept_branch="$P_BRANCH (holds $fixes fix commit(s) beyond the baseline — harvest them first, or re-run with --purge --discard-fixes)"
+        fi
       else
         kept_branch="$P_BRANCH (baseline unverifiable, fix commits unknown — harvest first, or re-run with --purge --discard-fixes)"
       fi
     fi
+  fi
+
+  # --- adopted refs: report, never delete -------------------------------------
+  if [ -n "$P_ADOPT_BRANCH" ] \
+     && git -C "$TOP" rev-parse -q --verify "refs/heads/$P_ADOPT_BRANCH" >/dev/null 2>&1; then
+    a_n=-1
+    if [ -n "$P_BASE" ] && git -C "$TOP" rev-parse -q --verify "$P_BASE^{commit}" >/dev/null 2>&1; then
+      a_n="$(git -C "$TOP" rev-list --count "$P_BASE..refs/heads/$P_ADOPT_BRANCH" 2>/dev/null)"
+      case "$a_n" in ''|*[!0-9]*) a_n=-1 ;; esac
+    fi
+    if [ "$a_n" -ge 0 ] 2>/dev/null; then
+      adopted_note="$P_ADOPT_BRANCH (re-used by this run, not created by it — holds $a_n commit(s) beyond the baseline; purge never deletes an adopted ref, so remove it by hand once you have harvested)"
+    else
+      adopted_note="$P_ADOPT_BRANCH (re-used by this run, not created by it; purge never deletes an adopted ref, so remove it by hand once you have harvested)"
+    fi
+  fi
+  if [ -n "$P_ADOPT_TAG" ] \
+     && git -C "$TOP" rev-parse -q --verify "refs/tags/$P_ADOPT_TAG" >/dev/null 2>&1; then
+    echo_info "purge: kept tag $P_ADOPT_TAG (re-used by this run, not created by it)"
   fi
 
   LT_DIR="$TOP/docs/looptesting"
@@ -217,6 +268,8 @@ if [ "$PURGE" = 1 ]; then
 
   if [ -n "$kept_branch" ]; then
     echo_info "purge done. KEPT branch: $kept_branch"
+  elif [ -n "$adopted_note" ]; then
+    echo_info "purge done. KEPT branch: $adopted_note"
   else
     echo_info "purge done."
   fi
