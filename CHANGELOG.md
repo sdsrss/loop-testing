@@ -1,5 +1,91 @@
 # Changelog
 
+## 0.10.0 — 2026-09-19
+
+Minor: the sandbox stops claiming things by name. `sandbox-clean.sh` used to
+force-remove whatever worktree stood at the path its marker recorded, and
+`--purge` used to delete `docs/looptesting/` on a marker field that every
+released version wrote as a constant `true`. Both destroyed work that was never
+the sandbox's, untracked files included — and the second did it on the workflow
+this tool documents, since clean keeps `qa/loop-testing` precisely because the
+fix commits live nowhere else, so harvesting them means putting a worktree on
+that branch at the path the marker still names. Found by a converge maintenance
+round and then hammered by five rounds of independent pre-ship review, which
+rejected four earlier attempts at this change before this one; each round is the
+`author ≠ reviewer` step that caught eighteen defects inside the ten fixes
+behind `0.9.0`. Full suite `ALL GREEN` (337 shell assertions across 22 suites →
+486 across 24; moa unchanged at 41 node tests). Every new assertion is
+mutation-checked — reverting the property it names turns it red — and two that
+could not be made red were deleted or rebuilt rather than left standing as
+coverage they did not provide.
+
+**What changes for you.** Five things, and one of them needs a hand.
+
+1. **A sandbox created by 0.9.1 or earlier carries no ownership stamp**, so
+   `clean` can no longer tell its worktree from one of yours. It keeps that
+   worktree and prints the exact `git worktree remove --force <path>` line to
+   remove it — check the worktree first, `--force` discards anything
+   uncommitted or untracked in it. After one rebuild the sandbox carries a
+   stamp and never needs this again. Resuming is unaffected: `setup` still
+   answers `already initialized` for these sandboxes, because adopting a
+   worktree to continue a run is reversible and force-removing one is not.
+2. **`--purge` now keeps `docs/looptesting/` in four cases** — the directory was
+   already yours, the marker predates the field being measured, the field says
+   the question was never answered, or a worktree it could not claim is still
+   registered. An upgraded sandbox always lands in one of them, so purge will
+   leave the evidence dir for you to remove.
+3. **The ownership marker is `SANDBOX_VERSION=2`**, adding `WORKTREE_STAMP`,
+   `UNCLAIMED_WORKTREE`, and a `CREATED_LOOPTESTING_DIR` that is now
+   `true | false | unknown` instead of a constant. Anything parsing the marker
+   sees new keys and a new value domain.
+4. **`--purge` exits `4`** when it ran but stopped short — it may already have
+   deleted the baseline tag, so this is not a no-op. `0` still means it finished.
+5. **A relative `--worktree-path` resolves against your current directory.** It
+   used to resolve against both the current directory and the repo root, in
+   different checks within the same run; from a subdirectory the destination now
+   differs from the old repo-root anchoring.
+
+If you script against the old behavior, pin `0.9.1` in your marketplace install
+until you have adjusted.
+
+- **fix(sandbox)**: worktree ownership is a nonce stamped inside the worktree's
+  own git admin dir, which git deletes together with the worktree, so it cannot
+  outlive the thing it identifies and a worktree recreated at the same path does
+  not inherit it. The lookup returns `absent / stale / legacy / ours / foreign /
+  unknown`, and "cannot tell" never authorizes a deletion. It runs on bash
+  builtins and git alone — an earlier attempt let a missing `awk`, and then a
+  missing `cat`, be read as an ownership verdict.
+- **fix(sandbox)**: `--purge` trusts `CREATED_LOOPTESTING_DIR` only from
+  `SANDBOX_VERSION=2` on, and `sandbox-setup.sh` no longer re-emits a v1
+  constant under a v2 marker, which would have laundered an unmeasured value
+  into a fact on the ordinary upgrade path. Whether the sandbox created the
+  directory is recorded in a breadcrumb written the moment it is known, and only
+  when this run can honestly answer.
+- **fix(sandbox)**: a dangling registration — the directory deleted by hand — is
+  cleared with a scoped `git worktree remove`, re-tested immediately before the
+  call. It is never `git worktree prune`, which takes no path and would drop
+  every prunable registration in the repo, including worktrees of yours that a
+  `git worktree repair` could otherwise have restored.
+- **fix(sandbox)**: `--worktree-path` is canonicalized once, to an absolute
+  physical path with `.` and `..` folded and no glob expansion. Recorded
+  verbatim, a relative path made every later ownership lookup miss, so clean
+  leaked its own worktree while reporting success; unquoted, a segment like
+  `READ*` was matched against the current directory and silently retargeted the
+  sandbox.
+- **fix(sandbox)**: a rebuild no longer deletes the ownership marker before it
+  knows the rebuild worked, and records a worktree it walked away from as
+  `UNCLAIMED_WORKTREE` so purge can still name it. A `worktree add` failure
+  carries git's own reason, and a malformed `SANDBOX_VERSION` no longer reaches
+  the shell's integer parser.
+- **fix(sandbox)**: `sandbox-setup.sh` re-verifies isolation in worktree mode
+  before answering "already initialized" — it previously proved only that the
+  path was registered, so it could adopt a user's checkout and commit fixes onto
+  their branch.
+- **docs(sandbox)**: both READMEs enumerate the four cases where purge keeps the
+  evidence dir, carry the kept-worktree row in the artifacts table, and state
+  that the removal command they name discards uncommitted work.
+  `templates/FINAL_REPORT.md` no longer promises clean removes the worktree.
+
 ## 0.9.1 — 2026-09-19
 
 Patch: one safety fix. It was found by a converge maintenance round against this
