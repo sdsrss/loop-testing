@@ -216,6 +216,7 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 | 产物 | 位置 | 保留原因 |
 |---|---|---|
 | `docs/looptesting/` 证据目录——STATE / ISSUES / PLAN / FEATURE_MATRIX / SUGGESTIONS / `runs/` / `decisions/` / FINAL_REPORT.md,及 `driver.log`、清空的 `.pids`、盖了 `CLEANED_AT` 的 `.sandbox/ownership.env` | 目标项目 | 运行审计线索 + 断点续跑契约 |
+| qa worktree,当 `clean` 无法确认其归属时(v0.10.0 之前创建的沙箱,或归属标记不可读) | 目标仓库的同级目录 | 删除它要用 `--force`,会连同其中未提交/未跟踪的内容一起丢弃——所以 `clean` 只报出它,由你决定 |
 | `qa/loop-testing` 分支 | 目标仓库 | **承载全部修复 commit——只存在于该分支** |
 | `qa-baseline` tag | 目标仓库 | 标记跑前基线,便于 diff |
 | `~/.cache/loop-testing/latest-tag` | 用户缓存目录 | 更新检查 24h 节流(Claude Code hook),随时可删 |
@@ -241,10 +242,23 @@ bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
 `--purge` 是**用户**动作,agent 绝不自行执行。缺 ownership marker 或 `STATE.md` 非终态
 (`CONVERGED / INCOMPLETE / BLOCKED`)时拒绝(exit 3);绝不删除当前检出的分支。也绝不删除
 只是"采纳"的 ref——经 `clean` → 重新 `setup` 后,qa 分支与基线标记属于复用而非本次创建,
-marker 记为 adopted,purge 只报不删,`--discard-fixes` 对它们不生效,需用下面的手动方式:
+marker 记为 adopted,purge 只报不删,`--discard-fixes` 对它们不生效。证据目录同理,以下四种情况
+purge 只报不删:
+
+1. 首次运行前 `docs/looptesting/` 就已存在(你自己在那里放笔记或 ADR);
+2. 它的归属标记由 v0.10.0 之前的版本写入,当时该字段是无条件写死的,里面的值说明不了任何事;
+3. marker 明确记录"这个问题没被回答过"——从 v0.10.0 之前升级上来的沙箱会落在这里,
+   因为从来没有任何一次运行测量过这个目录是谁建的;
+4. 有一个本次运行无法认领的 worktree 仍处于注册状态,而这里的 marker 是唯一还能识别它的记录
+   ——先处理那个 worktree,再重新 purge。
+
+四种情况下是否删除都由你决定。手动方式:
 
 ```bash
-git branch -D qa/loop-testing && git tag -d qa-baseline && rm -rf docs/looptesting
+git branch -D qa/loop-testing && git tag -d qa-baseline
+# 仅当 docs/looptesting/ 完全属于沙箱时才执行下一行。purge 保留该目录,恰恰是因为
+# 它可能不完全属于沙箱——执行前先看一眼;里面你自己的未跟踪文件删掉就找不回来了。
+rm -rf docs/looptesting
 rm -rf ~/.cache/loop-testing     # 可选:Claude Code 更新检查缓存
 ```
 

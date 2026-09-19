@@ -1,6 +1,6 @@
 # FINAL_REPORT — loop-testing 最终报告
 
-> 仅在正常收敛停止或触发保险停止时输出。报告前先执行 `sandbox-clean`（停自启进程、清自建临时数据与 worktree），保留本目录证据。
+> 仅在正常收敛停止或触发保险停止时输出。报告前先执行 `sandbox-clean`（停自启进程、清自建临时数据，移除**能确认归属的** worktree——无法确认归属的会被保留并在输出中点名），保留本目录证据。
 > 诚实原则：未复验不标 VERIFIED、不夸大覆盖、INCOMPLETE 不得谎报 PASS。
 
 ## 1. 最终状态
