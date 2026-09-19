@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.9.0 — 2026-09-19
+
+Minor: an eight-round dogfooding `/loop-testing` run against this repo itself,
+then a two-round pre-landing review of the resulting patch. The loop found ten
+defects in the shipped scripts (four P1). The review then found eighteen more
+*in those ten fixes* — two ship-blocking, one of them a secret-redaction bypass
+that never shipped — all folded in here. Everything below is a `fix:` — no new
+capability — but two user-visible behaviors move, so this is a minor, not a
+patch. Full suite `ALL GREEN` (setup 44 → 58 asserts, purge 40 → 62,
+codex-limits 33 → 43, driver-limits 31 → 33, driver-terminal 8 → 11,
+moa 34 → 41 node tests, plus a new `tests/portability/` suite).
+
+**What changes for you.** `sandbox-setup.sh` now REFUSES with the new exit code
+`8` when it cannot write `docs/looptesting/` — it previously printed `ready` and
+exited `0` while leaving an unclaimable worktree/branch/tag behind and a silently
+disarmed stop-gate. And both unattended drivers now actually stop when you signal
+their process group; they previously released their concurrency lock and kept
+launching sessions. No action is required. If you script against the old exit
+codes, pin `0.8.1` in your marketplace install until you have adjusted.
+
+- **fix(sandbox / ISSUE-001)**: `sandbox-clean.sh --purge` could never remove the
+  qa branch and baseline tag after a `clean` → re-`setup` cycle, and printed a
+  bare `purge done.` that read as "everything cleaned" while fix commits sat on a
+  branch it never mentioned. The rebuild now records the refs as `ADOPTED_*` and
+  purge reports them by name with their commit count. It deliberately does NOT
+  re-claim ownership: the marker records ownership by NAME, so a user who had
+  replaced `qa/loop-testing` with their own branch of that name would have had it
+  deleted — silently, when it held no commits beyond the recorded baseline.
+- **fix(sandbox / ISSUE-008)**: `sandbox-setup.sh` ignored every failure while
+  creating `docs/looptesting/`. A read-only `docs/`, a root-owned dir or a full
+  filesystem produced a `ready` that had created no evidence dir, no `.active`
+  sentinel (so the stop-gate was inert) and no ownership marker (so cleanup was
+  fail-closed on artifacts it had just created). A preflight now creates and
+  probes all four evidence dirs before touching git, writes a real byte so ENOSPC
+  is caught here rather than at the marker write, and a refusal rmdir's exactly
+  the directories it created.
+- **fix(driver / ISSUE-009)**: `trap handler EXIT INT TERM` ran the handler and
+  RETURNED into the loop, so `kill -TERM -- -<pgid>` — the shutdown both drivers
+  document — only dropped the concurrency lock while sessions kept launching, and
+  on the Codex side un-protected the skill dir mid-run. Signal handlers now clean
+  up and exit 130/143.
+- **fix(moa / ISSUE-004)**: aggregator JSON with array or object values for
+  `rationale` / `risks` was silently dropped from the decision record, leaving a
+  pointer to a section that did not contain it — while the prompt asks for
+  "≤3 条要点", which models answer with arrays. Values now render as Markdown,
+  bounded by a depth cap (a deeply nested answer used to crash the renderer and
+  discard the already-paid committee calls), a per-field length cap, and key
+  escaping so a key cannot forge a section of the document.
+- **fix(moa / ISSUE-006)**: a `moa.config.json` whose top level is not a JSON
+  object took two bad paths — `null` surfaced an internal TypeError, while an
+  array or string was ignored in silence and the run proceeded against the
+  DEFAULT paid models. Both are now a clean `error:` and exit 1.
+- **fix(codex-driver / ISSUE-005)**: the skill-directory guard cleared write with
+  `chmod -R a-w` and restored with `u+w`, permanently stripping group and other
+  write bits from a shared install on every run. It now clears only the owner bit
+  and restores the exact read-only set it found. The header no longer calls this a
+  guarantee: the session runs as the owner and can undo it in one command, and
+  root ignores the bits entirely — it is a speed bump, not a control.
+- **fix(sandbox / ISSUE-007)**: `--purge` told users who had already merged the qa
+  branch to "harvest them first". It now checks reachability and says so, while
+  excluding the branch's own remote-tracking mirror — a backup `git push` of the
+  qa branch is not a harvest, and reporting it as one pointed at the flag that
+  deletes the commits. The wording states the observation, not a verdict.
+- **fix(sandbox / ISSUE-002, driver / ISSUE-003, ISSUE-010)**: `die()` printed its
+  exit-code argument as part of the message (`…choose another) 6`); the drivers
+  named the internal variable instead of the flag (`--max_sessions`); and an
+  annotated `round: 3 of 12` parsed as `312` in `driver.log` and the summary line.
+- **fix(driver / portability)**: the flag-name fix above briefly used `${v,,}`,
+  a bash 4.0 expansion, on a line that runs on every invocation — a fatal bad
+  substitution on stock macOS bash 3.2, which CI cannot see because the matrix is
+  ubuntu-only. New `tests/portability/bash3.test.sh` gates shipped scripts against
+  case-modification expansions, `mapfile`/`readarray` and `declare -A`, and carries
+  a self-probe so a broken pattern cannot turn the gate into a green no-op.
+
 ## 0.8.1 — 2026-07-13
 
 Batch 7: three documentation clarifications in the skill references, surfaced by
