@@ -261,15 +261,21 @@ git merge qa/loop-testing            # or cherry-pick selected hashes
 
 # 2. Purge everything the run owned (marker-gated, terminal runs only)
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
-#    a branch with commits beyond the baseline is always KEPT — harvesting cannot
-#    be auto-detected (merging does not move the qa tip); once you have taken
-#    what you want, waive explicitly:
+#    a branch with commits beyond the baseline is always KEPT — deleting commits
+#    stays your call. When the tip is also reachable from another ref (you MERGED
+#    it somewhere), purge says so instead of asking you to harvest again; a backup
+#    push of the branch itself does NOT count, and a cherry-pick harvest rewrites
+#    the commits, so neither is detected. Once you have taken what you want,
+#    waive explicitly:
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
 ```
 
 `--purge` is a **user** action, never run by the agent. It refuses (exit 3) unless the
 ownership marker exists and `STATE.md` is terminal (`CONVERGED / INCOMPLETE / BLOCKED`),
-and it never deletes a checked-out branch. Manual equivalent, if you prefer:
+and it never deletes a checked-out branch. It also never deletes a ref it only *adopted*
+— after a `clean` → re-`setup` cycle the qa branch and baseline tag are re-used rather
+than created, so the marker records them as adopted, purge names them instead of removing
+them, and `--discard-fixes` does not apply. Use the manual equivalent for those:
 
 ```bash
 git branch -D qa/loop-testing && git tag -d qa-baseline && rm -rf docs/looptesting

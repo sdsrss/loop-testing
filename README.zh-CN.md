@@ -231,13 +231,17 @@ git merge qa/loop-testing            # 或 cherry-pick 选定哈希
 
 # 2. 一键清扫本次运行的全部自建物(marker 门控,仅限终态运行)
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
-#    分支相对基线仍有 commit 就一律保留——收割无法自动检测
-#    (merge 不会移动 qa 分支指针);确认已合入所需修复后,显式放弃:
+#    分支相对基线仍有 commit 就一律保留——删不删由你定。若分支指针还能从
+#    其它 ref 到达(你已把它 merge 到某处),purge 会直接说明,不再要求你重新
+#    收割;对该分支自身做 backup push 不算,cherry-pick 收割会改写 commit,
+#    两者都检测不到。确认已合入所需修复后,显式放弃:
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
 ```
 
 `--purge` 是**用户**动作,agent 绝不自行执行。缺 ownership marker 或 `STATE.md` 非终态
-(`CONVERGED / INCOMPLETE / BLOCKED`)时拒绝(exit 3);绝不删除当前检出的分支。也可手动等价清理:
+(`CONVERGED / INCOMPLETE / BLOCKED`)时拒绝(exit 3);绝不删除当前检出的分支。也绝不删除
+只是"采纳"的 ref——经 `clean` → 重新 `setup` 后,qa 分支与基线标记属于复用而非本次创建,
+marker 记为 adopted,purge 只报不删,`--discard-fixes` 对它们不生效,需用下面的手动方式:
 
 ```bash
 git branch -D qa/loop-testing && git tag -d qa-baseline && rm -rf docs/looptesting
