@@ -5,3 +5,6 @@ CLAUDE.md
 
 # Local docs (not part of the project)
 docs/
+
+# converge loop working state (local-only, like docs/)
+.converge/
