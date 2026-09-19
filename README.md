@@ -246,6 +246,7 @@ A finished run (after `sandbox-clean.sh`) **deliberately keeps** these artifacts
 | Artifact | Where | Why it is kept |
 |---|---|---|
 | `docs/looptesting/` evidence dir — STATE / ISSUES / PLAN / FEATURE_MATRIX / SUGGESTIONS / `runs/` / `decisions/` / FINAL_REPORT.md, plus `driver.log`, an emptied `.pids`, and `.sandbox/ownership.env` (stamped `CLEANED_AT`) | target project | the run's audit trail and the resume contract |
+| the qa worktree, when `clean` could not establish that it owns it (a sandbox created before v0.10.0, or one whose ownership stamp is unreadable) | target repo's sibling dir | removing it is `--force`, which would discard anything uncommitted or untracked in it — so `clean` names it and leaves the call to you |
 | `qa/loop-testing` branch | target repo | **holds the fix commits — they exist nowhere else** |
 | `qa-baseline` tag | target repo | marks the pre-run baseline for diffing |
 | `~/.cache/loop-testing/latest-tag` | user cache dir | 24h update-check throttle (Claude Code hook); safe to delete any time |
@@ -275,10 +276,26 @@ ownership marker exists and `STATE.md` is terminal (`CONVERGED / INCOMPLETE / BL
 and it never deletes a checked-out branch. It also never deletes a ref it only *adopted*
 — after a `clean` → re-`setup` cycle the qa branch and baseline tag are re-used rather
 than created, so the marker records them as adopted, purge names them instead of removing
-them, and `--discard-fixes` does not apply. Use the manual equivalent for those:
+them, and `--discard-fixes` does not apply. The same rule covers the evidence dir, which
+purge keeps and names — rather than deleting — in four cases:
+
+1. `docs/looptesting/` already existed when the first run started, because you keep your
+   own notes or ADRs there;
+2. its ownership marker was written before v0.10.0, which recorded that fact
+   unconditionally, so the value there says nothing;
+3. the marker records the question as unanswered — a sandbox upgraded from before
+   v0.10.0 lands here, because nothing ever measured who created the directory;
+4. a worktree it could not claim is still registered, and the marker is the only record
+   left that can identify it — resolve that worktree, then purge again.
+
+In all four, removing the directory is your call. Use the manual equivalent:
 
 ```bash
-git branch -D qa/loop-testing && git tag -d qa-baseline && rm -rf docs/looptesting
+git branch -D qa/loop-testing && git tag -d qa-baseline
+# Only if docs/looptesting/ is entirely the sandbox's. Purge keeps that directory
+# precisely when it may not be — check it before running this line; an untracked
+# file of yours in there is not recoverable.
+rm -rf docs/looptesting
 rm -rf ~/.cache/loop-testing     # optional: Claude Code update-check cache
 ```
 
