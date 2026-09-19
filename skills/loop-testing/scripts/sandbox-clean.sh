@@ -11,7 +11,13 @@
 #   --purge          USER-run full cleanup after a TERMINAL run (STATE.md status
 #                    CONVERGED / INCOMPLETE / BLOCKED): additionally delete the
 #                    evidence dir docs/looptesting/, the owned baseline tag, and
-#                    the owned qa branch. The branch is deleted only when it has
+#                    the owned qa branch. The evidence dir is KEPT, and named, in
+#                    four cases: the marker records that the sandbox only re-used
+#                    a directory the user already had; the marker predates that
+#                    field being measured; the field says the question was never
+#                    answered (an upgraded sandbox lands here); or a worktree this
+#                    run could not claim is still registered and the marker is the
+#                    only record of it. The branch is deleted only when it has
 #                    no fix commits beyond the recorded baseline OR
 #                    --discard-fixes is given — fix commits exist ONLY on that
 #                    branch, so harvest them (merge / cherry-pick) first.
@@ -20,7 +26,9 @@
 #
 # Exit codes: 0 cleaned (or nothing to clean) · 1 internal abort (re-anchored to
 # the main tree but cannot cd there — applies to both plain clean and --purge) ·
-# 2 usage error · 3 --purge refused (no marker / non-terminal STATE).
+# 2 usage error · 3 --purge refused (no marker / non-terminal STATE) · 4 --purge
+# ran but stopped short: a worktree it could not claim is still registered, so
+# the evidence dir and its marker were kept. Resolve that worktree and re-run.
 set -u
 
 echo_info() { echo "sandbox-clean: $*"; }
@@ -91,6 +99,72 @@ fi
 # Read marker fields by parsing (NEVER source: a tampered marker must not run).
 mval() { grep -E "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-; }
 CREATED_WORKTREE="$(mval CREATED_WORKTREE)"
+SANDBOX_BRANCH="$(mval SANDBOX_BRANCH)"
+WORKTREE_STAMP="$(mval WORKTREE_STAMP)"
+
+# --- worktree identity (mirrors sandbox-setup.sh) ----------------------------
+# A path is not an identity: after a clean the path is free again, so what stands
+# there now may be the user's. sandbox-setup stamps a nonce inside the worktree's
+# own git admin dir, which git removes together with the worktree.
+
+# Absolute git dir of the worktree at $1 — empty when it is not a readable worktree.
+wt_gitdir_of() {
+  local d
+  d="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)"
+  if [ -z "$d" ]; then   # --absolute-git-dir needs git >= 2.13
+    d="$(git -C "$1" rev-parse --git-dir 2>/dev/null)"
+    case "$d" in ''|/*) : ;; *) d="$1/$d" ;; esac
+  fi
+  printf '%s' "$d"
+}
+
+# Prints exactly one of: absent | legacy | ours | foreign | unknown.
+# "cannot tell" is its own answer and never means "delete it". An earlier version
+# collapsed a detached HEAD, a missing text tool and a genuine stranger into a
+# single verdict, which stranded the sandbox's own worktree.
+wt_ownership() {
+  local p="$1" want="$2" gd got list nl   # $3 (recorded branch) is no longer consulted
+  # Builtins only from here down. The first version parsed `git worktree list`
+  # with awk, so a missing awk read as "not ours"; swapping awk for `cat` only
+  # moved that hole. Any external command on this path can fail, and a failed
+  # command must never be mistaken for an ownership verdict — so there are none.
+  nl='
+'
+  list="$(git -C "$TOP" worktree list --porcelain 2>/dev/null)$nl"
+  case "$nl$list" in
+    *"${nl}worktree $p${nl}"*) : ;;
+    *) printf 'absent'; return ;;
+  esac
+  # Registered, but the directory is gone. This is the one case where ownership
+  # does not matter: there is nothing on disk to lose, and leaving the phantom
+  # registration in place blocks the next setup from reusing the branch.
+  [ -d "$p" ] || { printf 'stale'; return; }
+  [ -n "$want" ] || { printf 'legacy'; return; }
+  gd="$(wt_gitdir_of "$p")"
+  [ -n "$gd" ] || { printf 'unknown'; return; }
+  if [ -f "$gd/loop-testing-owner" ]; then
+    got=""
+    if IFS= read -r got < "$gd/loop-testing-owner" 2>/dev/null; then
+      if [ "$got" = "$want" ]; then printf 'ours'; else printf 'foreign'; fi
+    else
+      printf 'unknown'   # present but unreadable — still not a verdict
+    fi
+    return
+  fi
+  # No stamp file, but the marker records one. For OUR worktree that cannot
+  # happen: setup clears WORKTREE_STAMP when the stamp write fails, so a recorded
+  # stamp means the file WAS written into that worktree's admin dir, which git
+  # deletes only together with the worktree. So the only thing reaching here is a
+  # different worktree standing at the recorded path.
+  #
+  # A branch-name fallback used to live here — "if HEAD is on the recorded
+  # branch, call it ours". It could never help our own worktree (that case
+  # returns `legacy` above), and it fired on exactly the workflow this tool tells
+  # users to perform: clean KEEPS qa/loop-testing because the fix commits exist
+  # only there, so harvesting them means adding a worktree on that branch — and
+  # the fallback then called the user's checkout ours and force-removed it.
+  printf 'foreign'
+}
 
 # --- stop only processes we recorded (and their descendants) -----------------
 # A dev server started by the agent commonly forks worker children (vite->esbuild,
@@ -154,22 +228,71 @@ $(collect_tree "$pid")"
 fi
 
 # --- remove only the worktree we created ------------------------------------
+WT_KEPT=0   # set when the worktree was deliberately left standing
 if [ -n "$CREATED_WORKTREE" ]; then
   # Guard against ever removing the repo itself, / or $HOME.
   case "$CREATED_WORKTREE" in
     ""|"/"|"$HOME"|"$TOP")
       echo_info "refusing to remove suspicious worktree path: $CREATED_WORKTREE" ;;
     *)
-      if git -C "$TOP" worktree list --porcelain 2>/dev/null \
-           | grep -qxF "worktree $CREATED_WORKTREE"; then
-        if git -C "$TOP" worktree remove --force "$CREATED_WORKTREE" >/dev/null 2>&1; then
-          echo_info "removed worktree $CREATED_WORKTREE"
-        else
-          echo_info "could not remove worktree via git; leaving it in place: $CREATED_WORKTREE"
-        fi
-      else
-        echo_info "worktree already gone: $CREATED_WORKTREE"
-      fi ;;
+      WT_STATE="$(wt_ownership "$CREATED_WORKTREE" "$WORKTREE_STAMP" "$SANDBOX_BRANCH")"
+      case "$WT_STATE" in
+        absent)
+          echo_info "worktree already gone: $CREATED_WORKTREE" ;;
+        stale)
+          # Directory deleted by hand, registration left behind. Nothing to lose,
+          # and leaving it registered keeps the qa branch checked out so the next
+          # setup cannot reuse it.
+          # Scoped removal, NEVER `git worktree prune`: prune takes no path and
+          # drops every prunable registration in the repo, answering a per-path
+          # verdict with a repo-wide remedy. A user who relocated their own
+          # worktree with a plain `mv` — the state `git worktree repair` exists
+          # to fix — would lose its admin dir and be unable to repair it.
+          #
+          # The race the earlier verdict cannot rule out is handled by re-testing
+          # here, immediately before the call, rather than by widening the blast
+          # radius: if the directory came back, leave it alone and say so.
+          #
+          # UNTESTED BY CONSTRUCTION: the window between wt_ownership's [ -d ]
+          # and this one cannot be entered from outside the process, so no test
+          # here can tell this re-test from its absence. A test that recreates
+          # the directory beforehand exercises the `unknown` arm instead — it
+          # passes either way, which is why one was written and then deleted
+          # rather than left standing as coverage it does not provide.
+          if [ -d "$CREATED_WORKTREE" ]; then
+            echo_info "kept worktree $CREATED_WORKTREE — its directory reappeared after this run judged it gone, so it will not be force-removed"
+            WT_KEPT=1
+          elif git -C "$TOP" worktree remove --force "$CREATED_WORKTREE" >/dev/null 2>&1; then
+            echo_info "removed worktree $CREATED_WORKTREE (its directory was already gone)"
+          else
+            echo_info "could not clear the stale registration for $CREATED_WORKTREE (locked, or git refused) — it is still registered"
+            WT_KEPT=1
+          fi ;;
+        foreign)
+          # Removal is --force: uncommitted AND untracked work would go with it.
+          echo_info "kept worktree $CREATED_WORKTREE — it is not this sandbox's (its ownership stamp does not match), so this run will not remove it" ;;
+        unknown)
+          echo_info "kept worktree $CREATED_WORKTREE — this run could not confirm it belongs to this sandbox and will not force-remove a worktree it cannot identify; if it is the sandbox's, remove it with 'git worktree remove --force $CREATED_WORKTREE' — check it first, --force discards anything uncommitted or untracked in there" ;;
+        legacy)
+          # Marker predates ownership stamping, so nothing here records which
+          # worktree this sandbox created. The pre-stamp behavior was to remove
+          # whatever stood at the recorded path — the original data-loss bug,
+          # still armed for every sandbox that already exists. No identity
+          # recorded is not permission.
+          echo_info "kept worktree $CREATED_WORKTREE — its ownership marker predates worktree stamping, so this run cannot tell it from one of yours; if it is the sandbox's, remove it with 'git worktree remove --force $CREATED_WORKTREE' — check it first, --force discards anything uncommitted or untracked in there" ;;
+        *)  # ours
+          if git -C "$TOP" worktree remove --force "$CREATED_WORKTREE" >/dev/null 2>&1; then
+            echo_info "removed worktree $CREATED_WORKTREE"
+          else
+            # Still standing, and it is OURS — so this teardown did not finish.
+            # Every other outcome that leaves a worktree marks the purge partial;
+            # this one did not, so purge deleted the marker, said "purge done."
+            # and exited 0 with a worktree this tool created still on disk.
+            echo_info "could not remove worktree via git; leaving it in place: $CREATED_WORKTREE"
+            WT_KEPT=1
+          fi ;;
+      esac
+      case "$WT_STATE" in foreign|unknown|legacy) WT_KEPT=1 ;; esac ;;
   esac
 fi
 
@@ -196,6 +319,22 @@ if [ "$PURGE" = 1 ]; then
   # adopted ref, just say it is there and what is on it.
   P_ADOPT_BRANCH="$(mval ADOPTED_BRANCH)"
   P_ADOPT_TAG="$(mval ADOPTED_TAG)"
+  # Same question for the evidence dir: did this lifecycle line create it, or did
+  # the user already keep files under docs/looptesting/? Read it before the purge
+  # below can delete the marker along with the dir.
+  P_CREATED_LT="$(mval CREATED_LOOPTESTING_DIR)"
+  # CREATED_LOOPTESTING_DIR only carries information from marker version 2 on:
+  # v1 wrote a constant `true`, over a directory the user already owned included.
+  # Trusting a v1 `true` would leave every sandbox created before v0.10.0 exactly
+  # as exposed as before, which is the population the fix exists for.
+  P_SBX_VER="$(mval SANDBOX_VERSION)"
+  # Digit-count first: the marker is user-editable, and `[ huge -ge 2 ]` prints a
+  # raw "integer expression expected" at whoever ran purge. 3+ digits is >= 100.
+  case "$P_SBX_VER" in
+    ''|*[!0-9]*) LT_FIELD_TRUSTED=0 ;;
+    ?|??) if [ "$P_SBX_VER" -ge 2 ]; then LT_FIELD_TRUSTED=1; else LT_FIELD_TRUSTED=0; fi ;;
+    *)    LT_FIELD_TRUSTED=1 ;;
+  esac
   kept_branch=""
   adopted_note=""
 
@@ -271,25 +410,72 @@ if [ "$PURGE" = 1 ]; then
      && git -C "$TOP" rev-parse -q --verify "refs/tags/$P_ADOPT_TAG" >/dev/null 2>&1; then
     echo_info "purge: kept tag $P_ADOPT_TAG (re-used by this run, not created by it)"
   fi
+  # A worktree a rebuild walked away from. Not ours to delete, but naming it is
+  # the difference between "left standing" and "invisible forever".
+  P_UNCLAIMED_WT="$(mval UNCLAIMED_WORKTREE)"
+  if [ -n "$P_UNCLAIMED_WT" ] && [ -e "$P_UNCLAIMED_WT" ]; then
+    echo_info "purge: kept worktree $P_UNCLAIMED_WT (a rebuild could not claim it and built elsewhere; it was never this sandbox's to remove)"
+  fi
 
   LT_DIR="$TOP/docs/looptesting"
-  case "$LT_DIR" in
-    */docs/looptesting)
-      rm -rf "$LT_DIR"
-      echo_info "purge: removed evidence dir $LT_DIR (marker included)" ;;
-    *)
-      echo_info "purge: refusing to remove suspicious evidence path: $LT_DIR" ;;
-  esac
-
-  if [ -n "$kept_branch" ]; then
-    echo_info "purge done. KEPT branch: $kept_branch"
-  elif [ -n "$adopted_note" ]; then
-    echo_info "purge done. KEPT branch: $adopted_note"
+  # A worktree a rebuild walked away from counts too: the marker is the only
+  # place its path is written down, so deleting the marker would un-name it.
+  if [ -n "$P_UNCLAIMED_WT" ] && [ -e "$P_UNCLAIMED_WT" ]; then WT_KEPT=1; fi
+  if [ "$WT_KEPT" = 1 ]; then
+    # The worktree stage left a worktree standing that it could not claim. The
+    # marker in here is the only thing on disk that still ties that path to this
+    # tool, so deleting it would turn a recoverable situation into a registered
+    # worktree nothing can identify — the orphan the fail-closed design exists to
+    # prevent. Resolve the worktree first; purge again afterwards.
+    echo_info "purge: kept evidence dir $LT_DIR — a worktree this run could not claim is still registered at $CREATED_WORKTREE, and the marker here is the only record that can identify it; deal with that worktree first, then purge again"
+  elif [ "$LT_FIELD_TRUSTED" = 0 ]; then
+    # Say only what is known. The marker predates the field being measured, so
+    # this run cannot tell a directory it created from one the user already kept
+    # notes in — and an untracked file is gone for good if it guesses wrong.
+    echo_info "purge: kept evidence dir $LT_DIR (its ownership marker was written by an older version that could not record whether the directory existed beforehand, so this run will not delete it — remove it by hand if everything in it is the sandbox's)"
+  elif [ "$P_CREATED_LT" = false ]; then
+    # Measured as adopted: the user was already keeping files here, and an
+    # untracked one is gone for good. Report it, never delete it — the rule this
+    # block already applies to adopted refs.
+    echo_info "purge: kept evidence dir $LT_DIR (re-used by this run, not created by it — it also holds files that were already yours; remove it by hand once you have taken what you want)"
+  elif [ "$P_CREATED_LT" != true ]; then
+    # Recorded as unknown, or missing/garbled. Say that, and nothing more: the
+    # neighbouring branch's wording would assert user files that nobody ever
+    # observed.
+    echo_info "purge: kept evidence dir $LT_DIR (this run could not determine whether the directory existed before the sandbox did — remove it by hand if everything in it is the sandbox's)"
   else
-    echo_info "purge done."
+    case "$LT_DIR" in
+      */docs/looptesting)
+        rm -rf "$LT_DIR"
+        echo_info "purge: removed evidence dir $LT_DIR (marker included)" ;;
+      *)
+        echo_info "purge: refusing to remove suspicious evidence path: $LT_DIR" ;;
+    esac
   fi
-  exit 0
+
+  # A purge that left the worktree standing has NOT finished — it still deleted
+  # the baseline tag on the way through, so reporting a plain "done" describes a
+  # partial run as a complete one and leaves the user with no reason to come back.
+  if [ "$WT_KEPT" = 1 ]; then
+    PURGE_VERB="purge incomplete: the worktree above is still there, so this run stopped short of removing everything it owns. Deal with that worktree, then run --purge again."
+    PURGE_EXIT=4
+  else
+    PURGE_VERB="purge done."
+    PURGE_EXIT=0
+  fi
+  if [ -n "$kept_branch" ]; then
+    echo_info "$PURGE_VERB KEPT branch: $kept_branch"
+  elif [ -n "$adopted_note" ]; then
+    echo_info "$PURGE_VERB KEPT branch: $adopted_note"
+  else
+    echo_info "$PURGE_VERB"
+  fi
+  exit "${PURGE_EXIT:-0}"
 fi
 
-echo_info "done. Kept: qa branch, baseline tag, docs/looptesting/ evidence."
+if [ "$WT_KEPT" = 1 ]; then
+  echo_info "done. Kept: the worktree named above, the qa branch, baseline tag, docs/looptesting/ evidence."
+else
+  echo_info "done. Kept: qa branch, baseline tag, docs/looptesting/ evidence."
+fi
 exit 0
