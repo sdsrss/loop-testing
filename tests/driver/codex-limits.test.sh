@@ -37,6 +37,13 @@ assert_rc $? 2 "missing --project -> exit 2"
 WS4=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4"' EXIT
 bash "$CODEX_DRIVER" --project "$WS4" --codex-bin /bin/true --no-protect --max-minutes abc >/dev/null 2>&1
 assert_rc $? 2 "non-integer --max-minutes -> exit 2"
+# The message must name the REAL flag (--max-minutes), not the internal variable
+# lowercased (--max_minutes), which is not a flag this driver accepts.
+OUT=$(bash "$CODEX_DRIVER" --project "$WS4" --codex-bin /bin/true --no-protect --max-minutes abc 2>&1)
+case "$OUT" in
+  *"--max-minutes"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: validation error must name --max-minutes — got: $OUT" >&2 ;;
+esac
 
 # F. value-taking flag as the LAST token must fail-closed (exit 2), never hang.
 # (Regression guard: `shift 2` on a 1-arg tail is a no-op -> infinite loop.)
@@ -175,5 +182,139 @@ bash "$CODEX_DRIVER" --project "$WS16" --codex-bin "$WS16/hang-stub.sh" --no-pro
 assert_rc $? 5 "hung sessions killed by the watchdog -> NO_PROGRESS exit 5"
 assert_eq "2" "$(sessions_in_log "$WS16")" "watchdog bounded exactly 2 hung sessions"
 assert_file_contains "$WS16/docs/looptesting/driver.log" "exit=124" "driver.log records the watchdog kill (rc 124)"
+
+# S. The skill-dir protection must RESTORE the original mode, not just u+w. The
+#    header promises "restored on EXIT"; protecting with `a-w` and restoring with
+#    `u+w` silently strips group/other write bits from the user's installed skill
+#    dir (~/.codex/skills/loop-testing) on every run — permanent on a shared,
+#    group-writable install.
+WS17=$(mk_proj); FAKE17=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-fakeskill.XXXXXX")
+trap 'chmod -R u+w "$FAKE13" "$FAKE17" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS17" "$FAKE17"' EXIT
+mkdir -p "$FAKE17/scripts"
+printf 'SKILL\n' > "$FAKE17/SKILL.md"
+printf 'x\n' > "$FAKE17/scripts/a.sh"
+chmod -R 775 "$FAKE17"                                    # group-writable shared install
+printf 'locked\n' > "$FAKE17/frozen.txt"
+chmod 444 "$FAKE17/frozen.txt"                            # deliberately read-only BEFORE the run
+write_state "$WS17" CONVERGED 1                           # terminal at once: protect -> exit
+bash "$CODEX_DRIVER" --project "$WS17" --codex-bin /bin/true --skill-dir "$FAKE17" >/dev/null 2>&1
+assert_rc $? 0 "terminal STATE with protection on -> exit 0"
+assert_eq "775" "$(stat -c '%a' "$FAKE17" 2>/dev/null || stat -f '%Lp' "$FAKE17")" "skill dir mode restored exactly"
+assert_eq "775" "$(stat -c '%a' "$FAKE17/SKILL.md" 2>/dev/null || stat -f '%Lp' "$FAKE17/SKILL.md")" "skill file mode restored exactly"
+assert_eq "775" "$(stat -c '%a' "$FAKE17/scripts/a.sh" 2>/dev/null || stat -f '%Lp' "$FAKE17/scripts/a.sh")" "nested skill file mode restored exactly"
+# The blanket `chmod -R u+w` restore also hands owner-write to files that were
+# deliberately read-only before the run — a permission grant the user never made.
+assert_eq "444" "$(stat -c '%a' "$FAKE17/frozen.txt" 2>/dev/null || stat -f '%Lp' "$FAKE17/frozen.txt")" "an already-read-only file stays read-only"
+
+# T. Documented shutdown, codex side: a signal to the process group must STOP the
+#    driver. `trap cleanup EXIT INT TERM` returned into the loop, so the signal
+#    only un-protected the skill dir and dropped the lock while full-access
+#    sessions kept launching. Mirrors loop driver P.
+if command -v setsid >/dev/null 2>&1; then
+  WS18=$(mk_proj); FAKE18=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-fakeskill.XXXXXX")
+  trap 'chmod -R u+w "$FAKE13" "$FAKE17" "$FAKE18" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS17" "$FAKE17" "$WS18" "$FAKE18"' EXIT
+  printf 'SKILL\n' > "$FAKE18/SKILL.md"
+  LT18="$WS18/docs/looptesting"; mkdir -p "$LT18/runs"
+  cat > "$WS18/slow-stub.sh" <<'SLOW'
+#!/usr/bin/env bash
+sleep 2
+printf '# STATE\nround: 0\nconverged_streak: 0\nstatus: RUNNING\n' > docs/looptesting/STATE.md
+printf 'evidence %s\n' "$(date +%s%N)" >> docs/looptesting/runs/round-0.md
+SLOW
+  chmod +x "$WS18/slow-stub.sh"
+  write_state "$WS18" RUNNING 0
+  setsid bash "$CODEX_DRIVER" --project "$WS18" --codex-bin "$WS18/slow-stub.sh" \
+    --skill-dir "$FAKE18" --max-sessions 50 --max-minutes 5 >/dev/null 2>&1 &
+  DRV18=""
+  for _ in $(seq 1 40); do
+    [ -f "$LT18/.driver.lock/pid" ] && read -r DRV18 < "$LT18/.driver.lock/pid" 2>/dev/null
+    case "$DRV18" in ''|*[!0-9]*) DRV18="" ;; *) break ;; esac
+    sleep 0.25
+  done
+  if [ -n "$DRV18" ]; then
+    PGID18=$(ps -o pgid= -p "$DRV18" 2>/dev/null | tr -d ' ')
+    kill -TERM -- -"$PGID18" 2>/dev/null
+    for _ in $(seq 1 40); do kill -0 "$DRV18" 2>/dev/null || break; sleep 0.25; done
+    if kill -0 "$DRV18" 2>/dev/null; then
+      FAIL=$((FAIL+1)); echo "  FAIL: SIGTERM to the codex driver process group did not stop it" >&2
+      kill -9 "$DRV18" 2>/dev/null
+      for c in $(pgrep -P "$DRV18" 2>/dev/null); do kill -9 "$c" 2>/dev/null; done
+    else
+      PASS=$((PASS+1))
+      # The shutdown path must still restore the skill dir it protected.
+      if [ -w "$FAKE18/SKILL.md" ]; then PASS=$((PASS+1)); else
+        FAIL=$((FAIL+1)); echo "  FAIL: signal shutdown left the skill dir read-only" >&2; fi
+    fi
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: codex driver never wrote its lock pid — cannot exercise the shutdown path" >&2
+  fi
+else
+  echo "  skip: setsid unavailable — process-group shutdown test not run"
+fi
+
+# U. The protect/restore WINDOW: DID_PROTECT must be armed BEFORE the chmod runs.
+#    Setting it after means a signal delivered while `chmod -R` is still walking the
+#    tree exits through a cleanup that sees DID_PROTECT=0, skips the restore, and
+#    leaves the user's installed ~/.codex/skills/loop-testing permanently
+#    non-owner-writable — the exact case the file's own comment says the trap
+#    ordering exists to prevent. A slow `chmod` shim on PATH widens the window so
+#    the race is deterministic instead of a ~60ms coin flip.
+if command -v setsid >/dev/null 2>&1; then
+  WS19=$(mk_proj)
+  FAKE19=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-fakeskill.XXXXXX")
+  SHIM19=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-shim.XXXXXX")
+  trap 'chmod -R u+w "$FAKE13" "$FAKE17" "$FAKE18" "$FAKE19" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS17" "$FAKE17" "$WS18" "$FAKE18" "$WS19" "$FAKE19" "$SHIM19"' EXIT
+  mkdir -p "$FAKE19/scripts"
+  printf 'SKILL\n' > "$FAKE19/SKILL.md"
+  printf 'x\n' > "$FAKE19/scripts/a.sh"
+  chmod -R 755 "$FAKE19"
+  printf 'locked\n' > "$FAKE19/frozen.txt"
+  chmod 444 "$FAKE19/frozen.txt"
+  REAL_CHMOD19=$(command -v chmod)
+  # Slow ONLY the first chmod — the protect call whose window this test targets.
+  # Slowing every chmod also slows cleanup's blanket restore and each read-only
+  # re-apply, stacking three shim sleeps into the shutdown path and making the
+  # wait below load-sensitive (observed once as a full-suite-only failure).
+  cat > "$SHIM19/chmod" <<SHIM
+#!/usr/bin/env bash
+if [ ! -e "$SHIM19/.fired" ]; then
+  : > "$SHIM19/.fired"
+  sleep 3
+fi
+exec "$REAL_CHMOD19" "\$@"
+SHIM
+  chmod +x "$SHIM19/chmod"
+  write_state "$WS19" RUNNING 0
+  stub19=$(write_stub "$WS19")
+  setsid env PATH="$SHIM19:$PATH" bash "$CODEX_DRIVER" --project "$WS19" --codex-bin "$stub19" \
+    --skill-dir "$FAKE19" --max-sessions 1 >/dev/null 2>&1 &
+  DRV19=""
+  for _ in $(seq 1 60); do
+    [ -f "$WS19/docs/looptesting/.driver.lock/pid" ] && read -r DRV19 < "$WS19/docs/looptesting/.driver.lock/pid" 2>/dev/null
+    case "$DRV19" in ''|*[!0-9]*) DRV19="" ;; *) break ;; esac
+    sleep 0.25
+  done
+  if [ -n "$DRV19" ]; then
+    # The lock is written immediately before the protect chmod, so the driver is
+    # inside the (shimmed, slow) chmod right now.
+    kill -TERM "$DRV19" 2>/dev/null
+    for _ in $(seq 1 80); do kill -0 "$DRV19" 2>/dev/null || break; sleep 0.25; done
+    kill -9 "$DRV19" 2>/dev/null
+    if [ -w "$FAKE19/SKILL.md" ] && [ -w "$FAKE19/scripts/a.sh" ]; then
+      PASS=$((PASS+1))
+    else
+      FAIL=$((FAIL+1)); echo "  FAIL: signal during the protect chmod left the skill dir read-only (restore skipped)" >&2
+    fi
+    # The signal handler exits, which fires the EXIT trap too — so cleanup runs
+    # TWICE. A second pass that re-runs the blanket `chmod -R u+w` after the
+    # read-only snapshot has been consumed silently re-grants write.
+    assert_eq "444" "$(stat -c '%a' "$FAKE19/frozen.txt" 2>/dev/null || stat -f '%Lp' "$FAKE19/frozen.txt")" \
+      "cleanup is idempotent: the second pass does not re-grant write"
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: codex driver never wrote its lock pid — cannot exercise the protect window" >&2
+  fi
+else
+  echo "  skip: setsid unavailable — protect-window test not run"
+fi
 
 report "codex-limits.test.sh"
