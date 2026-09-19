@@ -19,7 +19,12 @@
 #
 # Exit codes: 0 ready (or already initialized) · 2 usage error · 3 not a git repo
 # · 4 dirty tree in branch mode · 5 branch switch/create failed · 6 worktree add
-# failed (or path taken) · 7 branch-mode sandbox is on another branch · 8 the
+# failed, or its path is taken. A rebuild also stops here when something that is
+# not this sandbox's stands at the recorded path: pass --worktree-path to build
+# elsewhere, or clear that path yourself. --worktree-path is enough unless that
+# worktree has the sandbox branch checked out, in which case git refuses the
+# branch and the path must be cleared · 7 branch-mode sandbox is on
+# another branch · 8 the
 # evidence dir could not be created/written (refused before touching git).
 set -u
 
@@ -39,11 +44,21 @@ MADE_DOCS=0; MADE_LT=0; MADE_RUNS=0; MADE_DECISIONS=0; MADE_SB=0
 # only the still-empty dirs would leave a half-built evidence tree — worse than
 # leaving it whole for the re-run to reuse.
 GIT_TOUCHED=0
+# Set to 1 only when this run itself writes the ownership breadcrumb (see below).
+WROTE_BREADCRUMB=0
+# Identity of this sandbox's worktree, stamped into the worktree and recorded in
+# the marker. Cleared if the stamp cannot be written, so the marker never claims
+# an identity that is not actually on disk.
+SANDBOX_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
+WORKTREE_STAMP="$SANDBOX_ID"
 
 # die <message> [exit-code] — "$1", not "$*": the code is an argument, not text.
 die() {
   echo "sandbox-setup: $1" >&2
   if [ "$GIT_TOUCHED" = 0 ]; then
+    # Only the breadcrumb THIS run wrote: an earlier lifecycle's answer about who
+    # created the dir outlives our refusal and must not be erased by it.
+    [ "${WROTE_BREADCRUMB:-0}" = 1 ] && rm -f "$SB/created-dirs.env" 2>/dev/null
     # Innermost first; each guard is only ever 1 after a non-`-p` mkdir SUCCEEDED,
     # i.e. the dir did not exist, and rmdir refuses a non-empty one — so a
     # pre-existing user directory is never removed.
@@ -69,6 +84,69 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$MODE" in worktree|branch) : ;; *) die "invalid --mode: $MODE (worktree|branch)" 2 ;; esac
+
+# Canonicalize --worktree-path now, once. `git worktree list --porcelain` prints
+# absolute paths, so a relative one recorded verbatim makes every later ownership
+# lookup miss: the sandbox's own live worktree reads as "absent" and clean leaks
+# it while reporting success. It also resolved against two different directories
+# — `[ -e ]` against cwd, `git -C "$TOP" worktree add` against the repo root.
+# Done with cd/pwd rather than realpath, which is not on every BSD userland.
+if [ -n "$WT_PATH" ]; then
+  while :; do
+    case "$WT_PATH" in
+      /) break ;;
+      */) WT_PATH="${WT_PATH%/}" ;;
+      *) break ;;
+    esac
+  done
+  # NOTE (user-visible): a relative path is resolved against the CURRENT DIRECTORY.
+  # It used to be resolved twice and inconsistently — `[ -e ]` against cwd,
+  # `git -C "$TOP" worktree add` against the repo root — so the same string could
+  # name two places in one run. cwd is the reading that matches what a person
+  # typing the flag means; from a subdirectory the destination differs from the
+  # old repo-root anchoring.
+  # Resolve against the deepest ancestor that EXISTS, then re-attach the rest
+  # lexically. Two reasons for the split: `pwd -P` gives the physical path, which
+  # is what `git worktree list` prints, so a symlinked parent still matches later
+  # (a logical path never would); and a parent that does not exist yet stays
+  # acceptable — git creates it — instead of becoming a refusal that this
+  # canonicalization invented rather than found.
+  _wt_rest=""
+  _wt_probe="$WT_PATH"
+  while [ ! -d "$_wt_probe" ]; do
+    case "$_wt_probe" in /|.|"") break ;; esac
+    # `--` so a path beginning with a dash is a path, not an option: without it
+    # coreutils prints its own usage text and the failure is misdiagnosed.
+    _wt_rest="$(basename -- "$_wt_probe")${_wt_rest:+/$_wt_rest}"
+    _wt_next="$(dirname -- "$_wt_probe")"
+    [ "$_wt_next" = "$_wt_probe" ] && break
+    _wt_probe="$_wt_next"
+  done
+  _wt_base="$(cd "$_wt_probe" 2>/dev/null && pwd -P)"
+  [ -n "$_wt_base" ] \
+    || die "cannot resolve --worktree-path $WT_PATH: no part of it resolves to an existing directory" 2
+  WT_PATH="$_wt_base${_wt_rest:+/$_wt_rest}"
+  # The lexical tail can still carry `.` and `..` when the component before them
+  # did not exist to be resolved physically. `git worktree list` prints resolved
+  # paths, so leaving them in would make every later ownership lookup miss.
+  _wt_norm=""
+  _wt_ifs="$IFS"; IFS=/
+  # The expansion below is unquoted on purpose — that is how it splits on "/" —
+  # but an unquoted expansion is also a glob, so a segment like `READ*` would be
+  # replaced by whatever happens to match in the CURRENT directory, silently
+  # retargeting the sandbox. Split, do not match.
+  set -f
+  for _wt_seg in $WT_PATH; do
+    case "$_wt_seg" in
+      ''|.) : ;;
+      ..)   _wt_norm="${_wt_norm%/*}" ;;
+      *)    _wt_norm="$_wt_norm/$_wt_seg" ;;
+    esac
+  done
+  set +f
+  IFS="$_wt_ifs"
+  WT_PATH="${_wt_norm:-/}"
+fi
 
 # --- resolve target repo -----------------------------------------------------
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" \
@@ -99,6 +177,31 @@ TEMPLATES_DIR="$(cd "$SCRIPT_DIR/../templates" && pwd 2>/dev/null)" || TEMPLATES
 LT="$TOP/docs/looptesting"
 SB="$LT/.sandbox"
 MARKER="$SB/ownership.env"
+
+# Whether docs/looptesting/ is OURS is recorded once, at the lifecycle where it
+# was created, and carried forward from there. It cannot be re-derived later: a
+# plain clean keeps the dir, so by the next setup it always exists, and reading
+# ownership off mere presence would promote a user's adopted dir to "ours" one
+# lifecycle on — the same destructive purge, only delayed. Read before anything
+# below can rewrite or remove the marker.
+# Only from a marker that actually measured it. SANDBOX_VERSION 1 wrote this
+# field as a constant `true`, over a directory the user already owned included.
+# sandbox-clean refuses to trust that value — and that refusal is worthless if
+# this side reads it and re-emits it under SANDBOX_VERSION=2, which would turn an
+# unmeasured constant into a fact nobody ever established.
+INHERITED_CREATED_LT=""
+MARKER_PRESENT_AT_START=0
+[ -f "$MARKER" ] && MARKER_PRESENT_AT_START=1
+if [ -f "$MARKER" ]; then
+  MARKER_VERSION="$(grep -E '^SANDBOX_VERSION=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+  # Digit-count first: a marker can hold anything, and `[ huge -ge 2 ]` prints a
+  # raw "integer expression expected" at the user. Three or more digits is >= 100.
+  case "$MARKER_VERSION" in
+    ''|*[!0-9]*) : ;;
+    ?|??) [ "$MARKER_VERSION" -ge 2 ] && INHERITED_CREATED_LT="$(grep -E '^CREATED_LOOPTESTING_DIR=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)" ;;
+    *)    INHERITED_CREATED_LT="$(grep -E '^CREATED_LOOPTESTING_DIR=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)" ;;
+  esac
+fi
 
 # Preflight: the evidence dir IS the sandbox contract — the ownership marker
 # (sandbox-clean removes only what it records), the .active sentinel (arms the
@@ -156,6 +259,76 @@ seed_dirs_and_templates() {
 
 require_writable_evidence_dir
 
+# --- worktree identity -------------------------------------------------------
+# Ownership recorded as a PATH is not ownership: after a clean the path is free,
+# and a user who chose it with --worktree-path may well reuse it. Each sandbox
+# therefore stamps a nonce inside its worktree's own git admin dir, which git
+# deletes together with the worktree — so the stamp cannot outlive the thing it
+# identifies, and a worktree recreated at the same path does not inherit it.
+
+# Absolute git dir of the worktree at $1 — empty when it is not a readable worktree.
+wt_gitdir_of() {
+  local d
+  d="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)"
+  if [ -z "$d" ]; then   # --absolute-git-dir needs git >= 2.13
+    d="$(git -C "$1" rev-parse --git-dir 2>/dev/null)"
+    case "$d" in ''|/*) : ;; *) d="$1/$d" ;; esac
+  fi
+  printf '%s' "$d"
+}
+
+# Ownership of the worktree registered at $1, given the stamp $2 and branch $3
+# from the marker. Prints exactly one word, and "cannot tell" is its own answer:
+#   absent   nothing is registered at that path
+#   legacy   the marker records no stamp (sandbox predates stamping) — caller
+#            keeps the old path-only behavior rather than inventing a refusal
+#   ours     stamp matches, or the stamp file is gone but the branch still matches
+#   foreign  something else is standing there
+#   unknown  the question could not be answered — never a licence to delete
+wt_ownership() {
+  local p="$1" want="$2" gd got list nl   # $3 (recorded branch) is no longer consulted
+  # Builtins only from here down. The first version parsed `git worktree list`
+  # with awk, so a missing awk read as "not ours"; swapping awk for `cat` only
+  # moved that hole. Any external command on this path can fail, and a failed
+  # command must never be mistaken for an ownership verdict — so there are none.
+  nl='
+'
+  list="$(git -C "$TOP" worktree list --porcelain 2>/dev/null)$nl"
+  case "$nl$list" in
+    *"${nl}worktree $p${nl}"*) : ;;
+    *) printf 'absent'; return ;;
+  esac
+  # Registered, but the directory is gone. This is the one case where ownership
+  # does not matter: there is nothing on disk to lose, and leaving the phantom
+  # registration in place blocks the next setup from reusing the branch.
+  [ -d "$p" ] || { printf 'stale'; return; }
+  [ -n "$want" ] || { printf 'legacy'; return; }
+  gd="$(wt_gitdir_of "$p")"
+  [ -n "$gd" ] || { printf 'unknown'; return; }
+  if [ -f "$gd/loop-testing-owner" ]; then
+    got=""
+    if IFS= read -r got < "$gd/loop-testing-owner" 2>/dev/null; then
+      if [ "$got" = "$want" ]; then printf 'ours'; else printf 'foreign'; fi
+    else
+      printf 'unknown'   # present but unreadable — still not a verdict
+    fi
+    return
+  fi
+  # No stamp file, but the marker records one. For OUR worktree that cannot
+  # happen: setup clears WORKTREE_STAMP when the stamp write fails, so a recorded
+  # stamp means the file WAS written into that worktree's admin dir, which git
+  # deletes only together with the worktree. So the only thing reaching here is a
+  # different worktree standing at the recorded path.
+  #
+  # A branch-name fallback used to live here — "if HEAD is on the recorded
+  # branch, call it ours". It could never help our own worktree (that case
+  # returns `legacy` above), and it fired on exactly the workflow this tool tells
+  # users to perform: clean KEEPS qa/loop-testing because the fix commits exist
+  # only there, so harvesting them means adding a worktree on that branch — and
+  # the fallback then called the user's checkout ours and force-removed it.
+  printf 'foreign'
+}
+
 # --- idempotent short-circuit: already initialized ---------------------------
 # BUT if the marker records a worktree that a prior sandbox-clean removed, the
 # sandbox lost its isolation — re-seeding alone would hand back a phantom
@@ -165,14 +338,69 @@ require_writable_evidence_dir
 # the (kept) qa branch. A live worktree, or branch-mode (no worktree), short-circuits.
 PRIOR_CREATED_BRANCH=""
 PRIOR_CREATED_TAG=""
+# A worktree the rebuild walked away from rather than claimed. Recorded so it
+# does not become invisible: purge keys off this marker, so a path missing from
+# it can never be named again by any later run.
+UNCLAIMED_WORKTREE=""
 ADOPTED_BRANCH=""
 ADOPTED_TAG=""
 if [ -f "$MARKER" ]; then
   RECORDED_WT="$(grep -E '^CREATED_WORKTREE=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
-  if [ -n "$RECORDED_WT" ] \
-     && ! git -C "$TOP" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $RECORDED_WT"; then
-    echo "sandbox-setup: recorded worktree is gone ($RECORDED_WT) — rebuilding isolation on the qa branch."
+  RECORDED_STAMP="$(grep -E '^WORKTREE_STAMP=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+  RECORDED_BRANCH="$(grep -E '^SANDBOX_BRANCH=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+  WT_STATE=ours
+  [ -n "$RECORDED_WT" ] && WT_STATE="$(wt_ownership "$RECORDED_WT" "$RECORDED_STAMP" "$RECORDED_BRANCH")"
+  REBUILD_WHY=""
+  case "$WT_STATE" in
+    absent)  REBUILD_WHY="recorded worktree is gone ($RECORDED_WT)" ;;
+    stale)   REBUILD_WHY="the recorded worktree's directory is gone ($RECORDED_WT), leaving only a dangling registration" ;;
+    foreign) REBUILD_WHY="the worktree at $RECORDED_WT is not this sandbox's (its stamp does not match)" ;;
+    unknown) REBUILD_WHY="cannot confirm the worktree at $RECORDED_WT belongs to this sandbox" ;;
+    # `legacy` is deliberately NOT here. Resuming is the reversible half: adopting
+    # a worktree to continue a run can, at worst, put QA commits on a branch, and
+    # that can be undone. Force-removing cannot. Refusing to resume would break
+    # every sandbox created before stamping — the whole installed population —
+    # and an unattended run would hit the isolation gate and report BLOCKED. The
+    # protection lives in sandbox-clean, which will not delete what it cannot
+    # identify.
+  esac
+  # Rebuild rather than refuse. A refusal here was a dead end: the gate reads only
+  # marker fields, so none of the advice it could give changed the outcome, and
+  # clean would not clear it either. Rebuilding honors --worktree-path when given
+  # and otherwise stops at the existing "worktree path already exists" refusal,
+  # which names a flag that actually works.
+  if [ -n "$REBUILD_WHY" ]; then
+    echo "sandbox-setup: $REBUILD_WHY — rebuilding isolation on the qa branch."
+    # A dangling registration still holds the qa branch, so `worktree add` would
+    # refuse the path. Dropping a registration whose directory no longer exists
+    # removes no files — it is what git's own `worktree prune` does.
+    if [ "$WT_STATE" = stale ] && [ ! -d "$RECORDED_WT" ]; then
+      # Scoped to our own recorded path. `git worktree prune` would have been
+      # repo-wide — it takes no path — and would drop other worktrees'
+      # registrations along with ours. The `[ ! -d ]` re-test immediately above
+      # is what handles the race the earlier verdict cannot rule out: if the
+      # directory came back, we do nothing and the rebuild refuses below rather
+      # than force-removing something that exists.
+      git -C "$TOP" worktree remove --force "$RECORDED_WT" >/dev/null 2>&1 || true
+    fi
     [ -z "$WT_PATH" ] && WT_PATH="$RECORDED_WT"
+    # Name a route that actually works. While that worktree stands there it also
+    # holds the sandbox branch, so --worktree-path alone cannot rebuild: git
+    # refuses the branch, not the path. Saying "pass --worktree-path" here would
+    # be a dead end dressed as advice.
+    # Only when the rebuild genuinely cannot proceed: with --worktree-path given
+    # and the branch free, redirecting really does work, so refusing there would
+    # break the one route that does.
+    case "$WT_STATE" in
+      foreign|unknown)
+        if [ "$WT_PATH" != "$RECORDED_WT" ] && [ -e "$RECORDED_WT" ]; then
+          UNCLAIMED_WORKTREE="$RECORDED_WT"
+          echo "sandbox-setup: the worktree at $RECORDED_WT is still standing — this run could not claim it, so it is left exactly as it is and recorded in the marker rather than forgotten."
+        fi
+        if [ "$WT_PATH" = "$RECORDED_WT" ] && [ -e "$RECORDED_WT" ]; then
+          die "a worktree this sandbox cannot claim is standing at $RECORDED_WT. Either pass --worktree-path to build the sandbox somewhere else, or deal with that worktree first — 'git worktree remove --force $RECORDED_WT' if it is the sandbox's, move it aside if it is yours — and re-run. If it has '$BRANCH' checked out, --worktree-path alone will not be enough: git will refuse the branch, not the path" 6
+        fi ;;
+    esac
     # Carry ownership across the marker rebuild: sandbox-clean deliberately KEEPS
     # the qa branch and baseline tag, so re-deriving ownership below from "does
     # this ref exist now" would record neither — orphaning artifacts this sandbox
@@ -186,12 +414,18 @@ if [ -f "$MARKER" ]; then
       || PRIOR_CREATED_BRANCH="$(grep -E '^ADOPTED_BRANCH=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
     [ -n "$PRIOR_CREATED_TAG" ] \
       || PRIOR_CREATED_TAG="$(grep -E '^ADOPTED_TAG=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
-    rm -f "$MARKER"
+    # The marker is NOT removed here. It is overwritten at the end of a successful
+    # rebuild; deleting it up front means a rebuild that fails for any reason
+    # (worktree path taken, add refused) leaves the worktree, branch and tag with
+    # no record of who owns them — unclaimable by clean and invisible to purge.
   else
-    # Branch-mode re-verify (audit DR-9): the user may have switched branches
-    # since setup; handing back "already initialized" would let the loop run
-    # (and commit) on whatever branch is checked out. Worktree mode needs no
-    # check — its isolation is the worktree itself, verified above.
+    # Re-verify the isolation before handing back "already initialized" — in
+    # BOTH modes. Branch mode: the user may have switched branches since setup
+    # (audit DR-9). Worktree mode: what the check above proved is that the PATH is
+    # registered, not that the worktree there is ours — ownership is recorded by
+    # path, the path is free again after a clean, and a user who picked it with
+    # --worktree-path may well reuse it. Adopting it would run the loop, and
+    # commit its fixes, onto the user's own branch with no isolation at all.
     RECORDED_MODE="$(grep -E '^MODE=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
     if [ "$RECORDED_MODE" = "branch" ]; then
       # Only re-verify against the branch the marker ACTUALLY recorded. A legacy
@@ -222,6 +456,33 @@ DIRTY=0
 [ -n "$(git -C "$TOP" status --porcelain 2>/dev/null)" ] && DIRTY=1
 if [ "$MODE" = "branch" ] && [ "$DIRTY" -eq 1 ] && [ "$ALLOW_DIRTY" -eq 0 ]; then
   die "working tree not clean — refusing branch-mode sandbox to avoid touching uncommitted user changes (use --mode worktree to isolate, or --allow-dirty to override)" 4
+fi
+
+# Record whether WE created docs/looptesting/, now that the tree has been judged
+# clean and before the first git artifact can exist. Past GIT_TOUCHED=1 the
+# rollback below is skipped, so a failed setup leaves the dir behind with no
+# marker — and a retry inferring ownership from "the dir is already there" would
+# brand the tool's OWN dir as the user's, making purge refuse to clean it up ever
+# again. Deliberately AFTER the cleanliness check above: the preflight creates
+# only empty dirs, which `git status --porcelain` cannot see, while this file can.
+# Never overwrite an existing breadcrumb — the run that created the dir is the one
+# that knows, and a later run must not overwrite its answer with a guess.
+# Write it only when this run can honestly answer the question. Creating the dir
+# ourselves is an answer. Finding it already there is an answer ONLY on a fresh
+# start — with a marker already present we are mid-lifecycle, and "the dir was
+# here when I arrived" says nothing about whether an earlier run of this tool put
+# it there. Recording 0 in that case would manufacture a measurement; leaving it
+# unwritten lets the marker say `unknown`, which is the truth.
+if [ ! -f "$SB/created-dirs.env" ]; then
+  _crumb=""
+  if [ "$MADE_LT" = 1 ]; then _crumb=1
+  elif [ "$MARKER_PRESENT_AT_START" = 0 ]; then _crumb=0
+  fi
+  if [ -n "$_crumb" ]; then
+    if printf 'MADE_LOOPTESTING_DIR=%s\n' "$_crumb" > "$SB/created-dirs.env" 2>/dev/null; then
+      WROTE_BREADCRUMB=1
+    fi
+  fi
 fi
 
 BASELINE_HEAD="$(git -C "$TOP" rev-parse HEAD 2>/dev/null || echo '')"
@@ -259,14 +520,25 @@ else
     die "worktree path already exists: $WT_PATH (pass --worktree-path to choose another)" 6
   fi
   if [ "$branch_exists" -eq 1 ]; then
-    git -C "$TOP" worktree add "$WT_PATH" "$BRANCH" >/dev/null 2>&1 \
-      || die "failed to add worktree at $WT_PATH for existing branch $BRANCH" 6
+    # Keep git's own reason: "already used by worktree at ..." is the difference
+    # between an actionable message and a bare exit code.
+    WT_ADD_ERR="$(git -C "$TOP" worktree add "$WT_PATH" "$BRANCH" 2>&1 >/dev/null)" \
+      || die "failed to add worktree at $WT_PATH for existing branch $BRANCH — git said: ${WT_ADD_ERR:-<no output>}" 6
   else
-    git -C "$TOP" worktree add -b "$BRANCH" "$WT_PATH" >/dev/null 2>&1 \
-      || die "failed to add worktree at $WT_PATH" 6
+    WT_ADD_ERR="$(git -C "$TOP" worktree add -b "$BRANCH" "$WT_PATH" 2>&1 >/dev/null)" \
+      || die "failed to add worktree at $WT_PATH — git said: ${WT_ADD_ERR:-<no output>}" 6
     CREATED_BRANCH="$BRANCH"
   fi
   CREATED_WORKTREE="$WT_PATH"
+  # Stamp it now, inside the worktree's own git admin dir: git removes that dir
+  # with the worktree, so the stamp dies with the thing it identifies and a
+  # worktree later created at the same path cannot inherit it.
+  WT_GITDIR="$(wt_gitdir_of "$WT_PATH")"
+  if [ -n "$WT_GITDIR" ]; then
+    printf '%s\n' "$SANDBOX_ID" > "$WT_GITDIR/loop-testing-owner" 2>/dev/null || WORKTREE_STAMP=""
+  else
+    WORKTREE_STAMP=""   # could not stamp: record no stamp rather than a false one
+  fi
 fi
 
 # --- adopt (do NOT re-claim) refs a prior lifecycle created ------------------
@@ -285,9 +557,32 @@ fi
 seed_dirs_and_templates
 git -C "$TOP" status --porcelain > "$SB/git-status-baseline.txt" 2>/dev/null || true
 
+# Ownership of docs/looptesting/, in order of authority: the breadcrumb this
+# lifecycle line wrote when the dir first appeared, then a previous marker's
+# field, then this run's own mkdir. Presence of the directory is never evidence —
+# a plain clean keeps it, so by the next setup it always exists.
+BREADCRUMB_MADE_LT="$(grep -E '^MADE_LOOPTESTING_DIR=' "$SB/created-dirs.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+if [ "$BREADCRUMB_MADE_LT" = 1 ] || [ "$MADE_LT" = 1 ]; then
+  CREATED_LT=true              # measured: this lifecycle line created the dir
+elif [ "$BREADCRUMB_MADE_LT" = 0 ]; then
+  CREATED_LT=false             # measured: the dir was already there
+elif [ "$INHERITED_CREATED_LT" = true ] || [ "$INHERITED_CREATED_LT" = false ]; then
+  CREATED_LT="$INHERITED_CREATED_LT"
+else
+  # Nothing measured it. A sandbox upgraded from before this field existed lands
+  # here: the old marker's value is not usable and the old version wrote no
+  # breadcrumb. Recording `false` would be a guess that reads as a measurement,
+  # and would let purge tell the user the directory holds files that were
+  # already theirs — which is exactly what nobody established.
+  CREATED_LT=unknown
+fi
+
 # --- ownership marker (parsed, never sourced, by sandbox-clean.sh) -----------
 {
-  echo "SANDBOX_VERSION=1"
+  # 2: CREATED_LOOPTESTING_DIR became meaningful. Version 1 wrote it as a
+  # constant `true`, so a v1 marker says nothing about who owns the evidence dir
+  # and sandbox-clean must treat it as unknown rather than as permission to delete.
+  echo "SANDBOX_VERSION=2"
   echo "MODE=$MODE"
   echo "SANDBOX_BRANCH=$BRANCH"
   echo "TOP=$TOP"
@@ -297,7 +592,18 @@ git -C "$TOP" status --porcelain > "$SB/git-status-baseline.txt" 2>/dev/null || 
   echo "ADOPTED_BRANCH=$ADOPTED_BRANCH"
   echo "ADOPTED_TAG=$ADOPTED_TAG"
   echo "CREATED_WORKTREE=$CREATED_WORKTREE"
-  echo "CREATED_LOOPTESTING_DIR=true"
+  # Left standing by a rebuild, never owned by this run. Reported at purge,
+  # never deleted — the same rule as an adopted ref.
+  echo "UNCLAIMED_WORKTREE=$UNCLAIMED_WORKTREE"
+  # Empty in branch mode and whenever the stamp could not be written: an empty
+  # stamp means "no identity recorded", which readers treat as the pre-stamp
+  # behavior rather than as a mismatch.
+  echo "WORKTREE_STAMP=$([ -n "$CREATED_WORKTREE" ] && echo "$WORKTREE_STAMP")"
+  # true only when THIS run created docs/looptesting/, or a previous run recorded
+  # that it did. Anything else means we adopted a directory the user already keeps
+  # files in, and purge must report it rather than rm -rf it — the same rule the
+  # marker already applies to adopted branches and tags.
+  echo "CREATED_LOOPTESTING_DIR=$CREATED_LT"
   echo "BASELINE_HEAD=$BASELINE_HEAD"
   echo "SETUP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$MARKER" || die "failed to write the ownership marker $MARKER — sandbox-clean could not claim what this run just created; remove the worktree/branch by hand" 8
