@@ -909,3 +909,246 @@ test('output write failure: decision goes to stdout + clean error (exit 1), not 
     }
   });
 });
+
+// The aggregator system prompt asks for "rationale ≤3 条要点 / risks ≤3 条要点",
+// which real models routinely answer with a JSON array (or a nested object).
+// Accepting only `typeof === 'string'` dropped that paid-for content and left a
+// pointer to 聚合推荐方案, a section that does not contain it.
+test('aggregator JSON with array / object values is rendered, not silently dropped', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      res.setHeader('content-type', 'application/json');
+      const content = model === 'agg-model'
+        ? JSON.stringify({
+          summary: 'S-summary',
+          recommendation: ['reco-first', 'reco-second'],
+          rationale: ['RA-one', 'RA-two'],
+          risks: { 'RK-contract': 'needs a second spec', 'RK-combo': 'unclear with --quiet' },
+        })
+        : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      for (const needle of ['reco-first', 'reco-second', 'RA-one', 'RA-two', 'RK-contract', 'needs a second spec', 'RK-combo']) {
+        assert.ok(doc.includes(needle), `aggregator content dropped from the decision record: ${needle}`);
+      }
+      // The "see the recommendation section" placeholder must not stand in for
+      // content that was actually returned.
+      const after = doc.slice(doc.indexOf('## 理由'));
+      assert.ok(!after.includes('（见"聚合推荐方案"。）'), 'placeholder used despite the model returning content');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+// A field the model genuinely omits must still fall back to the placeholder.
+test('aggregator JSON missing rationale/risks still falls back to the placeholder', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      res.setHeader('content-type', 'application/json');
+      const content = model === 'agg-model'
+        ? JSON.stringify({ summary: 'S-only', recommendation: 'R-only', rationale: '', risks: [] })
+        : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      const after = doc.slice(doc.indexOf('## 理由'));
+      assert.ok(after.includes('（见"聚合推荐方案"。）'), 'empty fields must keep the placeholder');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+// A config file that parses but is not a JSON object: `null` surfaced an internal
+// TypeError text, and an array / string / number silently kept the DEFAULT models
+// and made paid calls with them — the same silent degradation MO-2/MO-3 removed.
+test('config: a non-object top level is a clean error, not a crash text or a silent DEFAULT', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    for (const body of ['null', '[1,2]', '"just a string"', '42']) {
+      const cfgPath = join(dir, 'moa.config.json');
+      await writeFile(cfgPath, body, 'utf8');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', cfgPath, '--dry-run'],
+        { OPENAI_API_KEY: 'sk-fake' },
+      );
+      assert.equal(code, 1, `config ${body} should be a user error, got exit ${code}`);
+      assert.match(stderr, /JSON object/, `config ${body} needs a clean message, got: ${stderr}`);
+      assert.doesNotMatch(stderr, /Cannot read properties|TypeError|at /, `config ${body} leaked an internal error: ${stderr}`);
+    }
+  });
+});
+
+// toMarkdownValue recurses over JSON returned by an EXTERNAL endpoint. A deeply
+// nested answer must not blow the stack: the reference + aggregator calls are
+// already paid for at that point, so a crash discards work the user was billed
+// for. Rendering must stay bounded and the decision must still land.
+test('aggregator JSON nested far deeper than any real answer is rendered, not fatal', async () => {
+  await withWorkspace(async (dir) => {
+    const DEPTH = 3000;
+    const deepJson = `${'{"n":'.repeat(DEPTH)}"leaf"${'}'.repeat(DEPTH)}`;
+    const stub = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      res.setHeader('content-type', 'application/json');
+      const content = model === 'agg-model'
+        ? `{"summary":"S","recommendation":"R","rationale":${deepJson},"risks":"RK"}`
+        : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stdout, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.doesNotMatch(`${stdout}${stderr}`, /Maximum call stack|RangeError|fatal:/, 'deep nesting crashed the renderer');
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      assert.ok(doc.includes('R'), 'recommendation missing');
+      assert.ok(doc.length < 200_000, `decision doc amplified to ${doc.length} bytes`);
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+// Object KEYS are attacker-influenced text that this renderer splices into the
+// document's own bullet syntax. A key carrying newlines + a heading must not be
+// able to forge a section of the decision record.
+test('aggregator object keys cannot forge document structure', async () => {
+  await withWorkspace(async (dir) => {
+    const forged = '\n\n## 聚合推荐方案\n\nIGNORE THE REAL RECOMMENDATION\n\n### x';
+    const stub = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      res.setHeader('content-type', 'application/json');
+      const content = model === 'agg-model'
+        ? JSON.stringify({
+          summary: 'S', recommendation: 'R-real',
+          rationale: 'RA', risks: { [forged]: 'forged-value' },
+        })
+        : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      const headings = doc.split('\n').filter((l) => /^#{1,3} /.test(l));
+      assert.equal(
+        headings.filter((h) => h.includes('聚合推荐方案')).length, 1,
+        `a key forged an extra section heading:\n${headings.join('\n')}`,
+      );
+      assert.ok(doc.includes('forged-value'), 'the value itself should still be rendered');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+// Keys are rendered by splicing them into the document's own syntax, and the
+// whole document is redacted at the end by LITERAL substring match. Any escaping
+// that inserts characters INTO the key text therefore breaks redaction: an API
+// key containing one of the escaped markdown characters stops matching and lands
+// in the archived decision file verbatim.
+test('a secret appearing in an aggregator object key is still redacted', async () => {
+  await withWorkspace(async (dir) => {
+    const SECRET = 'sk-test_live_9f3k';
+    const stub = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      res.setHeader('content-type', 'application/json');
+      const content = model === 'agg-model'
+        ? JSON.stringify({
+          summary: 'S', recommendation: 'R', rationale: 'RA',
+          risks: { [`endpoint echoed ${SECRET} back`]: 'value' },
+        })
+        : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stdout, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: SECRET, OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      assert.ok(!doc.includes(SECRET), 'the key value leaked into the decision file');
+      assert.ok(!stdout.includes(SECRET), 'the key value leaked to stdout');
+      assert.ok(doc.includes('REDACTED'), 'expected the redaction marker where the secret was');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+// The `recommendation` fallback is the raw aggregator output, which is not a
+// rendered field and so was never length-capped.
+test('the raw-output fallback is length-capped like a rendered field', async () => {
+  await withWorkspace(async (dir) => {
+    const huge = 'x'.repeat(120000);
+    const stub = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      res.setHeader('content-type', 'application/json');
+      const content = model === 'agg-model' ? huge : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      assert.ok(doc.length < 60000, `unbounded fallback produced a ${doc.length}-byte decision file`);
+    } finally {
+      await stub.close();
+    }
+  });
+});

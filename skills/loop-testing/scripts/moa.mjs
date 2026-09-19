@@ -186,6 +186,12 @@ async function resolveConfig(args, env) {
     } catch (e) {
       throw new Error(`config file is not valid JSON: ${configPath}: ${e.message}`);
     }
+    // Valid JSON is not enough: `null` reached the property access below as an
+    // internal TypeError, and an array / string / number silently kept the
+    // DEFAULT models — paid calls with a config the user thought was applied.
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`config file must contain a JSON object: ${configPath}`);
+    }
     // reference_models absent -> keep DEFAULT. Present -> must be a non-empty array:
     // a non-array typo silently fell back to the DEFAULT (wrong, paid-for) models,
     // and [] silently ran aggregator-only — both contradict "zero criteria -> refuse"
@@ -541,20 +547,81 @@ function extractJsonObject(text) {
 // ===========================================================================
 // Decision document assembly
 // ===========================================================================
+// Render one aggregator JSON field as Markdown. The aggregator prompt asks for
+// "rationale ≤3 条要点 / risks ≤3 条要点", so models routinely answer with an
+// array (or a nested object) rather than one Markdown string. Accepting only
+// strings dropped that paid-for content and left a placeholder pointing at
+// 聚合推荐方案 — a section that does not contain it. Returns null for genuinely
+// empty values so the caller's placeholder still applies.
+// Everything below renders JSON that came from an EXTERNAL endpoint, so it is
+// bounded on every axis: depth (a nested answer must not blow the stack — the
+// reference + aggregator calls are already PAID for when this runs, and an
+// uncaught RangeError discards them), per-field length, and key shape.
+const MD_MAX_DEPTH = 6;
+const MD_MAX_CHARS = 20000;
+
+// Indent continuation lines so a multi-line item stays inside its bullet.
+function mdIndent(s) { return s.split('\n').join('\n  '); }
+
+// A key is attacker-influenced text spliced into this document's own syntax.
+// Neutralize it WITHOUT rewriting its characters: wrap it in a code span, where
+// markdown markers are inert, instead of backslash-escaping them. Escaping would
+// insert characters INTO the key text, and the whole document is redacted at the
+// end by literal substring match — so an API key containing `_` or `*` (echoed
+// back by a logging endpoint) would stop matching its own secret and land in the
+// archived decision file verbatim. Only newlines and backticks are rewritten:
+// the first would forge a section heading, the second would break the span, and
+// neither appears in a credential.
+function mdKey(k) {
+  const flat = String(k).replace(/[\r\n]+/g, ' ').replace(/`/g, "'").trim();
+  return flat ? `\`${flat.slice(0, 200)}\`` : '(unnamed)';
+}
+
+function toMarkdownValue(v, depth = 0) {
+  if (v == null) return null;
+  if (typeof v === 'string') return v.trim() || null;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (typeof v !== 'object') return null;
+  if (depth >= MD_MAX_DEPTH) {
+    // Deeper than any real committee answer. Keep the payload as inert text
+    // rather than recursing into it — the decision still lands, bounded.
+    let inert;
+    try { inert = JSON.stringify(v); } catch { return null; }
+    if (!inert) return null;
+    inert = inert.replace(/`/g, "'");
+    return `\`${inert.length > 500 ? `${inert.slice(0, 500)}…` : inert}\``;
+  }
+  if (Array.isArray(v)) {
+    // NOT `v.map(toMarkdownValue)`: map passes the index as the second argument,
+    // which would land in `depth` and defeat the cap.
+    const items = v.map((x) => toMarkdownValue(x, depth + 1)).filter(Boolean);
+    return items.length ? items.map((s) => `- ${mdIndent(s)}`).join('\n') : null;
+  }
+  const rows = Object.entries(v)
+    .map(([k, val]) => {
+      const s = toMarkdownValue(val, depth + 1);
+      return s ? `- **${mdKey(k)}**: ${mdIndent(s)}` : null;   // mdKey already delimits
+    })
+    .filter(Boolean);
+  return rows.length ? rows.join('\n') : null;
+}
+
+// One rendered field, length-capped. Re-indenting at every level is O(size×depth),
+// so a wide+deep answer can amplify far past anything worth archiving.
+function mdField(v, fallback) {
+  const s = toMarkdownValue(v) ?? fallback;   // the fallback is raw model output — cap it too
+  if (typeof s !== 'string') return s;
+  return s.length > MD_MAX_CHARS
+    ? `${s.slice(0, MD_MAX_CHARS)}\n\n> [由 moa.mjs 截断：该字段渲染后超出 ${MD_MAX_CHARS} 字符上限。]`
+    : s;
+}
+
 function buildDecisionMarkdown({ opinions, failedRefs, aggModel, aggContent, degraded, defaultProviderName }) {
   const parsed = extractJsonObject(aggContent) || {};
-  const summary = (typeof parsed.summary === 'string' && parsed.summary.trim())
-    ? parsed.summary.trim()
-    : '（聚合模型未返回结构化摘要，原始输出见"聚合推荐方案"。）';
-  const recommendation = (typeof parsed.recommendation === 'string' && parsed.recommendation.trim())
-    ? parsed.recommendation.trim()
-    : aggContent.trim();
-  const rationale = (typeof parsed.rationale === 'string' && parsed.rationale.trim())
-    ? parsed.rationale.trim()
-    : '（见"聚合推荐方案"。）';
-  const risks = (typeof parsed.risks === 'string' && parsed.risks.trim())
-    ? parsed.risks.trim()
-    : '（见"聚合推荐方案"。）';
+  const summary = mdField(parsed.summary, '（聚合模型未返回结构化摘要，原始输出见"聚合推荐方案"。）');
+  const recommendation = mdField(parsed.recommendation, aggContent.trim());
+  const rationale = mdField(parsed.rationale, '（见"聚合推荐方案"。）');
+  const risks = mdField(parsed.risks, '（见"聚合推荐方案"。）');
 
   const opinionSection = [];
   for (const o of opinions) {
