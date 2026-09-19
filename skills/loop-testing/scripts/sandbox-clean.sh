@@ -115,6 +115,21 @@ if [ -f "$PIDS_FILE" ]; then
     case "$pid" in
       ''|*[!0-9]*) continue ;;   # skip blanks / non-numeric lines
     esac
+    # `kill 0` signals EVERY process in the sender's own process group — the agent
+    # session, the unattended driver, sibling jobs — so a 0 here would take down
+    # the run mid-cleanup, before the worktree is ever removed; `kill 1` targets
+    # init. Neither can be a service this run started. .pids is written by the
+    # agent from parsed `lsof -t -i :PORT` / `ss -ltnp` output, so a stray 0 is a
+    # parse artifact, not a hypothesis. Compare the VALUE, not the shape: "00" is
+    # numeric and still means the group, while "0000123" is a real PID to stop.
+    norm=$pid
+    while [ "${#norm}" -gt 1 ]; do
+      case "$norm" in 0*) norm=${norm#0} ;; *) break ;; esac
+    done
+    case "$norm" in
+      0|1) echo_info "refusing to signal PID $pid from .pids (0 would signal this whole process group, 1 is init)"
+           continue ;;
+    esac
     kill -0 "$pid" 2>/dev/null || continue
     TARGETS="$TARGETS
 $(collect_tree "$pid")"
