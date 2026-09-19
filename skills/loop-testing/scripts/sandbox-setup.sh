@@ -16,6 +16,11 @@
 #
 # Usage: sandbox-setup.sh [--mode worktree|branch] [--worktree-path PATH]
 #                         [--branch NAME] [--baseline-tag NAME] [--allow-dirty]
+#
+# Exit codes: 0 ready (or already initialized) · 2 usage error · 3 not a git repo
+# · 4 dirty tree in branch mode · 5 branch switch/create failed · 6 worktree add
+# failed (or path taken) · 7 branch-mode sandbox is on another branch · 8 the
+# evidence dir could not be created/written (refused before touching git).
 set -u
 
 MODE="worktree"
@@ -24,7 +29,32 @@ BASELINE_TAG="qa-baseline"
 WT_PATH=""
 ALLOW_DIRTY=0
 
-die() { echo "sandbox-setup: $*" >&2; exit "${2:-1}"; }
+# Directories the preflight created. A refusal must leave none of them behind:
+# sandbox-clean is fail-closed without a marker, so nothing else would ever remove
+# them from the user's repo. Flags (not a path list) so a path with spaces is safe,
+# and rmdir (not rm -rf) so anything that ended up inside is never destroyed.
+MADE_DOCS=0; MADE_LT=0; MADE_RUNS=0; MADE_DECISIONS=0; MADE_SB=0
+# Flips to 1 as soon as this run creates a git artifact (tag / branch / worktree).
+# Past that point a refusal cannot clean up completely anyway, and rolling back
+# only the still-empty dirs would leave a half-built evidence tree — worse than
+# leaving it whole for the re-run to reuse.
+GIT_TOUCHED=0
+
+# die <message> [exit-code] — "$1", not "$*": the code is an argument, not text.
+die() {
+  echo "sandbox-setup: $1" >&2
+  if [ "$GIT_TOUCHED" = 0 ]; then
+    # Innermost first; each guard is only ever 1 after a non-`-p` mkdir SUCCEEDED,
+    # i.e. the dir did not exist, and rmdir refuses a non-empty one — so a
+    # pre-existing user directory is never removed.
+    [ "$MADE_SB" = 1 ]        && rmdir "$SB"            2>/dev/null
+    [ "$MADE_DECISIONS" = 1 ] && rmdir "$LT/decisions"  2>/dev/null
+    [ "$MADE_RUNS" = 1 ]      && rmdir "$LT/runs"       2>/dev/null
+    [ "$MADE_LT" = 1 ]        && rmdir "$LT"            2>/dev/null
+    [ "$MADE_DOCS" = 1 ]      && rmdir "$TOP/docs"      2>/dev/null
+  fi
+  exit "${2:-1}"
+}
 
 # Value-taking flags fail closed on a missing value (audit DR-10) — a dangling
 # trailing flag must never silently fall back to the computed default and proceed.
@@ -70,8 +100,44 @@ LT="$TOP/docs/looptesting"
 SB="$LT/.sandbox"
 MARKER="$SB/ownership.env"
 
+# Preflight: the evidence dir IS the sandbox contract — the ownership marker
+# (sandbox-clean removes only what it records), the .active sentinel (arms the
+# stop-gate) and STATE.md (resume) all live there. Every write below used to be
+# unchecked, so an unwritable docs/ (read-only mount, root-owned dir, full disk,
+# quota) still printed "ready" and exited 0 while leaving a branch/worktree/tag
+# that no cleanup could claim and a silently disarmed gate. Verify writability
+# BEFORE touching git, so a refusal leaves nothing behind.
+require_writable_evidence_dir() {
+  # Create each level ourselves, so we know exactly what to drop again on a refusal.
+  [ -d "$TOP/docs" ]     || { mkdir "$TOP/docs"     2>/dev/null && MADE_DOCS=1; }
+  [ -d "$LT" ]           || { mkdir "$LT"           2>/dev/null && MADE_LT=1; }
+  [ -d "$LT/runs" ]      || { mkdir "$LT/runs"      2>/dev/null && MADE_RUNS=1; }
+  [ -d "$LT/decisions" ] || { mkdir "$LT/decisions" 2>/dev/null && MADE_DECISIONS=1; }
+  [ -d "$SB" ]           || { mkdir "$SB"           2>/dev/null && MADE_SB=1; }
+  # Probe EVERY dir the sandbox writes into, not just .sandbox: a writable
+  # .sandbox under a read-only docs/looptesting passed a .sandbox-only probe and
+  # moved the failure to seed time — after the tag, branch and worktree existed.
+  for d in "$LT" "$LT/runs" "$LT/decisions" "$SB"; do
+    [ -d "$d" ] \
+      || die "cannot create the evidence dir $d — refusing a sandbox whose state (ownership marker, .active sentinel, STATE.md) could not be recorded" 8
+    # Sweep probes from an interrupted earlier run first: a leftover one that is
+    # not owner-writable would otherwise false-refuse forever. The sweep is broad
+    # and CAN remove a concurrent run's in-flight probe — harmless, because a
+    # writer never re-reads its own probe, so a swept probe cannot cause a false
+    # refusal. The per-PID name below is for attribution, not mutual exclusion.
+    rm -f "$d"/.write-probe* 2>/dev/null
+    # Write a BYTE, not just truncate: creating a zero-length file succeeds on a
+    # full filesystem, so an empty probe would pass ENOSPC straight through to
+    # the marker write — i.e. after the git artifacts already exist.
+    ( printf 'x' > "$d/.write-probe.$$" ) 2>/dev/null \
+      || die "evidence dir $d is not writable (or the filesystem is full) — refusing a sandbox whose state (ownership marker, .active sentinel, STATE.md) could not be recorded" 8
+    rm -f "$d/.write-probe.$$"
+  done
+}
+
 seed_dirs_and_templates() {
-  mkdir -p "$LT/runs" "$LT/decisions" "$SB"
+  mkdir -p "$LT/runs" "$LT/decisions" "$SB" \
+    || die "cannot create the evidence dirs under $LT — refusing a sandbox whose state could not be recorded" 8
   [ -f "$LT/.pids" ] || : > "$LT/.pids"
   # Arm the stop-gate sentinel: while it exists, the Stop hook refuses to end
   # the session until STATE.md reaches a terminal status. Harmless on Codex
@@ -88,6 +154,8 @@ seed_dirs_and_templates() {
   fi
 }
 
+require_writable_evidence_dir
+
 # --- idempotent short-circuit: already initialized ---------------------------
 # BUT if the marker records a worktree that a prior sandbox-clean removed, the
 # sandbox lost its isolation — re-seeding alone would hand back a phantom
@@ -95,12 +163,29 @@ seed_dirs_and_templates() {
 # (and commit into) the main tree (audit B2). In that case rebuild instead: drop
 # the stale marker and fall through to full init, which re-adds the worktree on
 # the (kept) qa branch. A live worktree, or branch-mode (no worktree), short-circuits.
+PRIOR_CREATED_BRANCH=""
+PRIOR_CREATED_TAG=""
+ADOPTED_BRANCH=""
+ADOPTED_TAG=""
 if [ -f "$MARKER" ]; then
   RECORDED_WT="$(grep -E '^CREATED_WORKTREE=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
   if [ -n "$RECORDED_WT" ] \
      && ! git -C "$TOP" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $RECORDED_WT"; then
     echo "sandbox-setup: recorded worktree is gone ($RECORDED_WT) — rebuilding isolation on the qa branch."
     [ -z "$WT_PATH" ] && WT_PATH="$RECORDED_WT"
+    # Carry ownership across the marker rebuild: sandbox-clean deliberately KEEPS
+    # the qa branch and baseline tag, so re-deriving ownership below from "does
+    # this ref exist now" would record neither — orphaning artifacts this sandbox
+    # created beyond --purge's reach, and silencing its harvest warning.
+    PRIOR_CREATED_BRANCH="$(grep -E '^CREATED_BRANCH=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+    PRIOR_CREATED_TAG="$(grep -E '^CREATED_TAG=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+    # Adoption must be transitive. After the first rebuild the marker records
+    # CREATED_BRANCH= (empty) + ADOPTED_BRANCH=…, so reading only CREATED_* would
+    # find nothing to carry on the NEXT rebuild and purge would fall silent again.
+    [ -n "$PRIOR_CREATED_BRANCH" ] \
+      || PRIOR_CREATED_BRANCH="$(grep -E '^ADOPTED_BRANCH=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+    [ -n "$PRIOR_CREATED_TAG" ] \
+      || PRIOR_CREATED_TAG="$(grep -E '^ADOPTED_TAG=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
     rm -f "$MARKER"
   else
     # Branch-mode re-verify (audit DR-9): the user may have switched branches
@@ -147,7 +232,7 @@ if [ -n "$BASELINE_HEAD" ]; then
   if git -C "$TOP" rev-parse -q --verify "refs/tags/$BASELINE_TAG" >/dev/null 2>&1; then
     :  # pre-existing tag — not ours to remove
   else
-    git -C "$TOP" tag "$BASELINE_TAG" >/dev/null 2>&1 && CREATED_TAG="$BASELINE_TAG"
+    git -C "$TOP" tag "$BASELINE_TAG" >/dev/null 2>&1 && { CREATED_TAG="$BASELINE_TAG"; GIT_TOUCHED=1; }
   fi
 fi
 
@@ -157,6 +242,7 @@ CREATED_WORKTREE=""
 branch_exists=0
 git -C "$TOP" rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null 2>&1 && branch_exists=1
 
+GIT_TOUCHED=1   # switching a branch or adding a worktree both mutate the repo
 if [ "$MODE" = "branch" ]; then
   if [ "$branch_exists" -eq 1 ]; then
     git -C "$TOP" switch "$BRANCH" >/dev/null 2>&1 || die "failed to switch to existing branch $BRANCH" 5
@@ -183,6 +269,18 @@ else
   CREATED_WORKTREE="$WT_PATH"
 fi
 
+# --- adopt (do NOT re-claim) refs a prior lifecycle created ------------------
+# A prior marker records ownership by NAME, not by ref identity. sandbox-clean
+# deliberately KEEPS the qa branch and baseline tag, so between that clean and
+# this rebuild the user may have deleted them and created their own refs of the
+# same name — and --purge deletes what the marker calls CREATED. Re-claiming
+# ownership on a name match would hand it the right to delete a user's branch
+# (silently, when that branch has no commits beyond the recorded baseline).
+# Record the fact as ADOPTED instead: purge reports these and never deletes them,
+# so the user still learns the refs are there without the tool guessing.
+[ -z "$CREATED_BRANCH" ] && [ "$PRIOR_CREATED_BRANCH" = "$BRANCH" ] && ADOPTED_BRANCH="$BRANCH"
+[ -z "$CREATED_TAG" ] && [ "$PRIOR_CREATED_TAG" = "$BASELINE_TAG" ] && ADOPTED_TAG="$BASELINE_TAG"
+
 # --- evidence dir + templates ------------------------------------------------
 seed_dirs_and_templates
 git -C "$TOP" status --porcelain > "$SB/git-status-baseline.txt" 2>/dev/null || true
@@ -195,11 +293,15 @@ git -C "$TOP" status --porcelain > "$SB/git-status-baseline.txt" 2>/dev/null || 
   echo "TOP=$TOP"
   echo "CREATED_BRANCH=$CREATED_BRANCH"
   echo "CREATED_TAG=$CREATED_TAG"
+  # Re-used by this run, not created by it — reported at purge, never deleted.
+  echo "ADOPTED_BRANCH=$ADOPTED_BRANCH"
+  echo "ADOPTED_TAG=$ADOPTED_TAG"
   echo "CREATED_WORKTREE=$CREATED_WORKTREE"
   echo "CREATED_LOOPTESTING_DIR=true"
   echo "BASELINE_HEAD=$BASELINE_HEAD"
   echo "SETUP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-} > "$MARKER"
+} > "$MARKER" || die "failed to write the ownership marker $MARKER — sandbox-clean could not claim what this run just created; remove the worktree/branch by hand" 8
+[ -s "$MARKER" ] || die "ownership marker $MARKER is empty after writing (disk full?) — sandbox-clean could not claim what this run just created" 8
 
 echo "sandbox-setup: ready (mode=$MODE, branch=$BRANCH, baseline=$BASELINE_TAG)."
 [ -n "$CREATED_WORKTREE" ] && echo "  worktree: $CREATED_WORKTREE"

@@ -141,4 +141,190 @@ if ( cd "$REPO8" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/n
 else PASS=$((PASS+1)); fi
 assert_eq "$HEAD8" "$(cd "$REPO8" && git rev-parse HEAD)" "purge did not move the detached HEAD"
 
+# --- L. ownership survives a plain clean -> re-setup (rebuild) cycle -----------
+# sandbox-clean (no --purge) deliberately KEEPS the qa branch + baseline tag, and
+# the resume path in sandbox-setup drops the marker and re-inits when the recorded
+# worktree is gone. Re-deriving ownership from "does this ref exist now" then
+# records NEITHER as ours, so --purge can no longer remove the artifacts this
+# sandbox created — and the "branch holds fix commits" warning goes silent too.
+WS9=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9"' EXIT
+REPO9="$WS9/proj"
+( cd "$REPO9" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$REPO9" && bash "$CLEAN" ) >/dev/null 2>&1                    # keeps branch + tag
+( cd "$REPO9" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1    # resume -> marker rebuilt
+MARK9="$REPO9/docs/looptesting/.sandbox/ownership.env"
+# ADOPTED, not CREATED: ownership is recorded by NAME only, and between the clean
+# and this rebuild the user may have replaced the ref with one of their own. The
+# rebuild re-uses a ref it cannot prove it created, so it records the fact without
+# re-claiming deletion rights.
+assert_file_contains "$MARK9" "ADOPTED_BRANCH=qa/loop-testing" "rebuilt marker adopts the branch"
+assert_file_contains "$MARK9" "ADOPTED_TAG=qa-baseline" "rebuilt marker adopts the tag"
+assert_file_contains "$MARK9" "CREATED_BRANCH=" "rebuilt marker does not re-claim branch ownership"
+mark_terminal "$REPO9"
+OUT9=$( cd "$REPO9" && bash "$CLEAN" --purge 2>&1 )
+assert_ok $? "--purge after a rebuild exits 0"
+if ( cd "$REPO9" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: purge must NOT delete a branch this run only re-used" >&2; fi
+if ( cd "$REPO9" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 ); then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: purge must NOT delete a tag this run only re-used" >&2; fi
+# ...but it must SAY so, instead of a bare "purge done." that reads as "all clean".
+case "$OUT9" in
+  *"qa/loop-testing"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: purge must name the re-used branch it kept — got: $OUT9" >&2 ;;
+esac
+
+# --- M. the harvest warning survives the same rebuild cycle -------------------
+# Fix commits live ONLY on the qa branch. After a rebuild, purge must still name
+# the branch it is keeping — a silent "purge done." reads as "everything cleaned".
+WSA=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA"' EXIT
+REPOA="$WSA/proj"; WTA="$WSA/proj-qa-loop"
+( cd "$REPOA" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$REPOA" && bash "$CLEAN" ) >/dev/null 2>&1
+( cd "$REPOA" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$WTA" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
+mark_terminal "$REPOA"
+OUTA=$( cd "$REPOA" && bash "$CLEAN" --purge 2>&1 )
+case "$OUTA" in
+  *"KEPT branch: qa/loop-testing"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: purge after a rebuild must report the KEPT branch holding fix commits — got: $OUTA" >&2 ;;
+esac
+case "$OUTA" in
+  *"1 commit"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: the KEPT line must say how many commits are on it — got: $OUTA" >&2 ;;
+esac
+if ( cd "$REPOA" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: branch with fix commits must survive purge after a rebuild" >&2; fi
+
+# --- O. a ref the user REPLACED between lifecycles is never deleted -------------
+# Ownership is recorded by name. If the user deletes the qa branch/tag and creates
+# their own with the same name, a rebuild must not hand --purge the right to delete
+# them — and with no commits beyond the recorded baseline the old code deleted both
+# under a PLAIN --purge, printing nothing at all.
+WSD=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC" "$WSD"' EXIT
+REPOD="$WSD/proj"
+( cd "$REPOD" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$REPOD" && bash "$CLEAN" ) >/dev/null 2>&1
+(
+  cd "$REPOD"
+  git branch -D qa/loop-testing >/dev/null 2>&1
+  git tag -d qa-baseline >/dev/null 2>&1
+  git branch qa/loop-testing            # the user's own ref, same name, at HEAD
+  git tag qa-baseline                   # the user's own tag, same name
+) >/dev/null 2>&1
+( cd "$REPOD" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+mark_terminal "$REPOD"
+( cd "$REPOD" && bash "$CLEAN" --purge ) >/dev/null 2>&1
+assert_ok $? "--purge over user-replaced refs exits 0"
+if ( cd "$REPOD" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: purge deleted a same-named branch the user created (data loss)" >&2; fi
+if ( cd "$REPOD" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 ); then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: purge deleted a same-named tag the user created (data loss)" >&2; fi
+
+# --- N. a harvested branch is reported as harvested, not as "harvest them first" -
+# Merging does not move the qa tip, but it does make the tip reachable from the
+# merging ref — so a completed harvest IS detectable. The branch is still KEPT
+# (deleting commits stays the user's call); only the advice changes, so the user
+# who just merged is not told to redo it.
+WSB=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB"' EXIT
+REPOB="$WSB/proj"; WTB="$WSB/proj-qa-loop"
+( cd "$REPOB" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$WTB" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
+mark_terminal "$REPOB"
+# Not harvested yet -> the old "harvest them first" advice stands.
+OUTB=$( cd "$REPOB" && bash "$CLEAN" --purge 2>&1 )
+case "$OUTB" in
+  *"harvest them first"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: an unharvested branch must still say 'harvest them first' — got: $OUTB" >&2 ;;
+esac
+
+# Same repo, harvested this time: set up again, commit a fix, merge it, then purge.
+WSC=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC"' EXIT
+REPOC="$WSC/proj"; WTC="$WSC/proj-qa-loop"
+( cd "$REPOC" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$WTC" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
+mark_terminal "$REPOC"
+( cd "$REPOC" && git merge -q --no-ff qa/loop-testing -m "harvest qa fixes" ) >/dev/null 2>&1
+OUTC=$( cd "$REPOC" && bash "$CLEAN" --purge 2>&1 )
+case "$OUTC" in
+  *"harvest them first"*) FAIL=$((FAIL+1)); echo "  FAIL: a merged (harvested) branch must not tell the user to harvest again — got: $OUTC" >&2 ;;
+  *"also reachable from"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: a merged branch should be reported as harvested — got: $OUTC" >&2 ;;
+esac
+if ( cd "$REPOC" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: a harvested branch must still be KEPT — deleting commits stays the user's call" >&2; fi
+
+# --- P. a branch PUSHED as a backup is not a harvest ---------------------------
+# `for-each-ref --contains` lists the branch's own remote-tracking mirror, so
+# `git push origin qa/loop-testing` with nothing merged read as "already reachable
+# from 'origin/qa/loop-testing' — harvest looks complete", inviting the user to
+# --discard-fixes a branch whose commits exist nowhere else.
+WSE=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC" "$WSD" "$WSE"' EXIT
+REPOE="$WSE/proj"; WTE="$WSE/proj-qa-loop"
+git init -q --bare "$WSE/remote.git" >/dev/null 2>&1
+( cd "$REPOE" && git remote add origin "$WSE/remote.git" && git push -q origin HEAD ) >/dev/null 2>&1
+( cd "$REPOE" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$WTE" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
+( cd "$REPOE" && git push -q origin qa/loop-testing ) >/dev/null 2>&1   # backup push, nothing merged
+mark_terminal "$REPOE"
+OUTE=$( cd "$REPOE" && bash "$CLEAN" --purge 2>&1 )
+case "$OUTE" in
+  *"also reachable"*) FAIL=$((FAIL+1)); echo "  FAIL: a backup push must not read as a completed harvest — got: $OUTE" >&2 ;;
+  *"harvest them first"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: expected the unharvested advice — got: $OUTE" >&2 ;;
+esac
+if ( cd "$REPOE" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: the branch must survive a backup-push purge" >&2; fi
+
+# Excluding the mirror must not blind the genuine signal: with BOTH a backup push
+# and a real merge into the mainline, purge still reports the harvest — naming the
+# mainline, never the branch's own mirror.
+WSF=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC" "$WSD" "$WSE" "$WSF"' EXIT
+REPOF="$WSF/proj"; WTF="$WSF/proj-qa-loop"
+git init -q --bare "$WSF/remote.git" >/dev/null 2>&1
+( cd "$REPOF" && git remote add origin "$WSF/remote.git" && git push -q origin HEAD ) >/dev/null 2>&1
+( cd "$REPOF" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$WTF" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
+( cd "$REPOF" && git push -q origin qa/loop-testing ) >/dev/null 2>&1      # mirror exists
+( cd "$REPOF" && git merge -q --no-ff qa/loop-testing -m "harvest qa fixes" ) >/dev/null 2>&1
+MAINF="$(cd "$REPOF" && git branch --show-current)"
+mark_terminal "$REPOF"
+OUTF=$( cd "$REPOF" && bash "$CLEAN" --purge 2>&1 )
+case "$OUTF" in
+  *"also reachable from '$MAINF'"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: a merged branch must still read as harvested, naming $MAINF — got: $OUTF" >&2 ;;
+esac
+
+# --- Q. adoption must survive a SECOND rebuild ---------------------------------
+# The rebuild reads the prior marker's CREATED_* to decide what to adopt. Once the
+# first rebuild has written CREATED_BRANCH= (empty) + ADOPTED_BRANCH=…, a second
+# clean → setup cycle finds nothing to carry and purge falls silent again — the
+# exact "bare purge done. while fix commits sit on an unmentioned branch" this
+# release set out to remove.
+WSG=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC" "$WSD" "$WSE" "$WSF" "$WSG"' EXIT
+REPOG="$WSG/proj"; WTG="$WSG/proj-qa-loop"
+( cd "$REPOG" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+( cd "$WTG" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
+( cd "$REPOG" && bash "$CLEAN" ) >/dev/null 2>&1
+( cd "$REPOG" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1        # rebuild 1 -> adopted
+( cd "$REPOG" && bash "$CLEAN" ) >/dev/null 2>&1
+( cd "$REPOG" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1        # rebuild 2
+assert_file_contains "$REPOG/docs/looptesting/.sandbox/ownership.env" "ADOPTED_BRANCH=qa/loop-testing" \
+  "adoption carries across a second rebuild"
+mark_terminal "$REPOG"
+OUTG=$( cd "$REPOG" && bash "$CLEAN" --purge 2>&1 )
+case "$OUTG" in
+  *"qa/loop-testing"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: purge went silent after a second rebuild — got: $OUTG" >&2 ;;
+esac
+if ( cd "$REPOG" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: the branch must survive purge after a second rebuild" >&2; fi
+
 report "purge.test.sh"

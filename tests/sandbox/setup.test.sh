@@ -142,4 +142,86 @@ assert_absent "$WS8/proj-qa-loop-qa-loop" "no nested worktree path created (R57)
 assert_absent "$WT8/docs/looptesting/.sandbox" "no second marker written inside the worktree (R57)"
 assert_exists "$REPO8/docs/looptesting/.sandbox/ownership.env" "main-tree marker untouched (R57)"
 
+# --- usage errors must not leak the exit code into the message ----------------
+# die() takes (message, exit-code); echoing "$*" printed the code as a trailing
+# word, so users read "…(pass --worktree-path to choose another) 6" and
+# "unknown argument: --bogus 2".
+WS9=$(mk_ws); trap 'rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9"' EXIT
+REPO9="$WS9/proj"
+OUT9=$( cd "$REPO9" && bash "$SETUP" --bogus 2>&1 )
+assert_eq "sandbox-setup: unknown argument: --bogus" "$OUT9" "unknown-argument message carries no stray exit code"
+OUT9=$( cd "$REPO9" && bash "$SETUP" --mode 2>&1 )
+assert_eq "sandbox-setup: missing value for --mode" "$OUT9" "missing-value message carries no stray exit code"
+mkdir -p "$WS9/occupied"
+OUT9=$( cd "$REPO9" && bash "$SETUP" --worktree-path "$WS9/occupied" 2>&1 )
+assert_eq "sandbox-setup: worktree path already exists: $WS9/occupied (pass --worktree-path to choose another)" \
+  "$OUT9" "occupied-path message carries no stray exit code"
+
+# --- evidence dir not writable: refuse BEFORE creating any git artifact -------
+# The evidence dir is the sandbox contract: ownership marker (sandbox-clean can
+# only remove what it records), .active (arms the stop-gate), STATE.md (resume).
+# Seeding it used to ignore every failure, so an unwritable docs/ (read-only
+# mount, root-owned dir, full disk, quota) still printed "ready" and exited 0
+# while leaving a worktree + branch + tag that no cleanup could ever claim.
+WSA=$(mk_ws)
+trap 'chmod -R u+w "$WSA" 2>/dev/null; rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA"' EXIT
+REPOA="$WSA/proj"
+mkdir -p "$REPOA/docs"
+chmod a-w "$REPOA/docs"
+# chmod does not constrain root, so under a root-running suite (common in
+# containers) setup legitimately succeeds and these asserts would fail for
+# environmental reasons, not product ones.
+if [ "$(id -u)" = "0" ]; then
+  echo "  skip: running as root — unwritable-dir cases not meaningful"
+else
+OUTA=$( cd "$REPOA" && bash "$SETUP" --mode worktree 2>&1 )
+RCA=$?
+assert_nonzero "$RCA" "unwritable evidence dir -> setup must refuse"
+case "$OUTA" in
+  *ready*) FAIL=$((FAIL+1)); echo "  FAIL: setup reported ready despite an unwritable evidence dir — got: $OUTA" >&2 ;;
+  *) PASS=$((PASS+1)) ;;
+esac
+assert_absent "$WSA/proj-qa-loop" "refusal left no orphan worktree"
+if ( cd "$REPOA" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  FAIL=$((FAIL+1)); echo "  FAIL: refusal left an unclaimable qa branch behind" >&2
+else PASS=$((PASS+1)); fi
+if ( cd "$REPOA" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 ); then
+  FAIL=$((FAIL+1)); echo "  FAIL: refusal left an unclaimable baseline tag behind" >&2
+else PASS=$((PASS+1)); fi
+chmod u+w "$REPOA/docs"
+
+# --- the writability probe must cover EVERY dir the sandbox needs -------------
+# A writable .sandbox under a read-only docs/looptesting passed a probe that only
+# checked .sandbox, so the refusal moved to seed time — AFTER the tag, branch and
+# worktree existed, and with no marker written, which is exactly the orphan state
+# the preflight exists to prevent.
+WSB=$(mk_ws)
+trap 'chmod -R u+w "$WSA" "$WSB" 2>/dev/null; rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB"' EXIT
+REPOB="$WSB/proj"
+mkdir -p "$REPOB/docs/looptesting/.sandbox"
+chmod a-w "$REPOB/docs/looptesting"          # .sandbox stays writable
+OUTB=$( cd "$REPOB" && bash "$SETUP" --mode worktree 2>&1 )
+RCB=$?
+assert_nonzero "$RCB" "unwritable docs/looptesting (writable .sandbox) -> refuse"
+assert_absent "$WSB/proj-qa-loop" "no worktree created by that refusal"
+if ( cd "$REPOB" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
+  FAIL=$((FAIL+1)); echo "  FAIL: refusal left a qa branch behind (probe scope too narrow)" >&2
+else PASS=$((PASS+1)); fi
+if ( cd "$REPOB" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 ); then
+  FAIL=$((FAIL+1)); echo "  FAIL: refusal left a baseline tag behind (probe scope too narrow)" >&2
+else PASS=$((PASS+1)); fi
+chmod u+w "$REPOB/docs/looptesting"
+fi   # end non-root guard
+
+# --- a refusal must not leave the preflight's own directories behind ----------
+# The preflight creates docs/looptesting/... before the isolation guard runs, and
+# sandbox-clean is fail-closed without a marker, so nothing would ever remove them.
+WSC2=$(mk_ws)
+trap 'chmod -R u+w "$WSA" "$WSB" 2>/dev/null; rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC2"' EXIT
+REPOC2="$WSC2/proj"
+( cd "$REPOC2" && echo dirty >> README.md )                       # dirty tree
+( cd "$REPOC2" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
+assert_eq "4" "$?" "dirty tree in branch mode still refuses with exit 4"
+assert_absent "$REPOC2/docs" "refusal removed the directories the preflight created"
+
 report "setup.test.sh"
