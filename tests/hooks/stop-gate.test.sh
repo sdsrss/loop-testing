@@ -232,7 +232,7 @@ max_rounds: 12
 EOF
 run_stop "$WS21" false; assert_rc $? 2 "RUNNING with an ambiguous round: -> block"
 read -r _ pr21 < "$WS21/$CF"
-assert_eq "1|9" "$pr21" "an ambiguous round records the whole SET, not one guessed value"
+assert_eq "2:1|9" "$pr21" "an ambiguous round records count and the whole SET, not one guessed value"
 
 # W. The H-03 parse must stay builtins-only: on the bare PATH of case K (no sort,
 #    no uniq, no wc) a TERMINAL status must still disarm. A parse that needs a
@@ -301,5 +301,38 @@ assert_exists "$WS26/$ACT" "an empty status: value leaves the sentinel armed"
 printf '# STATE\nstatus: CONVERGED\nstatus:   \nround: 3\n' > "$WS26/docs/looptesting/STATE.md"
 run_stop "$WS26" false; assert_rc $? 2 "whitespace-only status: value below a terminal one -> block"
 assert_exists "$WS26/$ACT" "a whitespace-only status: value leaves the sentinel armed"
+
+# BB. The line cap alone does not bound the COST. 200 lines is legal, and each
+#     value is unbounded, so 200 x 100 KB is 20 MB of dedupe scanning: measured
+#     at rc=124 — killed by the platform's 15s timeout, which means ALLOW — where
+#     the parse this replaced returned rc=2 in 0.8s. Case X used many SHORT
+#     lines, which the line cap does catch, so it could not see this.
+WS27=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19" "$WS20" "$WS21" "$WS22" "$WS23" "$WS24" "$WS25" "$WS26" "$WS27"' EXIT
+arm "$WS27"
+{ echo '# STATE'
+  i=0; big=$(printf '%0.sA' $(seq 1 100000))
+  while [ "$i" -lt 200 ]; do printf 'round: %s%s\n' "$big" "$i"; i=$((i+1)); done
+  echo 'status: RUNNING'
+} > "$WS27/docs/looptesting/STATE.md"
+( cd "$WS27" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR timeout 5 bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 2 "200 lines of 100 KB values still BLOCK inside 5s (cost, not just count)"
+assert_exists "$WS27/$ACT" "a 20 MB STATE.md leaves the sentinel armed"
+
+# CC. The round signature must not collide on a shared prefix. Truncating it to a
+#     prefix alone made two different sets read as "no progress" — the force-allow
+#     of case Z again, reached through the truncation instead of through -1.
+WS28=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19" "$WS20" "$WS21" "$WS22" "$WS23" "$WS24" "$WS25" "$WS26" "$WS27" "$WS28"' EXIT
+arm "$WS28"
+for n in 1 2 3 4 5; do
+  { echo '# STATE'
+    i=0; while [ "$i" -lt 40 ]; do printf 'round: AAAAAAAA%s\n' "$i"; i=$((i+1)); done
+    printf 'round: TAIL%s\n' "$n"
+    echo 'status: RUNNING'
+  } > "$WS28/docs/looptesting/STATE.md"
+  run_stop "$WS28" true
+  assert_rc $? 2 "long round set, advancing tail, stop $n still blocks (no force-allow)"
+done
+read -r c28 _ < "$WS28/$CF"
+assert_eq "1" "$c28" "a set that differs past the prefix still counts as progress"
 
 report "stop-gate.test.sh"

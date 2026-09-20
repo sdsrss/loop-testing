@@ -159,6 +159,13 @@ block() { # increments counter (with reset logic) and blocks, or force-allows at
   # progress" semantics, so a healthy multi-round loop never trips the valve —
   # which is only true because the signal is the SET: one stray `round:` line
   # elsewhere in STATE.md used to make every round look identical.
+  #
+  # The converse, accepted knowingly: a `round:` line carrying something volatile
+  # (a timestamp, a counter) changes the set on every stop, so the count never
+  # climbs and THIS valve never fires. Direction is fail-closed and the
+  # platform's own 8-block ceiling still ends it, but the header's "our own valve
+  # fires first" is conditional on no volatile round line, and the user loses the
+  # explanatory message this one prints.
   local count
   if [ "$stop_active" = "false" ] || { [ "$cur_sig" != "-" ] && [ "$cur_sig" != "$prev_sig" ]; }; then
     count=0
@@ -227,6 +234,15 @@ while IFS= read -r ln; do
   # Pattern substitution (bash 3.0+), deliberately not case-modification, which
   # is bash 4 and dies on macOS's bash 3.2 — see tests/portability/bash3.test.sh.
   v=${v// /}; v=${v//$'\t'/}; v=${v//$'\r'/}
+  # Bound the VALUE as well as the line count. MAX_FIELD_LINES alone does not
+  # bound the cost: the dedupe scans an accumulator built from these values, so
+  # 200 legal lines carrying 100 KB each is 20 MB of scanning — measured at
+  # rc=124, killed by the platform's 15s timeout, which means ALLOW. No terminal
+  # status is anywhere near 64 characters, so this cannot forge one.
+  # Residual, stated rather than closed: two round values differing only past
+  # character 64 now dedupe to one, which can let the deadlock valve fire on a
+  # file that pathological. The platform's own 8-block ceiling backstops it.
+  v="${v:0:64}"
   # An EMPTY value is a value, not a line to skip. `continue` here made a bare
   # `status:` invisible, so `status:` above a real `status: CONVERGED` left the
   # terminal one standing alone and the gate disarmed — where the pre-H-03 code
@@ -255,9 +271,15 @@ status=""; [ "$status_n" -eq 1 ] && status="${status_vals%|}"
 # was genuinely advancing climbed 1->2->3 and was FORCE-ALLOWED on the fourth
 # attempt by the deadlock valve. A set that changes between stops is progress
 # whether or not exactly one round line is parseable.
-ROUND_SIG="${round_vals%|}"
-[ "${#ROUND_SIG}" -gt 200 ] && ROUND_SIG="$(printf '%.200s' "$ROUND_SIG")"
-[ -n "$ROUND_SIG" ] || ROUND_SIG="-"
+# The WHOLE set, not a prefix of it. Any truncation makes two different round
+# sets read as "no progress" once they share the truncated part — which is the
+# force-allow above, reached a longer way round. A prefix plus count and length
+# is not enough either: a set whose only change is in its tail keeps all three.
+# Exactness is affordable here because both bounds above already apply — at most
+# MAX_FIELD_LINES values of 64 characters, so ~13 KB, and this never reaches the
+# model (the block message interpolates the status values, not these).
+ROUND_SIG="$round_n:${round_vals%|}"
+[ "$round_n" -gt 0 ] || ROUND_SIG="-"
 cur_round=-1; [ "$round_n" -eq 1 ] && cur_round="${round_vals%|}"
 
 if [ "$status_n" -gt 1 ]; then
