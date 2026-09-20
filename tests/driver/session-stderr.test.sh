@@ -88,7 +88,12 @@ assert_file_lacks    "$WS5/$LOG" "exit=13"           "and specifically not exit=
 #     regular file holding the unredacted tail — a system-wide corruption from a
 #     diagnostics feature. Nothing in this design writes a path derived from the
 #     sink, but the check is one stat and it names what must never happen again.
-[ -c /dev/null ] && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "  FAIL: /dev/null is no longer a character device — a driver run replaced it" >&2; }
+# A CANARY, not a discriminator, and it is labelled as one because it has been
+# mistaken for coverage twice in review. No mutation of this driver can fail it
+# — it passes with the feature deleted entirely — and it cannot establish WHAT
+# replaced the device node if it ever does fail. It is here because the pulled
+# design did replace it, and because the check is one stat.
+[ -c /dev/null ] && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "  FAIL: /dev/null is not a character device on this host — something replaced it; this canary cannot say what" >&2; }
 
 # E. the tail is bounded: a chatty session must not turn driver.log into its
 #    transcript by the back door.
@@ -323,10 +328,15 @@ assert_file_contains "$WS15/$LOG" "nothing shown"      "and the log says why it 
 #    it; this shim is the mechanism. Six other places in the repo already strip
 #    that padding, including :150 and :159 of the driver itself.
 WS19=$(mk_proj); SHIM=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-wcshim.XXXXXX"); CLEAN="$CLEAN $WS19 $SHIM"
-cat > "$SHIM/wc" <<'WCSHIM'
+# `command -v wc` is resolved HERE, while the shim is not yet on PATH, so it
+# names the real binary — same idiom as run_broken_ps at shutdown.test.sh:306.
+# Hard-coding /usr/bin/wc emits nothing on a host that keeps it elsewhere
+# (NixOS, minimal containers), which fails this case SAFE but for the wrong
+# reason.
+cat > "$SHIM/wc" <<WCSHIM
 #!/usr/bin/env bash
 # BSD/macOS wc: right-aligned in a fixed-width field.
-printf '%10s\n' "$(/usr/bin/wc "$@" | tr -d ' ')"
+printf '%10s\\n' "\$($(command -v wc) "\$@" | tr -d ' ')"
 WCSHIM
 chmod +x "$SHIM/wc"
 stub=$(write_stub "$WS19"); write_state "$WS19" RUNNING 0
