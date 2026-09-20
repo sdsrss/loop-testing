@@ -308,8 +308,14 @@ test('provider routing: namespaced ids on the stock OpenAI endpoint are called o
     const stock = await runMoa(['--input', input, '--dry-run'], { OPENAI_API_KEY: 'sk-oa' }, dir);
     assert.equal(stock.code, 0, stock.stderr);
     assert.match(stock.stdout, /would 404/);
-    assert.match(stock.stdout, /openai\/gpt-5\.6-sol/);
-    assert.match(stock.stdout, /OPENROUTER_API_KEY/, 'the warning must name the way out');
+    // Assert INSIDE the warnings section. Against the pre-fix binary the whole
+    // report already contained `openai/gpt-5.6-sol` (the reference_models list)
+    // and `OPENROUTER_API_KEY` (the keys block), so asserting over the whole
+    // stdout passed without any warning existing at all.
+    const w = stock.stdout.split('warnings:')[1] ?? '';
+    assert.match(w, /openai\/gpt-5\.6-sol/, 'the warning must name the offending model id');
+    assert.match(w, /Set OPENROUTER_API_KEY|set OPENROUTER_API_KEY/, 'the warning must name the way out');
+    assert.match(w, /LOOP_TESTING_MOA_AGGREGATOR/, 'the warning must name the aggregator override too');
 
     // The three supported configurations must stay quiet, or the warning is
     // noise on a working setup — which is how a warning gets ignored.
@@ -323,6 +329,22 @@ test('provider routing: namespaced ids on the stock OpenAI endpoint are called o
     const router = await runMoa(['--input', input, '--dry-run'], { OPENROUTER_API_KEY: 'sk-or' }, dir);
     assert.equal(router.code, 0, router.stderr);
     assert.doesNotMatch(router.stdout, /would 404/, 'namespaced ids are correct on OpenRouter');
+
+    // The endpoint decides, not the provider name: both of these are live
+    // 404-on-every-request configs that a name-based gate stayed silent on.
+    const hostCase = await runMoa(
+      ['--input', input, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-oa', OPENAI_BASE_URL: 'https://API.OpenAI.COM/v1' }, dir,
+    );
+    assert.equal(hostCase.code, 0, hostCase.stderr);
+    assert.match(hostCase.stdout, /would 404/, 'a differently-cased api.openai.com is still api.openai.com');
+
+    const routerVarAtOpenAI = await runMoa(
+      ['--input', input, '--dry-run'],
+      { OPENROUTER_API_KEY: 'sk-or', OPENROUTER_BASE_URL: 'https://api.openai.com/v1' }, dir,
+    );
+    assert.equal(routerVarAtOpenAI.code, 0, routerVarAtOpenAI.stderr);
+    assert.match(routerVarAtOpenAI.stdout, /would 404/, 'provider openrouter pointed at stock OpenAI still 404s');
 
     const plain = await runMoa(
       ['--input', input, '--dry-run'],

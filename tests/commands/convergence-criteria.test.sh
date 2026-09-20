@@ -122,6 +122,10 @@ has  "$ZERO" "判据 7 未满足" "the zero-trigger fires on ALL of criterion 7,
 LOOP_ROUND="$REPO_ROOT/skills/loop-testing/references/loop-round.md"
 has  "$LOOP_ROUND" "此前最近 3 轮" "loop-round.md's progress line names the same baseline as criterion 7"
 hasnt "$LOOP_ROUND" "对比上轮" "loop-round.md no longer orders the comparison criterion 7 rules out"
+# Criterion 7 binds on EVERY round, so a focused round after a converged one
+# zeroes the streak by construction. Nothing told the model that, and a rule
+# whose cost is only discovered by paying it is not a rule the model can follow.
+has "$LOOP_ROUND" "converged_streak ≥ 1" "loop-round.md says when every round must be a full regression"
 hasnt "$S1" "明显低于此前轮次" "the unfalsifiable phrasing is gone"
 
 # The other copy of the field must defer to that one rather than compete.

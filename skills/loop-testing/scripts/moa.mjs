@@ -275,15 +275,24 @@ function resolveModelProvider(entry, env) {
 // OpenAI-compatible gateways) does accept namespaced ids, so only the stock
 // endpoint is called out. Refusing here would repeat the M-03 first attempt,
 // which turned a documented exit-2 degrade into exit 1 and stalled the loop.
+// Decided by the ENDPOINT this entry actually resolves to, never by the provider
+// NAME or by a string compare against the default base URL. Both of those were
+// silent on live 404-every-request configs: `OPENAI_BASE_URL=https://API.OpenAI.COM/v1`
+// (DNS is case-insensitive, `!==` is not) and an OPENROUTER_* variable pointed at
+// stock OpenAI (provider reads `openrouter`, so a name check short-circuits before
+// the endpoint is ever looked at). Deciding a referent's role by its name rather
+// than by resolving it is this project's recurring defect shape.
+const OPENAI_STOCK_HOST = new URL(PROVIDERS.openai.defaultBaseUrl).host.toLowerCase();
 function modelRoutingWarning(entry, r) {
-  if (r.provider !== 'openai') return null;
-  if (r.baseUrl !== PROVIDERS.openai.defaultBaseUrl) return null;
+  let host;
+  try { host = new URL(r.baseUrl).host.toLowerCase(); } catch { return null; }
+  if (host !== OPENAI_STOCK_HOST) return null;
   if (!String(entry.model).includes('/')) return null;
-  return `"${entry.model}" is a namespaced vendor/model id but resolves to provider openai at `
-    + `${PROVIDERS.openai.defaultBaseUrl}, which has no model by that name — this request would 404. `
-    + 'Set OPENROUTER_API_KEY to use the OpenRouter defaults, point OPENAI_BASE_URL at a gateway that '
-    + 'accepts namespaced ids, or name plain OpenAI models via LOOP_TESTING_MOA_MODELS / '
-    + 'LOOP_TESTING_MOA_AGGREGATOR.';
+  return `"${entry.model}" is a namespaced vendor/model id but this run resolves it against `
+    + `${host} (provider ${r.provider}), which has no model by that name — this request would 404. `
+    + 'Use OpenRouter for namespaced ids (set OPENROUTER_API_KEY and leave OPENROUTER_BASE_URL unset), '
+    + 'point the base URL at a gateway that accepts them, or name plain OpenAI models via '
+    + 'LOOP_TESTING_MOA_MODELS / LOOP_TESTING_MOA_AGGREGATOR.';
 }
 
 function modelRoutingWarnings(cfg, env) {
