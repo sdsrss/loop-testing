@@ -217,11 +217,65 @@ fi   # end non-root guard
 # The preflight creates docs/looptesting/... before the isolation guard runs, and
 # sandbox-clean is fail-closed without a marker, so nothing would ever remove them.
 WSC2=$(mk_ws)
-trap 'chmod -R u+w "$WSA" "$WSB" 2>/dev/null; rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC2"' EXIT
+WSD=$(mk_ws)
+WSE=$(mk_ws)
+trap 'chmod -R u+w "$WSA" "$WSB" 2>/dev/null; rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC2" "$WSD" "$WSE"' EXIT
 REPOC2="$WSC2/proj"
 ( cd "$REPOC2" && echo dirty >> README.md )                       # dirty tree
 ( cd "$REPOC2" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
 assert_eq "4" "$?" "dirty tree in branch mode still refuses with exit 4"
 assert_absent "$REPOC2/docs" "refusal removed the directories the preflight created"
+
+# --- a refused worktree must not leave a baseline tag nothing owns (S-07) -----
+# The writability refusals above happen before the tag is created, so they never
+# exercised the window this covers. The baseline tag was created BEFORE the
+# "worktree path already exists" check, and the ownership marker is written at
+# the very end — so that refusal returned exit 6 with a `qa-baseline` tag
+# standing and no marker recording it. The retry then finds a tag that already
+# exists, correctly declines to claim what it did not create, and records
+# neither CREATED_TAG nor ADOPTED_TAG: the tag is now outside --purge's reach
+# for good, in a repo the tool told the user to re-run in.
+REPOD="$WSD/proj"
+mkdir -p "$WSD/proj-qa-loop"   # occupy the default sibling worktree path
+( cd "$REPOD" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_eq "6" "$?" "an occupied worktree path still refuses with the documented exit 6"
+if ( cd "$REPOD" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 ); then
+  FAIL=$((FAIL+1)); echo "  FAIL: the refusal left a baseline tag behind, with no marker recording it" >&2
+else PASS=$((PASS+1)); fi
+
+# The retry is the half that shows the tag is genuinely owned rather than merely
+# absent: a "fix" that never tags at all would pass the assertion above.
+rmdir "$WSD/proj-qa-loop"
+( cd "$REPOD" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? "the retry succeeds once the path is free"
+if ( cd "$REPOD" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 ); then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: the retry created no baseline tag at all" >&2; fi
+assert_file_contains "$REPOD/docs/looptesting/.sandbox/ownership.env" "CREATED_TAG=qa-baseline" \
+  "the retry records the baseline tag as this sandbox's, so --purge can remove it"
+# The tag must still mark the baseline commit, not whatever HEAD became while the
+# branch/worktree stage ran — moving the creation later is only correct if the
+# commit it names is unchanged.
+TAGD=$( cd "$REPOD" && git rev-parse -q --verify 'refs/tags/qa-baseline^{commit}' 2>/dev/null )
+BASED=$( grep -a '^BASELINE_HEAD=' "$REPOD/docs/looptesting/.sandbox/ownership.env" | cut -d= -f2- )
+assert_eq "$BASED" "$TAGD" "the baseline tag still points at the recorded baseline commit"
+
+# --- branch mode: the tag marks the PRE-switch HEAD (S-07, second arm) --------
+# The tag is now created after the branch stage, and in branch mode that stage
+# moves HEAD: `git switch` onto an existing qa branch lands on a different commit
+# entirely. Worktree mode cannot show this — adding a worktree leaves HEAD alone —
+# so this is the arm where an implicit `git tag qa-baseline` would silently mark
+# the qa tip and hand --purge a tag that no longer identifies the baseline.
+REPOE="$WSE/proj"
+( cd "$REPOE" && git switch -q -c qa/loop-testing && echo "qa work" >> README.md \
+  && git commit -qam "a commit that exists only on the qa branch" && git switch -q - ) >/dev/null 2>&1
+assert_ok $? "fixture: an existing qa branch, ahead of the starting branch"
+BASE_E=$( cd "$REPOE" && git rev-parse HEAD )
+TIP_E=$( cd "$REPOE" && git rev-parse refs/heads/qa/loop-testing )
+assert_nonzero "$( [ "$BASE_E" = "$TIP_E" ]; echo $? )" "fixture: the two commits really differ"
+( cd "$REPOE" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
+assert_ok $? "branch-mode setup onto an existing qa branch"
+TAG_E=$( cd "$REPOE" && git rev-parse -q --verify 'refs/tags/qa-baseline^{commit}' 2>/dev/null )
+assert_eq "$BASE_E" "$TAG_E" "the baseline tag marks the pre-switch HEAD, not the qa branch tip"
 
 report "setup.test.sh"

@@ -607,17 +607,10 @@ if [ ! -f "$SB/created-dirs.env" ]; then
   fi
 fi
 
+# Read BEFORE the branch stage: `git switch` to an existing qa branch moves HEAD,
+# and the baseline is what HEAD was when this run started. The tag that marks it
+# is created much further down — see the note there.
 BASELINE_HEAD="$(git -C "$TOP" rev-parse HEAD 2>/dev/null || echo '')"
-
-# --- baseline tag (own it only if we create it) ------------------------------
-CREATED_TAG=""
-if [ -n "$BASELINE_HEAD" ]; then
-  if git -C "$TOP" rev-parse -q --verify "refs/tags/$BASELINE_TAG" >/dev/null 2>&1; then
-    :  # pre-existing tag — not ours to remove
-  else
-    git -C "$TOP" tag "$BASELINE_TAG" >/dev/null 2>&1 && { CREATED_TAG="$BASELINE_TAG"; GIT_TOUCHED=1; }
-  fi
-fi
 
 # --- branch / worktree -------------------------------------------------------
 CREATED_BRANCH=""
@@ -663,6 +656,37 @@ else
   fi
 fi
 
+# --- evidence dir + templates ------------------------------------------------
+seed_dirs_and_templates
+git -C "$TOP" status --porcelain > "$SB/git-status-baseline.txt" 2>/dev/null || true
+
+# --- baseline tag (own it only if we create it) ------------------------------
+# Created LAST, after every step that can refuse. The ownership marker is written
+# a few lines below, and it is the only record that this sandbox created the tag;
+# anything that exits between the two leaves a `qa-baseline` nothing claims. The
+# tag used to be created before the branch/worktree stage, so an occupied
+# worktree path — the refusal whose own message tells the user to re-run with
+# --worktree-path — returned exit 6 with that tag standing. The retry then found
+# a tag it had not created, correctly declined to own what might be the user's,
+# and recorded neither CREATED_TAG nor ADOPTED_TAG: outside --purge's reach for
+# good, in the repo the tool had just invited the user to re-run in (audit S-07).
+#
+# The commit is named explicitly. In branch mode this now runs after `git switch`,
+# where HEAD is no longer where it was, and the tag must mark the baseline the
+# marker records rather than the branch tip.
+#
+# Residual: a crash (not a refusal — there is no `die` left on this path) between
+# the tag and the marker write still orphans it. That window is two statements
+# wide and cannot be closed while the marker is a single file written in one go.
+CREATED_TAG=""
+if [ -n "$BASELINE_HEAD" ]; then
+  if git -C "$TOP" rev-parse -q --verify "refs/tags/$BASELINE_TAG" >/dev/null 2>&1; then
+    :  # pre-existing tag — not ours to remove
+  else
+    git -C "$TOP" tag "$BASELINE_TAG" "$BASELINE_HEAD" >/dev/null 2>&1 && { CREATED_TAG="$BASELINE_TAG"; GIT_TOUCHED=1; }
+  fi
+fi
+
 # --- adopt (do NOT re-claim) refs a prior lifecycle created ------------------
 # A prior marker records ownership by NAME, not by ref identity. sandbox-clean
 # deliberately KEEPS the qa branch and baseline tag, so between that clean and
@@ -672,12 +696,11 @@ fi
 # (silently, when that branch has no commits beyond the recorded baseline).
 # Record the fact as ADOPTED instead: purge reports these and never deletes them,
 # so the user still learns the refs are there without the tool guessing.
+#
+# Runs after the tag block above, not before it: both lines read CREATED_* to
+# decide whether there is anything left to adopt.
 [ -z "$CREATED_BRANCH" ] && [ "$PRIOR_CREATED_BRANCH" = "$BRANCH" ] && ADOPTED_BRANCH="$BRANCH"
 [ -z "$CREATED_TAG" ] && [ "$PRIOR_CREATED_TAG" = "$BASELINE_TAG" ] && ADOPTED_TAG="$BASELINE_TAG"
-
-# --- evidence dir + templates ------------------------------------------------
-seed_dirs_and_templates
-git -C "$TOP" status --porcelain > "$SB/git-status-baseline.txt" 2>/dev/null || true
 
 # Ownership of docs/looptesting/, in order of authority: the breadcrumb this
 # lifecycle line wrote when the dir first appeared, then a previous marker's
