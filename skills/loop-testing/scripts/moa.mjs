@@ -267,31 +267,80 @@ function resolveModelProvider(entry, env) {
 // Proxy selection.  Node's global fetch would ignore these; we honor them
 // explicitly. For an https origin prefer HTTPS_PROXY; for http prefer HTTP_PROXY;
 // ALL_PROXY and the other var are accepted as fallbacks so a single *_PROXY set
-// still takes effect regardless of origin scheme.
+// still takes effect regardless of origin scheme. NO_PROXY / no_proxy exempt
+// hosts (M-02). `proxyFor()` is the ONE decision function: the dry-run report
+// and the real request path both go through it, so they cannot disagree (M-12).
 // ===========================================================================
 function proxyEnabled(env) {
   return PROXY_ENV_NAMES.some((name) => env[name] && env[name].trim());
 }
 
-function proxySourceName(env) {
+// Only http:// proxies are implemented. An https:// proxy URL used to be spoken
+// to in PLAINTEXT on port 443 — CONNECT plus `Proxy-Authorization: Basic …`
+// unencrypted on the wire — and socks5:// was treated as an HTTP proxy until the
+// request timed out (M-03). Refuse at config time, before any network call and
+// in --dry-run too. Never echo the value: it can carry credentials.
+function validateProxyEnv(env) {
   for (const name of PROXY_ENV_NAMES) {
-    if (env[name] && env[name].trim()) return name;
+    const v = (env[name] || '').trim();
+    if (!v) continue;
+    let u;
+    try { u = new URL(v); } catch {
+      throw new Error(`${name} is not a valid proxy URL — expected the form http://[user:pass@]host:port`);
+    }
+    if (u.protocol !== 'http:' || !u.hostname) {
+      throw new Error(
+        `unsupported proxy scheme "${u.protocol}//" in ${name}: only http:// proxies are supported `
+        + '(an https:// proxy would send CONNECT and Proxy-Authorization in plaintext; socks is not implemented) '
+        + '— expected the form http://[user:pass@]host:port',
+      );
+    }
   }
-  return null;
+}
+
+// NO_PROXY semantics (curl-compatible subset): a comma-separated list of
+//   `*`            everything bypasses the proxy
+//   host           the host and every subdomain of it
+//   .suffix        same as `suffix` (a leading dot or `*.` is ignored)
+//   host:port      only that port on that host
+function parseNoProxy(env) {
+  const raw = env.NO_PROXY ?? env.no_proxy ?? '';
+  return String(raw).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+function noProxyMatches(entries, target) {
+  const host = target.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const port = target.port || (target.protocol === 'https:' ? '443' : '80');
+  for (const entry of entries) {
+    if (entry === '*') return true;
+    const m = entry.match(/^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/);
+    if (!m) continue;
+    const h = m[1].replace(/^\[|\]$/g, '').replace(/^\*?\./, '');
+    if (!h) continue;
+    if (m[2] && m[2] !== port) continue;
+    if (host === h || host.endsWith(`.${h}`)) return true;
+  }
+  return false;
+}
+
+// -> { url, source, bypass }: `url` is the proxy to use (null = direct),
+// `source` the env var that supplied it, `bypass` whether NO_PROXY exempted it.
+function proxyFor(env, urlStr) {
+  const target = new URL(urlStr);
+  const order = target.protocol === 'https:'
+    ? ['HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'HTTP_PROXY', 'http_proxy']
+    : ['HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'HTTPS_PROXY', 'https_proxy'];
+  for (const name of order) {
+    const v = env[name];
+    if (!v || !v.trim()) continue;
+    if (noProxyMatches(parseNoProxy(env), target)) return { url: null, source: name, bypass: true };
+    return { url: v.trim(), source: name, bypass: false };
+  }
+  return { url: null, source: null, bypass: false };
 }
 
 function makeProxyResolver(env) {
-  return (urlStr) => {
-    const isHttps = new URL(urlStr).protocol === 'https:';
-    const order = isHttps
-      ? ['HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'HTTP_PROXY', 'http_proxy']
-      : ['HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'HTTPS_PROXY', 'https_proxy'];
-    for (const name of order) {
-      const v = env[name];
-      if (v && v.trim()) return v.trim();
-    }
-    return null;
-  };
+  return (urlStr) => proxyFor(env, urlStr).url;
 }
 
 // ===========================================================================
@@ -701,8 +750,23 @@ function dryRunReport(cfg, env) {
   lines.push(`default_provider: ${defaultProvider(env)}`);
   lines.push(`reference_temperature: ${cfg.reference_temperature}`);
   lines.push(`aggregator_temperature: ${cfg.aggregator_temperature}`);
-  const src = proxySourceName(env);
-  lines.push(`proxy: ${proxyEnabled(env) ? `on (via ${src})` : 'off'}`);
+  if (proxyEnabled(env)) {
+    // Per endpoint, through the same resolver the real requests use: which var
+    // applies depends on the origin scheme, and NO_PROXY can exempt a host.
+    lines.push('proxy: on');
+    const noProxy = parseNoProxy(env);
+    lines.push(`  NO_PROXY: ${noProxy.length ? noProxy.join(',') : '(unset)'}`);
+    const seen = new Set();
+    for (const entry of [...cfg.reference_models, cfg.aggregator]) {
+      const { baseUrl } = resolveModelProvider(entry, env);
+      if (seen.has(baseUrl)) continue;
+      seen.add(baseUrl);
+      const d = proxyFor(env, `${baseUrl}/chat/completions`);
+      lines.push(`  ${baseUrl}: ${d.bypass ? `direct (NO_PROXY match, ${d.source} not used)` : `via ${d.source}`}`);
+    }
+  } else {
+    lines.push('proxy: off');
+  }
   lines.push('keys:');
   lines.push(`  OPENAI_API_KEY: ${env.OPENAI_API_KEY && env.OPENAI_API_KEY.trim() ? 'set' : 'missing'}`);
   lines.push(`  OPENROUTER_API_KEY: ${env.OPENROUTER_API_KEY && env.OPENROUTER_API_KEY.trim() ? 'set' : 'missing'}`);
@@ -748,6 +812,7 @@ async function main() {
   let cfg;
   try {
     cfg = await resolveConfig(args, env);
+    validateProxyEnv(env);   // M-03: before dry-run and before any network call
   } catch (e) {
     process.stderr.write(`error: ${redact(e.message)}\n`);
     return 1;

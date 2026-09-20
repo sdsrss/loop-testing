@@ -1248,6 +1248,108 @@ test('proxy credentials: a common-word proxy username is not scrubbed from the d
   });
 });
 
+// M-02: NO_PROXY / no_proxy were ignored outright. An enterprise proxy plus a
+// local Ollama / vLLM endpoint listed in NO_PROXY was routed through the proxy
+// anyway — which cannot reach 127.0.0.1 — so every request failed. Forms
+// honored: host, host:port, .suffix (and *.suffix), and `*`.
+test('proxy: NO_PROXY bypasses the proxy for a matching host (host / host:port / .suffix / *) and not otherwise (M-02)', async () => {
+  await withWorkspace(async (dir) => {
+    const direct = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    // The proxy stub answers every request with 502 — a run only succeeds by going direct.
+    const proxy = await startServer((_req, res) => { res.statusCode = 502; res.end('{"error":"proxied"}'); });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const cases = [
+        { name: 'host', NO_PROXY: '127.0.0.1', direct: true },
+        { name: 'host:port', NO_PROXY: `localhost,127.0.0.1:${direct.port}`, direct: true },
+        { name: 'host:otherport', NO_PROXY: `127.0.0.1:${direct.port + 1}`, direct: false },
+        { name: 'lowercase no_proxy', no_proxy: ' 127.0.0.1 ', direct: true },
+        { name: 'wildcard', NO_PROXY: '*', direct: true },
+        { name: 'dotted suffix (no match)', NO_PROXY: '.example.com,example.org', direct: false },
+      ];
+      for (const c of cases) {
+        direct.requests.length = 0;
+        proxy.requests.length = 0;
+        const out = join(dir, 'DEC.md');
+        const env = {
+          OPENAI_API_KEY: 'sk-fake',
+          OPENAI_BASE_URL: `${direct.url}/v1`,
+          HTTPS_PROXY: proxy.url,
+        };
+        if (c.NO_PROXY !== undefined) env.NO_PROXY = c.NO_PROXY;
+        if (c.no_proxy !== undefined) env.no_proxy = c.no_proxy;
+        const { code, stderr } = await runMoa(['--input', input, '--config', config, '--output', out], env);
+        if (c.direct) {
+          assert.equal(code, 0, `[${c.name}] expected a direct run to succeed, stderr: ${stderr}`);
+          assert.equal(proxy.requests.length, 0, `[${c.name}] request went through the proxy despite NO_PROXY`);
+          assert.ok(direct.requests.length >= 3, `[${c.name}] expected >=3 direct calls, got ${direct.requests.length}`);
+        } else {
+          assert.equal(code, 2, `[${c.name}] expected the proxied run to fail (exit 2), stderr: ${stderr}`);
+          assert.ok(proxy.requests.length >= 1, `[${c.name}] a non-matching NO_PROXY must still use the proxy`);
+          assert.equal(direct.requests.length, 0, `[${c.name}] non-matching NO_PROXY must not bypass the proxy`);
+        }
+      }
+      // A suffix entry matches the host and its subdomains — asserted through the
+      // dry-run report, which must use the same resolver as the real request path.
+      const dry = await runMoa(['--input', input, '--dry-run'], {
+        OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: 'https://llm.corp.example.com/v1',
+        HTTPS_PROXY: proxy.url, NO_PROXY: '.example.com',
+      }, dir);
+      assert.equal(dry.code, 0, dry.stderr);
+      assert.match(dry.stdout, /llm\.corp\.example\.com.*(direct|NO_PROXY)/i, `dry-run must show the NO_PROXY bypass:\n${dry.stdout}`);
+      const dryOn = await runMoa(['--input', input, '--dry-run'], {
+        OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: 'https://llm.corp.example.com/v1',
+        HTTPS_PROXY: proxy.url, NO_PROXY: '.example.org',
+      }, dir);
+      assert.equal(dryOn.code, 0, dryOn.stderr);
+      assert.match(dryOn.stdout, /llm\.corp\.example\.com.*via HTTPS_PROXY/, `dry-run must show the proxy in use:\n${dryOn.stdout}`);
+    } finally {
+      await direct.close();
+      await proxy.close();
+    }
+  });
+});
+
+// M-03: the proxy scheme was never checked. `https://proxy` was treated as a
+// plaintext proxy on port 443 — CONNECT and `Proxy-Authorization: Basic …` on
+// the wire unencrypted — and `socks5://` was spoken to as HTTP until timeout.
+// Only http:// proxies are implemented; anything else is a config error, before
+// any network call, in dry-run too.
+test('proxy: https:// and socks5:// proxy URLs are refused at config time (exit 1, no network) (M-03)', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      for (const [name, value] of [
+        ['HTTPS_PROXY', `https://user:pw@127.0.0.1:${stub.port}`],
+        ['https_proxy', 'socks5://127.0.0.1:1080'],
+        ['ALL_PROXY', 'socks5h://127.0.0.1:1080'],
+        ['HTTP_PROXY', `127.0.0.1:${stub.port}`],   // no scheme: URL parses it as scheme "127.0.0.1:"
+      ]) {
+        for (const mode of ['run', 'dry-run']) {
+          const args = mode === 'dry-run'
+            ? ['--input', input, '--config', config, '--dry-run']
+            : ['--input', input, '--config', config];
+          const res = await runMoa(args, { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: `${stub.url}/v1`, [name]: value });
+          assertCleanUserError(res);
+          assert.match(res.stderr, /proxy/i, `[${name}=${value} ${mode}] message must name the proxy problem`);
+          assert.match(res.stderr, new RegExp(name), `[${name} ${mode}] message must name the offending variable`);
+          assert.ok(!res.stderr.includes('pw@'), `[${name} ${mode}] the proxy credential leaked into the error`);
+        }
+      }
+      assert.equal(stub.requests.length, 0, 'a refused proxy config must make no network call');
+      // http:// with credentials remains accepted (regression guard for the check itself).
+      const ok = await runMoa(['--input', input, '--config', config, '--dry-run'],
+        { OPENAI_API_KEY: 'sk-fake', HTTPS_PROXY: 'http://u:p@127.0.0.1:9' }, dir);
+      assert.equal(ok.code, 0, `http:// proxy must still be accepted: ${ok.stderr}`);
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
 // The `recommendation` fallback is the raw aggregator output, which is not a
 // rendered field and so was never length-capped.
 test('the raw-output fallback is length-capped like a rendered field', async () => {
