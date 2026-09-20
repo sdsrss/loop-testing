@@ -435,6 +435,13 @@ if [ "$PURGE" = 1 ]; then
   esac
   kept_branch=""
   adopted_note=""
+  # Set by every branch below that KEEPS a ref this sandbox might own. The
+  # evidence-dir stage reads it: a kept ref's only recovery route runs through
+  # the marker (`--purge --discard-fixes`, or a re-run after you delete the ref
+  # by hand), and deleting the marker in the same run that names that route
+  # destroys it. Two stages each learned to stop short; only one of them was
+  # protecting the marker.
+  REFS_KEPT=0
 
   # A name is not an identity (audit S-03). The marker says what this sandbox
   # created: a tag AT BASELINE_HEAD, and a branch STARTING FROM it. A tag of that
@@ -459,13 +466,13 @@ if [ "$PURGE" = 1 ]; then
     tag_type="$(git -C "$TOP" cat-file -t "refs/tags/$P_TAG" 2>/dev/null)"
     tag_at="$(git -C "$TOP" rev-parse -q --verify "refs/tags/$P_TAG^{commit}" 2>/dev/null)"
     if [ "$tag_type" != commit ]; then
-      echo_info "purge: kept tag $P_TAG (its object type is ${tag_type:-unreadable}, and this sandbox only ever writes a lightweight tag — so this one is not ours; remove it by hand if you want it gone)"
+      REFS_KEPT=1; echo_info "purge: kept tag $P_TAG (its object type is ${tag_type:-unreadable}, and this sandbox only ever writes a lightweight tag — so this one is not ours; remove it by hand if you want it gone)"
     elif [ "$base_ok" = 1 ] && [ -n "$tag_at" ] && [ "$tag_at" = "$P_BASE" ]; then
       git -C "$TOP" tag -d "$P_TAG" >/dev/null 2>&1 && echo_info "purge: deleted baseline tag $P_TAG"
     elif [ "$base_ok" = 1 ]; then
-      echo_info "purge: kept tag $P_TAG (it no longer points at the recorded baseline ${P_BASE}, so it is not the one this sandbox created — remove it by hand if it is)"
+      REFS_KEPT=1; echo_info "purge: kept tag $P_TAG (it no longer points at the recorded baseline ${P_BASE}, so it is not the one this sandbox created — remove it by hand if it is)"
     else
-      echo_info "purge: kept tag $P_TAG (the marker records no resolvable baseline, so this run cannot tell the sandbox's tag from one of yours)"
+      REFS_KEPT=1; echo_info "purge: kept tag $P_TAG (the marker records no resolvable baseline, so this run cannot tell the sandbox's tag from one of yours)"
     fi
   fi
 
@@ -486,18 +493,18 @@ if [ "$PURGE" = 1 ]; then
       fi
     fi
     if [ "$cur" = "$P_BRANCH" ]; then
-      kept_branch="$P_BRANCH (currently checked out — switch away, then delete it by hand)"
+      REFS_KEPT=1; kept_branch="$P_BRANCH (currently checked out — switch away, then delete it by hand)"
     elif [ "$descends" = 0 ]; then
       if [ "$base_ok" = 1 ]; then
-        kept_branch="$P_BRANCH (it does not descend from the recorded baseline ${P_BASE}, so it is not the branch this sandbox created — remove it by hand if it is)"
+        REFS_KEPT=1; kept_branch="$P_BRANCH (it does not descend from the recorded baseline ${P_BASE}, so it is not the branch this sandbox created — remove it by hand if it is)"
       else
-        kept_branch="$P_BRANCH (the marker records no resolvable baseline, so this run cannot tell the sandbox's branch from one of yours — remove it by hand once you have harvested)"
+        REFS_KEPT=1; kept_branch="$P_BRANCH (the marker records no resolvable baseline, so this run cannot tell the sandbox's branch from one of yours — remove it by hand once you have harvested)"
       fi
     elif [ "$fixes" = "0" ] || [ "$DISCARD_FIXES" = 1 ]; then
       if git -C "$TOP" branch -D "$P_BRANCH" >/dev/null 2>&1; then
         echo_info "purge: deleted branch $P_BRANCH"
       else
-        kept_branch="$P_BRANCH (git refused the deletion — checked out in another worktree?)"
+        REFS_KEPT=1; kept_branch="$P_BRANCH (git refused the deletion — checked out in another worktree?)"
       fi
     else
       if [ "$fixes" -gt 0 ] 2>/dev/null; then
@@ -524,12 +531,12 @@ if [ "$PURGE" = 1 ]; then
           # cache that may be stale, and another branch cut from the same tip also
           # satisfies --contains. Reachability is evidence the user can check, not
           # proof the harvest is done.
-          kept_branch="$P_BRANCH (holds $fixes fix commit(s); the tip is also reachable from '$harvested_by' — if that is where you harvested them, re-run with --purge --discard-fixes to drop the branch)"
+          REFS_KEPT=1; kept_branch="$P_BRANCH (holds $fixes fix commit(s); the tip is also reachable from '$harvested_by' — if that is where you harvested them, re-run with --purge --discard-fixes to drop the branch)"
         else
-          kept_branch="$P_BRANCH (holds $fixes fix commit(s) beyond the baseline — harvest them first, or re-run with --purge --discard-fixes)"
+          REFS_KEPT=1; kept_branch="$P_BRANCH (holds $fixes fix commit(s) beyond the baseline — harvest them first, or re-run with --purge --discard-fixes)"
         fi
       else
-        kept_branch="$P_BRANCH (baseline unverifiable, fix commits unknown — harvest first, or re-run with --purge --discard-fixes)"
+        REFS_KEPT=1; kept_branch="$P_BRANCH (baseline unverifiable, fix commits unknown — harvest first, or re-run with --purge --discard-fixes)"
       fi
     fi
   fi
@@ -570,6 +577,18 @@ if [ "$PURGE" = 1 ]; then
     # worktree nothing can identify — the orphan the fail-closed design exists to
     # prevent. Resolve the worktree first; purge again afterwards.
     echo_info "purge: kept evidence dir $LT_DIR — a worktree this run could not claim is still registered at $CREATED_WORKTREE, and the marker here is the only record that can identify it; deal with that worktree first, then purge again"
+  elif [ "$REFS_KEPT" = 1 ]; then
+    # Same rule as the worktree above, for the stage that learned to stop short
+    # later. A ref was kept — it holds unharvested fix commits, it is checked
+    # out, it no longer matches the recorded baseline, or the baseline itself is
+    # unresolvable. Each of those has a follow-up (`--purge --discard-fixes`, or
+    # deleting the ref by hand and purging again), and every follow-up needs this
+    # marker to know what is the sandbox's. Deleting it here would leave the ref
+    # standing with nothing on disk able to name it, and answer the next
+    # `--purge` with exit 3 — the tool naming a recovery route in the same breath
+    # as destroying it. The evidence stays too: commits you have not harvested
+    # yet are exactly when `runs/` and `ISSUES.md` are worth reading.
+    echo_info "purge: kept evidence dir $LT_DIR — a ref above was kept, and the marker here is the only record that can identify it; harvest or remove that ref, then purge again"
   elif [ "$LT_FIELD_TRUSTED" = 0 ]; then
     # Say only what is known. The marker predates the field being measured, so
     # this run cannot tell a directory it created from one the user already kept

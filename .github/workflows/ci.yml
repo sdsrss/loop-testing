@@ -101,5 +101,10 @@ jobs:
             || { echo "::error::plugin.json has validation errors"; exit 1; }
 
           # Warnings are reported, not fatal — visible in the log without red CI.
-          w=$(jq '[.manifest.warnings[], (.contents[]?.warnings[]?)] | length' pv.json)
+          # `?` on both, not just the second: `claude plugin validate` is installed
+          # unpinned at @latest, so the report's shape can change under us, and a
+          # missing `.manifest.warnings` makes jq abort the step under `bash -e`
+          # (`Cannot iterate over null`) — the job would fail for a field nobody
+          # asserted. Reproduced against a report with the field removed.
+          w=$(jq '[.manifest.warnings[]?, (.contents[]?.warnings[]?)] | length' pv.json)
           echo "plugin manifest: type=plugin, 0 errors, ${w} warning(s)"

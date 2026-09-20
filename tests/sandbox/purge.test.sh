@@ -26,7 +26,15 @@ mark_terminal "$REPO"
 ( cd "$REPO" && bash "$CLEAN" --purge ) >/dev/null 2>&1
 assert_ok $? "--purge on a terminal state exits 0"
 assert_absent "$WT" "purge removed the worktree"
-assert_absent "$REPO/docs/looptesting" "purge removed the evidence dir"
+# The branch is KEPT here (fix commits, no --discard-fixes), so the marker that the
+# recommended follow-up needs is kept with it. This assertion used to demand the
+# opposite and was the shape of the defect: the run named `--purge --discard-fixes`
+# and deleted the only file that command can read.
+assert_exists "$REPO/docs/looptesting/.sandbox/ownership.env" "a kept branch keeps the marker its follow-up needs"
+# Nothing in the directory is removed while a ref is kept, deliberately: commits you
+# have not harvested yet are exactly when the ledger and the round logs are worth
+# reading. The directory goes in one piece once the ref does.
+assert_exists "$REPO/docs/looptesting/ISSUES.md" "the evidence stays readable while the fix commits are unharvested"
 if ( cd "$REPO" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 ); then
   FAIL=$((FAIL+1)); echo "  FAIL: purge must delete the owned baseline tag" >&2
 else PASS=$((PASS+1)); fi
@@ -34,9 +42,16 @@ if ( cd "$REPO" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/nu
   PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: branch with fix commits must be KEPT without --discard-fixes" >&2; fi
 
-# --- C. purge again after purge: marker is gone -> refuse (exit 3), fail-closed
-( cd "$REPO" && bash "$CLEAN" --purge ) >/dev/null 2>&1
-assert_eq "3" "$?" "second --purge (marker gone) refuses with exit 3"
+# --- C. purge again while the branch is still kept: re-runnable, not stranded --
+# The marker survived B, so this run can still identify what is ours. It reaches the
+# same verdict rather than a fail-closed exit 3 — the route out stays open until the
+# user harvests. (Exit 3 on a genuinely absent marker is covered by case G.)
+OUT_C=$( cd "$REPO" && bash "$CLEAN" --purge 2>&1 ); rc_c=$?
+assert_eq "0" "$rc_c" "second --purge is re-runnable while the branch is kept"
+assert_exists "$REPO/docs/looptesting/.sandbox/ownership.env" "and the marker is still there"
+OUT_C2=$( cd "$REPO" && bash "$CLEAN" --purge --discard-fixes 2>&1 ); rc_c2=$?
+assert_eq "0" "$rc_c2" "the documented --discard-fixes follow-up completes"
+assert_absent "$REPO/docs/looptesting" "and only then is the evidence dir removed"
 
 # --- D. terminal + fix commits + --discard-fixes: branch deleted too ----------
 WS2=$(mk_ws); trap 'rm -rf "$WS" "$WS2"' EXIT
@@ -72,7 +87,11 @@ assert_ok $? "branch-mode --purge exits 0"
 if ( cd "$REPO4" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
   PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: checked-out qa branch must never be deleted" >&2; fi
-assert_absent "$REPO4/docs/looptesting" "branch-mode purge still removed the evidence dir"
+# Branch mode stands ON the qa branch, and git will not delete a checked-out branch
+# whatever --discard-fixes says. Something we may own is still there, so the marker
+# stays with it: switch away, delete the branch, purge again. Keeping the record is
+# the difference between one more step and a directory nothing can identify.
+assert_exists "$REPO4/docs/looptesting/.sandbox/ownership.env" "branch mode keeps the marker while the branch it names is checked out"
 assert_eq "qa/loop-testing" "$(cd "$REPO4" && git branch --show-current)" "purge did not move HEAD"
 
 # --- G. no marker at all (never set up): --purge refuses, deletes nothing -----

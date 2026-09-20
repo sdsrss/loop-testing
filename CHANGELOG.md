@@ -1,10 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-09-20
 
 Two batches, in the order they landed: a fresh-user QA pass, then the blocking list
 from a full audit of the project. The second is the larger of the two and comes first
 here because it is what decides whether this release is safe to run unattended.
+
+**Upgrading from 0.10.0.** Nothing to migrate: no file format changed, no flag was
+removed, and markers written by every version since 0.1.0 still load. Four defaults
+behave differently and are listed under "What changes for you" below — the ones to
+know before your next run are that `--purge` now keeps more than it used to, that
+`sandbox-setup.sh` can exit `9` where it previously carried on, and that a proxy
+username is no longer treated as a secret. If a change does not suit you: the ledger
+gate is off with `LOOP_TESTING_DISABLE_LEDGER_GATE=1`, the shutdown wait is tunable
+with `LOOP_TESTING_STOP_GRACE`, and the whole release reverts by pinning the previous
+version — `/plugin install loop-testing@loop-testing --version 0.10.0` for Claude
+Code, or re-running `install/install-codex.sh` from a `v0.10.0` checkout for Codex.
 
 ### Audit batch 1 — the blocking list
 
@@ -28,7 +39,7 @@ every "full suite green" claim made while that was true covered a third of the t
 The runner now compares suites executed against files found and fails on a mismatch.
 
 Totals are now one line the runner prints and a release note can quote:
-`TOTAL: 36 suites, 1293 assertions, 0 failed`, recomputable with
+`TOTAL: 36 suites, 1308 assertions, 0 failed`, recomputable with
 `bash tests/run-all.sh | grep '^TOTAL:'`. A suite is one file under `tests/` matching
 `*.test.*`; an assertion is one pass-or-fail decision a suite reports. Three different
 totals were quoted for this same tree earlier in the batch, which is what that line
@@ -45,11 +56,26 @@ exists to end.
    (Claude) and `-s danger-full-access` (Codex).** That was always true and was never
    written down. Both READMEs now say so, and say the watchdog kill is the only boundary.
 3. **`--purge` deletes by identity, not by name.** A `qa-baseline` tag or `qa/loop-testing`
-   branch you re-pointed is kept and named. Files you left in `docs/looptesting/` are kept.
+   branch you re-pointed is kept and named. `--purge` deletes nine files it wrote,
+   by name, and removes `runs/`, `decisions/` and `.driver.lock` whole. Anything else
+   in the directory keeps the directory, and the ownership marker and `STATE.md` are
+   kept with it — as they are whenever a ref is kept, so the `--discard-fixes`
+   follow-up the tool recommends still has the record it needs.
 4. **`sandbox-setup.sh` refuses an unreadable ownership marker (exit 9)** instead of
    announcing "already initialized" with no worktree behind it.
 5. **The README's purge command works when pasted.** It printed candidate install paths
    and bound `SKILL_DIR` to nothing, or to a truncated cache path.
+6. **The proxy username is no longer redacted from decision documents.** Only the
+   password and the base64 `user:pass` blob that goes on the wire are treated as
+   secrets, because an ordinary username such as `admin` was rewriting every
+   occurrence of that word in the archived output. If your `*_PROXY` URL carries a
+   username you would rather not see in evidence files, remove it from the URL.
+7. **A `docs/looptesting/moa.config.json` keeps `--purge` permanently incomplete.**
+   That is the path `README.md` documents for it, and purge treats any file it did
+   not write as yours, so the directory is kept every time and no flag finishes the
+   job. Move the config elsewhere and pass `--config`, or remove the directory by
+   hand once you have taken what you want. Relocating the default path out of the
+   directory purge owns is filed for the next batch.
 
 - **fix(driver)**: stop the child session before releasing the lock (audit D-01, P0).
   `timeout` puts the session in its own process group, and the driver ran it as a
@@ -154,7 +180,7 @@ reach the skill via the Skill tool looped on itself and never reached it.
 `claude plugin details` reported `Skills (2) loop-testing, loop-testing` before
 the fix and `Skills (1)` after, with always-on context dropping ~248 → ~177 tok.
 The rest of the batch is what the same pass turned up around it. Full suite
-`ALL GREEN`: 586 shell assertions across 24 suites → 670 across 28 (both trees
+`ALL GREEN`: 486 shell assertions across 24 suites → 670 across 28 (both trees
 measured the same way — summing each suite's own reported pass count; moa
 unchanged at 41 node tests). Every new assertion is mutation-checked: the
 collision guard goes red when `commands/loop-testing.md` is restored, and the

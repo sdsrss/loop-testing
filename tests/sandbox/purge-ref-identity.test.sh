@@ -33,7 +33,21 @@ case "$OUT" in
   *"deleted baseline tag"*) FAIL=$((FAIL+1)); echo "  FAIL: purge claimed to delete a tag it kept — got: $OUT" >&2 ;;
   *) PASS=$((PASS+1)) ;;
 esac
-assert_absent "$REPO/docs/looptesting" "the rest of the purge (evidence dir) still completes"
+# A kept ref KEEPS the marker. This assertion used to read `assert_absent` — it
+# encoded the defect: purge named a recovery route ("remove it by hand", or
+# `--purge --discard-fixes`) in the same breath as deleting the only file that
+# route needs, so the follow-up answered exit 3. Two stages each learned to stop
+# short; only the leftover-files one was protecting the marker.
+assert_path "$REPO/docs/looptesting/.sandbox/ownership.env" "a kept ref keeps the marker its own recovery route needs"
+case "$OUT" in
+  *"kept evidence dir"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: purge must say why it kept the evidence dir — got: $OUT" >&2 ;;
+esac
+# ...and the route works: drop the user's tag, purge again, everything goes.
+( cd "$REPO" && git tag -d qa-baseline ) >/dev/null 2>&1
+OUT_A2=$( cd "$REPO" && bash "$CLEAN" --purge 2>&1 ); rc_a2=$?
+assert_eq "0" "$rc_a2" "after the kept ref is gone, a second purge completes"
+assert_absent "$REPO/docs/looptesting" "the second purge removes the evidence dir"
 
 # --- B. same-named user branch at a baseline ANCESTOR: KEPT ------------------
 # rev-list --count BASE..branch is 0 for an ancestor, which the old code read as
@@ -141,5 +155,42 @@ case "$OUT7" in
   *"deleted baseline tag"*) FAIL=$((FAIL+1)); echo "  FAIL: purge claimed to delete a tag it kept — got: $OUT7" >&2 ;;
   *) PASS=$((PASS+1)) ;;
 esac
+
+# --- H. the headline path: a branch holding fix commits ----------------------
+# This is what a successful QA loop leaves behind — it fixed something, so the qa
+# branch has commits the user has not harvested. Purge keeps the branch and tells
+# them to re-run with --discard-fixes once they have. That follow-up reads the
+# marker, so deleting the marker here breaks the only documented route out
+# (README cleanup section) on the tool's NORMAL successful outcome.
+WS8=$(mk_ws); trap 'rm -rf "$WS" "$WS8"' EXIT
+REPO8="$WS8/proj"
+( cd "$REPO8" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? "setup (fix-commits case)"
+QA_WT8="$(cd "$REPO8" && git worktree list --porcelain \
+  | awk '/^worktree /{p=$2} /^branch refs\/heads\/qa\/loop-testing/{print p}')"
+( cd "$QA_WT8" && echo fix > fix.txt && git add -A && git commit -qm "fix: a real one" ) >/dev/null 2>&1
+assert_ok $? "the qa branch holds a fix commit"
+mark_terminal "$REPO8"
+OUT8=$( cd "$REPO8" && bash "$CLEAN" --purge 2>&1 ); rc8=$?
+assert_eq "0" "$rc8" "purge with unharvested fix commits exits 0 (documented happy route)"
+if branch_exists "$REPO8"; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: purge deleted a branch holding unharvested fix commits" >&2; fi
+case "$OUT8" in
+  *"--discard-fixes"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: purge must name the --discard-fixes follow-up — got: $OUT8" >&2 ;;
+esac
+assert_path "$REPO8/docs/looptesting/.sandbox/ownership.env" \
+  "the marker that follow-up needs survives the run that recommends it"
+# The follow-up must actually work. This is the assertion that would have caught
+# the defect: exit 3 here means the tool destroyed the route it just named.
+OUT9=$( cd "$REPO8" && bash "$CLEAN" --purge --discard-fixes 2>&1 ); rc9=$?
+assert_eq "0" "$rc9" "--purge --discard-fixes completes after the run that recommended it"
+case "$OUT9" in
+  *"no ownership marker"*) FAIL=$((FAIL+1)); echo "  FAIL: the follow-up hit fail-closed exit 3 — the marker was orphaned: $OUT9" >&2 ;;
+  *) PASS=$((PASS+1)) ;;
+esac
+if branch_exists "$REPO8"; then
+  FAIL=$((FAIL+1)); echo "  FAIL: --discard-fixes did not drop the branch" >&2; else PASS=$((PASS+1)); fi
+assert_absent "$REPO8/docs/looptesting" "and the evidence dir goes with it"
 
 report "purge-ref-identity.test.sh"
