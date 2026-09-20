@@ -20,4 +20,4 @@ na: 0
 cases_this_round: 0
 ```
 
-> `cases_this_round` 为本轮实际执行的用例数。**此处是本轮的工作副本**：收敛判据读的是各轮 `runs/round-N.md` 里的同名字段（`references/exit-and-report.md` §1 判据 7 —— 本轮不得低于此前各轮最大值的 80%）。轮末必须把这个数字与本轮 `runs/round-N.md` 对齐，冲突时以轮日志为准。
+> `cases_this_round` 为本轮实际执行的用例数。**此处是本轮的工作副本**：收敛判据读的是各轮 `runs/round-N.md` 里的同名字段（`references/exit-and-report.md` §1 判据 7 —— 本轮不得低于此前最近 3 轮最大值的 80%；一个用例 = 本表一行功能 × `PLAN.md` 的一个场景）。轮末必须把这个数字与本轮 `runs/round-N.md` 对齐，冲突时以轮日志为准。

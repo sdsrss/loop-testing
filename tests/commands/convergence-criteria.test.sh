@@ -95,27 +95,52 @@ has "$S1" "cases_this_round" "criterion 7 names the field it compares"
 has "$S1" "runs/round-N.md" "criterion 7 names WHICH file's cases_this_round is authoritative (K-21)"
 # `80%` alone is vocabulary: it survives a revert to the previous-round baseline,
 # which is the defect that lets two shrinking rounds walk the floor down.
-has  "$S1" "此前所有轮次最大值" "the baseline is the maximum over ALL prior rounds (K-06)"
-has  "$S1" "不是上一轮" "criterion 7 says out loud that the previous round alone is not the baseline"
+has  "$S1" "此前最近 3 轮" "the baseline is bounded: the max over the last 3 rounds (K-06)"
+has  "$S1" "不是上一轮" "criterion 7 rules out the previous round alone (a two-round walk-down)"
+has  "$S1" "也不是全部历史" "criterion 7 rules out all-history too (one huge round -> false INCOMPLETE)"
 hasnt "$S1" "上一轮的 80%" "the previous-round baseline is not what the rule settles on"
-# The escape must stay the one bounded, documented exception it was written as.
+# A criterion that cannot be evaluated at round 1, or against a log that will not
+# parse, is decided by the model — which is what K-06 set out to stop.
+has  "$S1" "第 1 轮没有此前轮次" "criterion 7 has a base case (round 0 writes no runs/round-N.md)"
+has  "$S1" "按缩水轮处理" "an unreadable prior cases_this_round costs the round, rather than lowering the bar"
+# The unit has to exist or the ratio compares nothing to nothing.
+has  "$S1" "一个用例 = \`FEATURE_MATRIX.md\`" "criterion 7 defines what one case IS"
+# The escape must stay the one bounded exception it was written as, and must be
+# settled by arithmetic rather than by the model judging its own prose.
 has  "$S1" "唯一例外" "the shrink escape is singular and named, not a general discretion"
+has  "$S1" "扣除后的可比基数 B" "the exception names the adjusted baseline as a number"
+has  "$S1" "B × 80%" "the exception is settled by an inequality, not by whether it reads convincingly"
 hasnt "$S1" "豁免" "no blanket self-exemption clause was added to criterion 7"
+# The zero-trigger must key on criterion 7 as a whole: keying on the 80% clause
+# alone let a round skip the full regression entirely and keep its streak.
+has  "$ZERO" "判据 7 未满足" "the zero-trigger fires on ALL of criterion 7, not just the ratio"
+
+# loop-round.md is the only per-round instruction telling the model what to
+# compare a case count against. It said 对比上轮 — the baseline §1 now rules out —
+# one bullet above the line that defers to §1 for the streak. Two prompt files
+# giving opposite orders is what K-02 was.
+LOOP_ROUND="$REPO_ROOT/skills/loop-testing/references/loop-round.md"
+has  "$LOOP_ROUND" "此前最近 3 轮" "loop-round.md's progress line names the same baseline as criterion 7"
+hasnt "$LOOP_ROUND" "对比上轮" "loop-round.md no longer orders the comparison criterion 7 rules out"
 hasnt "$S1" "明显低于此前轮次" "the unfalsifiable phrasing is gone"
 
 # The other copy of the field must defer to that one rather than compete.
 has "$FM_TPL" "runs/round-N.md" "FEATURE_MATRIX.md template defers to the round log for cases_this_round (K-21)"
+has "$FM_TPL" "此前最近 3 轮" "FEATURE_MATRIX.md template carries the same baseline as criterion 7"
 
 # The round log is where criterion 7 reads from and where its one exception is
 # written, so the template must carry both or the rule has no slot to land in.
 ROUND_TPL="$REPO_ROOT/skills/loop-testing/templates/round-N.md"
 has "$ROUND_TPL" "cases_this_round" "round-N.md template carries the field criterion 7 reads"
 has "$ROUND_TPL" "80%" "round-N.md template states the threshold at the point of entry"
+has "$ROUND_TPL" "此前最近 3 轮" "round-N.md template carries the same baseline as criterion 7"
+has "$ROUND_TPL" "B × 80%" "round-N.md's exception slot demands the inequality, not just a reason"
 has "$ROUND_TPL" "覆盖缩减说明" "round-N.md template has a slot for the one documented exception"
 
 # --- K-22: the template must not carry a second, shorter zero-list -----------
 has "$STATE_TPL" "exit-and-report.md" "STATE.md template points at the authoritative zero-list (K-22)"
 has "$STATE_TPL" "缩水" "STATE.md template's zero-list carries the shrunk-round trigger too (K-22)"
+has "$STATE_TPL" "此前最近 3 轮" "STATE.md template's copy of the trigger carries the same baseline (K-22)"
 
 finish() {
   printf '%s: %d passed, %d failed\n' "$_name" "$_pass" "$_failn"

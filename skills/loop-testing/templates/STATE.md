@@ -14,7 +14,7 @@ last_updated: 1970-01-01T00:00:00Z
 ```
 
 - `round`：当前已完成的轮次编号（第 0 轮完成后为 0，第一轮循环完成后为 1）。
-- `converged_streak`：连续「收敛低风险轮」计数，达到 2 即可正常停止。**归零触发条件以 `references/exit-and-report.md` §1 末行为准**，此处是同步副本，冲突时以 §1 为准：P0-P2 新发现 / 扩大已知重要问题 / 重要回归 / 无理由漏测本轮场景 / 新关键检查失败 / 本轮为覆盖缩水轮（`cases_this_round` 低于此前各轮最大值的 80% 且无合格例外说明）。
+- `converged_streak`：连续「收敛低风险轮」计数，达到 2 即可正常停止。**归零触发条件以 `references/exit-and-report.md` §1 末行为准**，此处是同步副本，冲突时以 §1 为准：P0-P2 新发现 / 扩大已知重要问题 / 重要回归 / 无理由漏测本轮场景 / 新关键检查失败 / 判据 7 未满足（全功能回归未完成，或本轮为覆盖缩水轮——`cases_this_round` 低于此前最近 3 轮最大值的 80% 而无算得出来的例外）。
 - `status`：`RUNNING` | `CONVERGED` | `INCOMPLETE` | `BLOCKED`。仅收敛达标写 `CONVERGED`；达 `max_rounds` 未收敛写 `INCOMPLETE`；全部剩余工作被权限阻塞写 `BLOCKED`。
 - `max_rounds`：防失控上限，默认 12。
 
