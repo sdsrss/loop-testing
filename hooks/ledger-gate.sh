@@ -31,7 +31,11 @@
 #     `ruby -e`, `ed`, and file-copy verbs whose target needs per-verb argument
 #     knowledge (`mv`, `cp`, `dd`, `install`, `truncate`);
 #   * a path computed at runtime — a variable, a command substitution, a glob —
-#     which is reported as unresolved and never guessed at;
+#     which is reported as unresolved and never guessed at. A BRACKET glob is
+#     worse than the others: `ISSUE[S].md` splits the literal name, so the regex
+#     leg cannot see it either and the write is allowed by both legs. The lexer
+#     flags it rather than silently reading it as some unrelated file, which is
+#     all it can honestly do without expanding the path;
 #   * a command past the length cap, or one the lexer REJECTS (a command the
 #     shell frequently still runs — see the fallback leg), falls back to the
 #     regex leg below, which is weaker: its in-place arm still wants the flag and
@@ -153,7 +157,9 @@ try:
         if armed and (x=="ISSUES.md" or x.endswith("/ISSUES.md")): return True
         return False
     def unres(t):
-        return ("$" in t) or ("`" in t) or ("*" in t) or ("?" in t)
+        # `[` matters as much as `*`: a bracket class SPLITS the literal name
+        # (ISSUE[S].md), so unlike a star it hides the path from the regex leg too.
+        return any(c in t for c in "$`*?[")
     def isip(f):
         if f=="--in-place" or f.startswith("--in-place="): return True
         if f.startswith("--"): return False
@@ -211,12 +217,12 @@ try:
         # contribute.
         FILTER=("grep","egrep","fgrep","rg","ag","ack","head","tail","sort",
                 "uniq","cut","wc","cat","nl","tac","rev","column","comm","join")
-        info.append((w,ip,[] if verb in FILTER else ops))
+        info.append((w,ip,[] if verb in FILTER else ops,verb,verb in FILTER))
     # Text of a write = the operands of its whole PIPELINE, not of its own segment:
     # in `sed s/…/VERIFIED/ ledger | sponge ledger` the substitution sits one
     # segment upstream of the verb that writes. Only pipes join; `;` and `&&` do
     # not, so a plain READ standing next to a downgrade cannot supply forgery text.
-    grp=[]
+    grp=[]; FO=0
     for k in range(len(segs)):
         grp.append(k)
         if seps[k] not in ("|","|&") or k==len(segs)-1:
@@ -224,7 +230,15 @@ try:
                 W=1
                 IP=IP or max(info[m][1] for m in grp)
                 for m in grp: text.extend(info[m][2])
+                # Is every member of this pipeline either a filter or the writer
+                # itself? Then the group can only ever DROP rows, which is a
+                # positive reason to allow rather than an absence of evidence.
+                # Anything else in the group — a command, or an empty segment
+                # left by a subshell or a list — forfeits the claim.
+                if all(info[m][4] or (info[m][0] and info[m][3] in ("tee","sponge"))
+                       for m in grp): FO=1
             grp=[]
+    print("LG_FILTERONLY=%d" % FO)
     print("LG_WRITE=%d" % W)
     print("LG_INPLACE=%d" % IP)
     print("LG_UNRESOLVED=%d" % UN)
@@ -237,7 +251,7 @@ except Exception:
     print("LG_LEXFAIL=1")
 ' 2>/dev/null) || LEXED=""
       fi
-      LG_OK=0; LG_WRITE=0; LG_INPLACE=0; LG_UNRESOLVED=0; LG_TEXT=""; LG_LEXFAIL=0; LG_CAPPED=0
+      LG_OK=0; LG_WRITE=0; LG_INPLACE=0; LG_UNRESOLVED=0; LG_TEXT=""; LG_LEXFAIL=0; LG_CAPPED=0; LG_FILTERONLY=0
       case "$LEXED" in
         *LG_OK=1*|*LG_LEXFAIL=1*|*LG_CAPPED=1*) eval "$LEXED" 2>/dev/null || LG_OK=0 ;;
       esac
@@ -251,6 +265,10 @@ except Exception:
       # ---- fallback leg: no python3, lexer refused, capped, or an unresolved
       # target. Weaker (its in-place arm still wants the flag and the path in one
       # unbroken span) but target-bound, so it never denies a plain read.
+      # Routing here is by MECHANISM, not by shape: any lexer exception lands on
+      # this leg, whatever raised it. This leg matches the raw string, so it never
+      # needs to know why the lexer gave up — which is why an unenumerated way of
+      # confusing the lexer cannot become an escape.
       # A command the lexer rejects is FREQUENTLY still a command the shell runs:
       # clearing `commenters` is what lets a hash-delimited sed script through,
       # and it also makes an apostrophe in a trailing comment or a heredoc body
@@ -380,12 +398,30 @@ introduces_verified() {
   printf '%s\n' "$x" | grep -qawE 'VERIFIED'
 }
 
-if [ "$INPLACE" -eq 1 ] && introduces_verified "$INTRO_TEXT"; then
-  if [ -z "$IDS" ]; then
-    deny "an in-place edit (sed -i / perl -i) introducing VERIFIED on ISSUES.md must name the ISSUE-ID it verifies (e.g. '/ISSUE-NNN/s/FIXED_UNVERIFIED/VERIFIED/')."
+# `removes_verified`: the text mentions VERIFIED, and every mention is a match
+# position. That is what a downgrade or a deletion LOOKS like, and it is the only
+# thing that earns the early exit. Not finding forgery text is NOT the same
+# claim: the pipeline grouping guarantees shapes where the written text sits
+# outside the write group — `{ cat ledger; echo '…VERIFIED…'; } | tee ledger`
+# splits on `;`, so the write group holds only the path — and reading that
+# silence as "therefore a downgrade" let the row land.
+removes_verified() {
+  printf '%s\n' "$1" | grep -qawE 'VERIFIED' && ! introduces_verified "$1"
+}
+
+if [ "$INPLACE" -eq 1 ]; then
+  if introduces_verified "$INTRO_TEXT"; then
+    : # a forgery in plain sight -> the ID rule below, then the footprint check
+  elif [ "$LG_FILTERONLY" = "1" ]; then
+    exit 0   # every member of the pipeline is a filter: it can only DROP rows
+  elif removes_verified "$INTRO_TEXT"; then
+    exit 0   # VERIFIED appears, only ever on the match side: a downgrade
   fi
-elif [ "$INPLACE" -eq 1 ]; then
-  exit 0   # in-place, but VERIFIED only on the match side: a downgrade or a delete
+  # Either a forgery, or a write whose text we could not place. Both have to name
+  # the ISSUE they verify; an unresolvable one is no longer assumed benign.
+  if [ -z "$IDS" ]; then
+    deny "an in-place write to ISSUES.md that introduces VERIFIED must name the ISSUE-ID it verifies (e.g. '/ISSUE-NNN/s/FIXED_UNVERIFIED/VERIFIED/')."
+  fi
 fi
 
 [ -n "$IDS" ] || exit 0   # nothing marked VERIFIED, or ID unresolvable -> allow

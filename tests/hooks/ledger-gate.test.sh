@@ -453,4 +453,54 @@ run_ledger "$WS25" "$json"; assert_rc $? 2 "ID prefix must not ride on a longer 
 json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-012 | P1 | VERIFIED | x\" >> docs/looptesting/ISSUES.md"}}'
 run_ledger "$WS25" "$json"; assert_rc $? 0 "control: the ID that really has the replay record -> allow"
 
+# ── Review round 5. Marking tee in-place turned a weak early exit into a hole:
+#    the exit read "no forgery text in the write group" as "therefore a
+#    downgrade". That is absence of evidence. The grouping rules guarantee shapes
+#    where the text legitimately sits outside the write group, and a list or a
+#    subshell feeding tee is exactly one. A downgrade must now LOOK like one. ──
+json='{"tool_name":"Bash","tool_input":{"command":"{ cat docs/looptesting/ISSUES.md; echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"'; } | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "brace list feeding tee: the appended row is still judged -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"( cat docs/looptesting/ISSUES.md; echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"' ) | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "subshell feeding tee: same shape -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"{ cat docs/looptesting/ISSUES.md; echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"'; } | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "brace list feeding sponge -> deny"
+# The same shape naming a FOOTPRINTED id is legitimate and must land.
+json='{"tool_name":"Bash","tool_input":{"command":"{ cat docs/looptesting/ISSUES.md; echo '"'"'### ISSUE-003 | P1 | VERIFIED | x'"'"'; } | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "brace list feeding tee, footprinted ID -> allow"
+# A write group with no recognizable text and no ID is not benign either.
+json='{"tool_name":"Bash","tool_input":{"command":"{ cat docs/looptesting/ISSUES.md; echo '"'"'| VERIFIED |'"'"'; } | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "brace list feeding tee, no ID at all -> deny"
+# …and the filter chain is still allowed, for the POSITIVE reason that a chain of
+# filters only ever drops rows — not because no forgery text was found.
+json='{"tool_name":"Bash","tool_input":{"command":"grep -v '"'"'VERIFIED'"'"' docs/looptesting/ISSUES.md | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "filter chain into sponge -> still allow"
+json='{"tool_name":"Bash","tool_input":{"command":"cat docs/looptesting/ISSUES.md | grep -v VERIFIED | sort | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "longer filter chain into sponge -> still allow"
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/VERIFIED/OPEN/'"'"' docs/looptesting/ISSUES.md | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "downgrade that looks like one -> still allow"
+
+# A bracket glob splits the literal name and hides it from BOTH legs. Adding `[`
+# to the unresolved set makes the lexer say so instead of silently reading the
+# token as some other file; the regex leg still cannot see through it, so these
+# stay allowed and the header says so.
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"' >> docs/looptesting/ISSUES.m[d]"}}'
+run_ledger "$WS20" "$json"; rc=$?
+if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: bracket-glob redirect must not crash, got $rc" >&2; fi
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUE[S].md"}}'
+run_ledger "$WS20" "$json"; rc=$?
+if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: bracket-glob in-place must not crash, got $rc" >&2; fi
+# What IS pinned: the lexer reports the target as unresolved rather than reading
+# it as a path that is not the ledger.
+if command -v python3 >/dev/null 2>&1; then
+  u=$(printf '%s' "echo x >> docs/looptesting/ISSUES.m[d]" | LG_ARMED=0 python3 -c '
+import sys,re,shlex,posixpath
+cmd=sys.stdin.read()
+lx=shlex.shlex(cmd, posix=True, punctuation_chars="();<>|&;"); lx.whitespace_split=True; lx.commenters=""
+print("[" in "".join(list(lx)))
+')
+  assert_eq "True" "$u" "bracket glob is visible to the lexer as an unresolved target"
+fi
+
 report "ledger-gate.test.sh"
