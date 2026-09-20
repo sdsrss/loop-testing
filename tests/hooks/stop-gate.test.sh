@@ -232,7 +232,7 @@ max_rounds: 12
 EOF
 run_stop "$WS21" false; assert_rc $? 2 "RUNNING with an ambiguous round: -> block"
 read -r _ pr21 < "$WS21/$CF"
-assert_eq "-1" "$pr21" "ambiguous round: recorded as -1 (unknown), not the first value"
+assert_eq "1|9" "$pr21" "an ambiguous round records the whole SET, not one guessed value"
 
 # W. The H-03 parse must stay builtins-only: on the bare PATH of case K (no sort,
 #    no uniq, no wc) a TERMINAL status must still disarm. A parse that needs a
@@ -271,5 +271,35 @@ WS24=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS
 arm "$WS24"; write_state "$WS24" CONVERGED 7 2
 run_stop "$WS24" false; assert_rc $? 0 "an ordinary STATE.md is nowhere near the line cap -> allow"
 assert_absent "$WS24/$ACT" "ordinary terminal STATE.md still disarms under the bounded parse"
+
+# Z. HIGH-4: the deadlock valve must not fire on a loop that is ADVANCING. The
+#    counter's progress arm used to key on one normalized integer, so a single
+#    stray `round:` line anywhere in STATE.md (a `## history` note is enough)
+#    made every round parse as "unknown", disabled the reset for the entire
+#    hook-induced chain, and force-allowed the stop on the 4th attempt — on an
+#    unconverged loop that was making progress every single round.
+WS25=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19" "$WS20" "$WS21" "$WS22" "$WS23" "$WS24" "$WS25"' EXIT
+arm "$WS25"
+for r in 1 2 3 4 5; do
+  printf '# STATE\nround: %s\nstatus: RUNNING\n\n## history\nround: 0 baseline\n' "$r" \
+    > "$WS25/docs/looptesting/STATE.md"
+  run_stop "$WS25" true
+  assert_rc $? 2 "advancing round $r blocks despite a stray round: line (no force-allow)"
+done
+read -r c25 _ < "$WS25/$CF"
+assert_eq "1" "$c25" "a changing round SET resets the counter (the valve never arms)"
+
+# AA. MEDIUM-4: an empty machine-field value is a value. A bare `status:` above a
+#     real `status: CONVERGED` made the empty one invisible, left the terminal
+#     value standing alone, and DISARMED — where the pre-H-03 code read the empty
+#     first line and fail-closed. Both orderings, because this is a value class
+#     disappearing, not position-dependence returning.
+WS26=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19" "$WS20" "$WS21" "$WS22" "$WS23" "$WS24" "$WS25" "$WS26"' EXIT
+arm "$WS26"; printf '# STATE\nstatus:\nstatus: CONVERGED\nround: 3\n' > "$WS26/docs/looptesting/STATE.md"
+run_stop "$WS26" false; assert_rc $? 2 "empty status: value above a terminal one -> block"
+assert_exists "$WS26/$ACT" "an empty status: value leaves the sentinel armed"
+printf '# STATE\nstatus: CONVERGED\nstatus:   \nround: 3\n' > "$WS26/docs/looptesting/STATE.md"
+run_stop "$WS26" false; assert_rc $? 2 "whitespace-only status: value below a terminal one -> block"
+assert_exists "$WS26/$ACT" "a whitespace-only status: value leaves the sentinel armed"
 
 report "stop-gate.test.sh"

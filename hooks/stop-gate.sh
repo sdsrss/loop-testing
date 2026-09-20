@@ -146,20 +146,21 @@ block() { # increments counter (with reset logic) and blocks, or force-allows at
     fi
   fi
 
-  local prev_count=0 prev_round=-1
+  local prev_count=0 prev_sig=""
   if [ -f "$COUNT_FILE" ]; then
-    read -r prev_count prev_round < "$COUNT_FILE" 2>/dev/null
+    read -r prev_count prev_sig < "$COUNT_FILE" 2>/dev/null
   fi
   case "$prev_count" in *[!0-9]*|"") prev_count=0 ;; esac
-  case "$prev_round" in ''|*[!0-9-]*) prev_round=-1 ;; esac
-  case "$cur_round" in ''|*[!0-9-]*) cur_round=-1 ;; esac
+  local cur_sig="${ROUND_SIG:--}"
 
   # Reset the consecutive-block count when this stop is NOT a hook-induced
-  # continuation (fresh attempt) OR the loop advanced a round since the last
+  # continuation (fresh attempt) OR the round-value set changed since the last
   # block (progress). This mirrors the platform's "8 consecutive WITHOUT
-  # progress" semantics, so a healthy multi-round loop never trips the valve.
+  # progress" semantics, so a healthy multi-round loop never trips the valve —
+  # which is only true because the signal is the SET: one stray `round:` line
+  # elsewhere in STATE.md used to make every round look identical.
   local count
-  if [ "$stop_active" = "false" ] || { [ "$cur_round" -ge 0 ] && [ "$cur_round" -gt "$prev_round" ]; }; then
+  if [ "$stop_active" = "false" ] || { [ "$cur_sig" != "-" ] && [ "$cur_sig" != "$prev_sig" ]; }; then
     count=0
   else
     count="$prev_count"
@@ -175,7 +176,7 @@ block() { # increments counter (with reset logic) and blocks, or force-allows at
     exit 0
   fi
 
-  printf '%s %s\n' "$count" "$cur_round" > "$COUNT_FILE"
+  printf '%s %s\n' "$count" "$cur_sig" > "$COUNT_FILE"
   {
     echo "loop-testing stop-gate BLOCKED this stop ($count/$MAX_BLOCKS): $reason"
     echo "The QA loop is not finished. Do NOT stop yet."
@@ -226,7 +227,11 @@ while IFS= read -r ln; do
   # Pattern substitution (bash 3.0+), deliberately not case-modification, which
   # is bash 4 and dies on macOS's bash 3.2 — see tests/portability/bash3.test.sh.
   v=${v// /}; v=${v//$'\t'/}; v=${v//$'\r'/}
-  [ -n "$v" ] || continue
+  # An EMPTY value is a value, not a line to skip. `continue` here made a bare
+  # `status:` invisible, so `status:` above a real `status: CONVERGED` left the
+  # terminal one standing alone and the gate disarmed — where the pre-H-03 code
+  # read the empty first line and fail-closed. It counts, under a sentinel.
+  [ -n "$v" ] || v='<empty>'
   if [ "$k" = status ]; then
     case "|$status_vals" in *"|$v|"*) continue ;; esac
     status_vals="$status_vals$v|"; status_n=$((status_n + 1))
@@ -243,8 +248,16 @@ if [ "$overflow" = 1 ]; then
 fi
 
 status=""; [ "$status_n" -eq 1 ] && status="${status_vals%|}"
-# An ambiguous round is reported unknown (-1) rather than guessed. -1 only
-# withholds the progress-based counter reset, so it errs toward blocking.
+# The counter's progress reset keys on the round-value SET, not on one
+# normalized integer. Reporting an ambiguous round as -1 failed the `-ge 0`
+# guard below, which did not merely withhold one reset — it disabled the
+# progress arm for the ENTIRE hook-induced continuation chain, so a loop that
+# was genuinely advancing climbed 1->2->3 and was FORCE-ALLOWED on the fourth
+# attempt by the deadlock valve. A set that changes between stops is progress
+# whether or not exactly one round line is parseable.
+ROUND_SIG="${round_vals%|}"
+[ "${#ROUND_SIG}" -gt 200 ] && ROUND_SIG="$(printf '%.200s' "$ROUND_SIG")"
+[ -n "$ROUND_SIG" ] || ROUND_SIG="-"
 cur_round=-1; [ "$round_n" -eq 1 ] && cur_round="${round_vals%|}"
 
 if [ "$status_n" -gt 1 ]; then
