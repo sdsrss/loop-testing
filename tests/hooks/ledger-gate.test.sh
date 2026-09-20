@@ -133,4 +133,61 @@ assert_rc $rc 0 "no jq/python3 -> fail open (allow), never brick the session"
 if printf '%s' "$err" | grep -q 'gate inactive'; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: fail-open must announce itself ('gate inactive'), got [$err]" >&2; fi
 
+# ── H-01 / H-04 / H-05 (audit 2026-09-20): bind "write" to the verb, take the ID
+#    from the ledger's leading column, and make in-place edits name their ID. ──
+# Every case below shares one workspace: ISSUE-002 OPEN with NO footprint,
+# ISSUE-003 FIXED_UNVERIFIED WITH a footprint.
+WS20=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL" "$WS20"' EXIT
+printf '# ISSUES\n\n### ISSUE-002 | P1 | OPEN | dup ids\n### ISSUE-003 | P1 | FIXED_UNVERIFIED | crash\n' > "$WS20/docs/looptesting/ISSUES.md"
+echo "replayed ISSUE-003: repro cmd -> pass" > "$WS20/docs/looptesting/runs/round-1.md"
+run_ledger_err() { local ws="$1" json="$2"; ( cd "$ws" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" 2>&1 >/dev/null ); }
+
+# 20. H-01: a READ-ONLY grep that mentions the ledger path, an ID, VERIFIED and a
+#     `2>/dev/null` redirection is not a write. It used to be denied with the
+#     "faking verification is a red line" accusation.
+json='{"tool_name":"Bash","tool_input":{"command":"grep -n '"'"'ISSUE-002.*VERIFIED'"'"' docs/looptesting/ISSUES.md 2>/dev/null"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "H-01: read-only grep on the ledger with 2>/dev/null -> allow"
+
+# 21. H-01: `sed -n` (print, not in-place) and `cat … | grep` are reads too.
+json='{"tool_name":"Bash","tool_input":{"command":"sed -n '"'"'/ISSUE-002/p'"'"' docs/looptesting/ISSUES.md | grep -c VERIFIED"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "H-01: sed -n + pipe to grep on the ledger -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"cat docs/looptesting/ISSUES.md | tee /tmp/ledger-copy.txt | grep -w VERIFIED; echo ISSUE-002 >&2"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "H-01: tee to a NON-ledger path, >&2 redirect -> allow"
+
+# 22. Still a write when the VERB targets the ledger: >> path, tee path, sed -i path.
+json='{"tool_name":"Bash","tool_input":{"command":"printf \"### ISSUE-002 | P1 | VERIFIED | x\\n\" >> ./docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "verb-bound: >> ./ledger with no footprint -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | x\" | tee -a docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "verb-bound: tee -a ledger with no footprint -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/| OPEN |/| VERIFIED |/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "verb-bound: sed -i with a | inside the script still targets the ledger -> deny"
+
+# 23. H-04: an in-place edit that introduces VERIFIED without naming an ISSUE-ID
+#     used to pass at zero cost (ID unresolvable -> allow). It must name the ID.
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+err=$(run_ledger_err "$WS20" "$json"); rc=$?
+assert_rc $rc 2 "H-04: sed -i introducing VERIFIED with no ISSUE-ID -> deny"
+if printf '%s' "$err" | grep -q 'ISSUE-ID'; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: H-04 denial must ask for the ISSUE-ID, got [$err]" >&2; fi
+json='{"tool_name":"Bash","tool_input":{"command":"perl -pi -e '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "H-04: perl -pi introducing VERIFIED with no ISSUE-ID -> deny"
+# …and the same in-place edit that DOES name an ID with a footprint is allowed.
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'/ISSUE-003/s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "H-04: sed -i naming ISSUE-003 (footprint exists) -> allow"
+
+# 24. H-05: a legitimate VERIFIED row for ISSUE-003 (footprint) whose TITLE cites
+#     ISSUE-002 (no footprint) — the ID comes from the leading column, not the title.
+json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS20")\",\"old_string\":\"### ISSUE-003 | P1 | FIXED_UNVERIFIED | crash\",\"new_string\":\"### ISSUE-003 | P1 | VERIFIED | crash, dup of ISSUE-002\"}}"
+run_ledger "$WS20" "$json"; assert_rc $? 0 "H-05: Edit VERIFIED row citing another ID in its title -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-003 | P1 | VERIFIED | dup of ISSUE-002\" >> docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "H-05: Bash VERIFIED row citing another ID in its title -> allow"
+# Partial edit of the same row (no header in new_string): the enclosing header in
+# the ledger resolves the ID (ISSUE-003), not the cited ISSUE-002 in the text.
+json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS20")\",\"old_string\":\"| FIXED_UNVERIFIED | crash\",\"new_string\":\"| VERIFIED | crash, dup of ISSUE-002\"}}"
+run_ledger "$WS20" "$json"; assert_rc $? 0 "H-05: partial Edit, ID from enclosing header, title cites other ID -> allow"
+# Control: the leading-column ID with NO footprint is still denied even when the
+# title cites one that has a footprint.
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | same as ISSUE-003\" >> docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "H-05 control: leading-column ID without footprint -> deny"
+
 report "ledger-gate.test.sh"
