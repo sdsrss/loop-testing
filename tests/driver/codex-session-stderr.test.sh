@@ -143,6 +143,7 @@ stub=$(write_stub "$WS12"); write_state "$WS12" RUNNING 0
 STUB_STDERR_LONGLINE=1 STUB_EXIT=1 \
   bash "$CODEX_DRIVER" --project "$WS12" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
 assert_file_lacks    "$WS12/$LOG" "6543210ABCDEFGHIJK" "a credential straddling the byte cap is not published as a fragment"
+assert_file_lacks    "$WS12/$LOG" "ENDOFLONGLINE"      "and no other part of the over-long line is published either"
 assert_file_contains "$WS12/$LOG" "nothing shown"      "and the log says why it is empty"
 
 # M. lexer/parser vocabulary, in this copy too — lowercase glued names and
@@ -171,5 +172,27 @@ STUB_STDERR='fetch https://ci-bot:glpat-SECRETVALUE123@git.example.com/r failed'
   bash "$CODEX_DRIVER" --project "$WS15" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
 assert_file_lacks    "$WS15/$LOG" "glpat-SECRETVALUE123" "URL userinfo is masked in this copy too"
 assert_file_contains "$WS15/$LOG" "git.example.com"      "and the host it was failing against survives"
+
+# P. PascalCase credentials — the leak the first camelCase rule left open in this
+#    copy too. .NET appsettings.json convention plus Go's %+v on oauth2 structs.
+WS16=$(mk_proj); CLEAN="$CLEAN $WS16"
+stub=$(write_stub "$WS16"); write_state "$WS16" RUNNING 0
+PC=$(printf 'config AccessToken=aaaaaaaaaa1111111111 rejected\nconfig ClientSecret=bbbbbbbbbb2222222222 rejected\ndump &Token{AccessToken:eeeeeeeeee5555555555 TokenType:Bearer}\n')
+STUB_STDERR="$PC" STUB_EXIT=1 \
+  bash "$CODEX_DRIVER" --project "$WS16" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
+assert_file_lacks    "$WS16/$LOG" "aaaaaaaaaa1111111111" "PascalCase AccessToken is masked in this copy"
+assert_file_lacks    "$WS16/$LOG" "bbbbbbbbbb2222222222" "PascalCase ClientSecret is masked in this copy"
+assert_file_lacks    "$WS16/$LOG" "eeeeeeeeee5555555555" "a Go %+v oauth2.Token dump is masked in this copy"
+assert_file_contains "$WS16/$LOG" "TokenType:Bearer"     "and the struct's other fields survive"
+
+# Q. the lexer API names this copy must also leave alone.
+WS17=$(mk_proj); CLEAN="$CLEAN $WS17"
+stub=$(write_stub "$WS17"); write_state "$WS17" RUNNING 0
+API=$(printf 'nextToken: IDENTIFIER_FOO_X\nreadToken: unexpected_char_here\nexpectToken: PUNCTUATION_SEMI\n')
+STUB_STDERR="$API" STUB_EXIT=1 \
+  bash "$CODEX_DRIVER" --project "$WS17" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
+assert_file_contains "$WS17/$LOG" "nextToken: IDENTIFIER_FOO_X"    "lexer API name nextToken survives in this copy"
+assert_file_contains "$WS17/$LOG" "readToken: unexpected_char_here" "and readToken"
+assert_file_contains "$WS17/$LOG" "expectToken: PUNCTUATION_SEMI"  "and expectToken"
 
 report "codex-session-stderr.test.sh"

@@ -111,9 +111,14 @@ if [ -n "${STUB_STDERR_LONGLINE:-}" ]; then
   lval='LEAKCANARY9876543210ABCDEFGHIJK'
   lhead='HTTP 401 request dump {"url":"https://api.example.com/v1/messages","api_key":"'
   ltail='","body":"'
-  lfill=$(( 4000 + ${#lhead} + 12 - ${#lhead} - ${#lval} - ${#ltail} - 2 ))
+  # Solve for the padding so the driver's 4000-byte cut lands exactly 12
+  # characters into the value. Every literal on the line has to be in this sum —
+  # adding the ENDOFLONGLINE marker without subtracting it moved the cut 13 bytes
+  # and left the leak assertion asserting a fragment that was never at risk.
+  lmark='ENDOFLONGLINE'
+  lfill=$(( 4000 + 12 - ${#lval} - ${#ltail} - ${#lmark} - 2 ))
   lpad=$(awk -v n="$lfill" 'BEGIN{s="";while(length(s)<n)s=s "x";print substr(s,1,n)}')
-  printf '%s%s%s%s"}\n' "$lhead" "$lval" "$ltail" "$lpad" >&2
+  printf '%s%s%s%s%s"}\n' "$lhead" "$lval" "$ltail" "$lpad" "$lmark" >&2
 fi
 echo "stub-codex: round=$new_round streak=$streak status=$status"
 exit "${STUB_EXIT:-0}"

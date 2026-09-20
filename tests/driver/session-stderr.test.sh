@@ -181,9 +181,41 @@ STUB_STDERR="$LX" STUB_EXIT=1 \
 assert_file_contains "$WS13/$LOG" "betoken: something_long_here"    "'betoken' is English, not a token name"
 assert_file_contains "$WS13/$LOG" "nexttoken: IDENTIFIER_FOO"       "a lexer's lowercase 'nexttoken' is not a credential"
 assert_file_contains "$WS13/$LOG" "peektoken: RBRACE_EXPECTED"      "nor is 'peektoken'"
-assert_file_contains "$WS13/$LOG" "SyntaxToken: unexpected_end_of_input" "an UpperCamelCase class name is not a credential (lowercase-first rule)"
+assert_file_contains "$WS13/$LOG" "SyntaxToken: unexpected_end_of_input" "a PascalCase class name is not a credential"
 assert_file_contains "$WS13/$LOG" "LexToken: NUMBER_LITERAL_42"     "nor is LexToken, whose value even carries digits"
 assert_file_contains "$WS13/$LOG" "HTMLToken: unexpected end of input" "nor HTMLToken, a real shipped class name"
+
+# I3. THE LEXER API, which is where the first version of the camelCase rule did
+#     its damage. It keyed on the case of the first letter — lowercase meant a
+#     credential field, uppercase a type name — and that is not true in either
+#     direction: accessToken and nextToken are both lowerCamelCase, AccessToken
+#     and SyntaxToken are both PascalCase. These are the names it redacted.
+WS16=$(mk_proj); CLEAN="$CLEAN $WS16"
+stub=$(write_stub "$WS16"); write_state "$WS16" RUNNING 0
+API=$(printf 'nextToken: IDENTIFIER_FOO_X\npeekToken: RBRACE_EXPECTED\nreadToken: unexpected_char_here\nexpectToken: PUNCTUATION_SEMI\nconsumeToken: END_OF_STREAM\n')
+STUB_STDERR="$API" STUB_EXIT=1 \
+  bash "$DRIVER" --project "$WS16" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
+for n in "nextToken: IDENTIFIER_FOO_X" "peekToken: RBRACE_EXPECTED" "readToken: unexpected_char_here" \
+         "expectToken: PUNCTUATION_SEMI" "consumeToken: END_OF_STREAM"; do
+  assert_file_contains "$WS16/$LOG" "$n" "lexer API name survives: ${n%%:*}"
+done
+
+# I4. …and the other direction, which is a LEAK rather than a diagnostics loss.
+#     PascalCase is .NET appsettings.json convention, and Go's %+v on
+#     oauth2.Config / oauth2.Token prints exported — hence capitalised — fields.
+#     The name rule wants a separator before the secret word, so all of these
+#     passed straight through until the prefix was enumerated.
+WS17=$(mk_proj); CLEAN="$CLEAN $WS17"
+stub=$(write_stub "$WS17"); write_state "$WS17" RUNNING 0
+PC=$(printf 'config AccessToken=aaaaaaaaaa1111111111 rejected\nconfig ClientSecret=bbbbbbbbbb2222222222 rejected\nconfig UserPassword=cccccccccc3333333333 rejected\ndump oauth2.Config{ClientID:abc ClientSecret:dddddddddd4444444444 Scopes:[]}\ndump &Token{AccessToken:eeeeeeeeee5555555555 TokenType:Bearer}\n')
+STUB_STDERR="$PC" STUB_EXIT=1 \
+  bash "$DRIVER" --project "$WS17" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
+assert_file_lacks    "$WS17/$LOG" "aaaaaaaaaa1111111111" "PascalCase AccessToken is masked (.NET appsettings convention)"
+assert_file_lacks    "$WS17/$LOG" "bbbbbbbbbb2222222222" "PascalCase ClientSecret is masked"
+assert_file_lacks    "$WS17/$LOG" "cccccccccc3333333333" "PascalCase UserPassword is masked"
+assert_file_lacks    "$WS17/$LOG" "dddddddddd4444444444" "a Go %+v oauth2.Config dump is masked"
+assert_file_lacks    "$WS17/$LOG" "eeeeeeeeee5555555555" "a Go %+v oauth2.Token dump is masked"
+assert_file_contains "$WS17/$LOG" "TokenType:Bearer"     "and the struct's other fields survive"
 
 # J. redaction true positives, in the shapes a failing endpoint actually prints.
 #    Each line keeps a word of diagnostic around the secret, so the assertions
@@ -228,6 +260,18 @@ STUB_STDERR='{"status":429,"headers":{"authorization":"Basic Y2ktYm90OnN1cGVyc2V
 assert_file_lacks    "$WS14/$LOG" "Y2ktYm90OnN1cGVyc2VjcmV0" "a quoted JSON authorization header is masked (review CRITICAL)"
 assert_file_contains "$WS14/$LOG" "retry_after"              "and the rest of the JSON after it survives"
 
+# J3. the three other quoted renderings review found still leaking afterwards.
+#     Each carries the same base64 — 24 characters, under the fallback — so each
+#     assertion fails on its own if its rendering stops matching.
+WS18=$(mk_proj); CLEAN="$CLEAN $WS18"
+stub=$(write_stub "$WS18"); write_state "$WS18" RUNNING 0
+AU=$(printf 'ruby "authorization" => "Basic UlVCWVJVQllSVUJZUlVCWVJV" here\nnode {"x-authorization": "Basic WFhYWFhYWFhYWFhYWFhYWFhYWFg="} here\nnode {"proxy-authorization": "Basic UFJPWFlQUk9YWVBST1hZUFJP"} here\n')
+STUB_STDERR="$AU" STUB_EXIT=1 \
+  bash "$DRIVER" --project "$WS18" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
+assert_file_lacks "$WS18/$LOG" "UlVCWVJVQllSVUJZUlVCWVJV" "a Ruby hashrocket authorization is masked"
+assert_file_lacks "$WS18/$LOG" "WFhYWFhYWFhYWFhYWFhYWFhYWFg=" "a quoted x-authorization header is masked"
+assert_file_lacks "$WS18/$LOG" "UFJPWFlQUk9YWVBST1hZUFJP" "a quoted proxy-authorization header is masked"
+
 # K. ONE FILE PER SESSION, tested as a property rather than as a flag. Reusing a
 #    single file and letting the redirect's O_TRUNC reset it passes every other
 #    case in this suite — reverting to a shared file left all 30 green, which is
@@ -263,7 +307,11 @@ STUB_STDERR_LONGLINE=1 STUB_EXIT=1 \
   bash "$DRIVER" --project "$WS15" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
 # chars 14..31 of the canary — what the amputated cut published last time.
 assert_file_lacks    "$WS15/$LOG" "6543210ABCDEFGHIJK" "a credential straddling the byte cap is not published as a fragment"
-assert_file_lacks    "$WS15/$LOG" "LEAKCANARY"         "nor is any other part of it"
+# NOT `lacks LEAKCANARY`: the canary's first 13 characters sit BEFORE the cut and
+# were never at risk, so that assertion could not fail while the bug was present.
+# ENDOFLONGLINE is at the far end of the same line, which a drop-the-LAST-line or
+# drop-N-bytes variant would publish — so this one moves under a real mutation.
+assert_file_lacks    "$WS15/$LOG" "ENDOFLONGLINE"      "and no other part of the over-long line is published either"
 assert_file_contains "$WS15/$LOG" "nothing shown"      "and the log says why it is empty rather than looking broken"
 
 report "session-stderr.test.sh"

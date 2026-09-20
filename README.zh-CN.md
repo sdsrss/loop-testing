@@ -170,10 +170,14 @@ stderr 的最后 20 行(4000 字节)会以 `session N stderr:` 追加进 `driver
 
 - **凭据式名字后面不足 10 个字符的值不遮**,因为 `token: expected ';'` 是语法错误。同一条下限
   也意味着 `token: unexpected end of input` 会丢掉 `unexpected` 这个词。
-- **`keyId=`、`AccessToken=`、`slacktoken=` 不被当作密钥名**(粘连后缀、大驼峰、小写粘连)。
-  值足够不透明时仍由 32 字符兜底规则接住。
-- **小驼峰的方法名会被当作密钥名**,所以 `Tokenizer.readToken: <长值>` 会被遮;带连字符的 CSS
-  规范名(`ident-token:`、`delim-token:`)同理。
+- **粘连式名字按前缀白名单匹配**(`accessToken`、`ClientSecret`、`dbPassword` 等,大小写两种写法
+  都认),所以未列入的 `twilioToken=` 不认,`keyId=` 这种粘连后缀也不认;值足够不透明时仍由 32 字符
+  兜底规则接住。用白名单是因为结构化方案经实测**两个方向同时失败**:按首字母大小写判别,会漏掉全部
+  大驼峰凭据(.NET 配置、Go 对 `oauth2.Token` 打 `%+v`),同时遮掉整套词法分析器 API
+  (`nextToken:`、`readToken:`)。
+- **带连字符的 CSS 规范名会被遮**(`ident-token:`、`delim-token:`),因为连字符在 `X-Api-Key`
+  这类头名里是合法分隔符。
+- **`authorization` 的值若换行写在下一行则不遮**。规则按行匹配,而美化过的 JSON 会把它们拆开。
 - **无标签的 40 字符 AWS secret key 不遮**。它的斜杠把它切到兜底阈值以下,而把 `/` 并入阈值会让
   每一条 `ENOENT` 和调用栈里的绝对路径都变成一整段 `***REDACTED***`。
 - **超过 4000 字节的单行整行丢弃,不做节选**,日志里会说明原因。节选它曾经把一个标签被切掉的凭据

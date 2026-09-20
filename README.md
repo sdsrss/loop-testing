@@ -196,11 +196,17 @@ this feature exists to deliver, and they were measured, not guessed:
 - **A value under 10 characters after a credential-shaped name is not masked**, because
   `token: expected ';'` is a parser error. The same floor means `token: unexpected end of
   input` loses the word `unexpected`.
-- **`keyId=`, `AccessToken=` and `slacktoken=` are not recognised as credential names** —
-  a glued suffix, an UpperCamelCase name and a lowercase glued name respectively. The
-  32-character fallback still catches them when the value is opaque enough.
-- **A lowerCamelCase method name is**, so `Tokenizer.readToken: <long value>` is masked.
-  Hyphenated CSS spec names (`ident-token:`, `delim-token:`) are masked for the same reason.
+- **Glued names are matched from a list of prefixes** — `accessToken`, `ClientSecret`,
+  `dbPassword` and so on, in either capitalisation — so an unlisted one such as
+  `twilioToken=` is not recognised, and neither is a glued suffix like `keyId=`. The
+  32-character fallback still catches them when the value is opaque enough. The list exists
+  because the structural alternative was measured and fails in both directions at once:
+  keying on capitalisation leaks every PascalCase credential (.NET config, Go's `%+v` on
+  `oauth2.Token`) *and* redacts the whole lexer API (`nextToken:`, `readToken:`).
+- **Hyphenated CSS spec names are masked** (`ident-token:`, `delim-token:`), because a
+  hyphen is a legitimate separator in a header name like `X-Api-Key`.
+- **An `authorization` value on the line *after* its name is not masked.** The rules are
+  line-based, and a pretty-printed JSON body can split them.
 - **An unlabelled 40-character AWS secret key is not masked.** Its slashes split it below
   the fallback's threshold, and adding `/` to that threshold turns every absolute path in
   every `ENOENT` and stack frame into one redacted run.

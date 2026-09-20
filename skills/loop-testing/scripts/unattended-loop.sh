@@ -499,29 +499,37 @@ session_err_redact() {
     `# short credential pair is under the 32-char fallback. Stops at the closing` \
     `# quote rather than running to end of line, so the rest of the JSON (status` \
     `# codes, retry-after, the message itself) survives.` \
-    -e "s#([$dq$q][Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][$dq$q][[:space:]]*[:=][[:space:]]*[$dq$q])([A-Za-z]+[[:space:]]+)?[^$dq$q]*#\\1\\2***REDACTED***#g" \
+    `# The leading [A-Za-z-]* and the optional > cover the renderings review found` \
+    `# still leaking afterwards: "x-authorization", "proxy-authorization", and` \
+    `# Ruby/Perl "authorization" => "Basic …".` \
+    `# Residual: sed is line-based, so a value on the NEXT line (pretty-printed` \
+    `# JSON) is an orphaned 24-character run that no rule here can attribute.` \
+    -e "s#([$dq$q][A-Za-z-]*[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][$dq$q][[:space:]]*[:=]>?[[:space:]]*[$dq$q])([A-Za-z]+[[:space:]]+)?[^$dq$q]*#\\1\\2***REDACTED***#g" \
     `# Authorization: take the REST OF THE LINE past an optional scheme word.` \
     `# Taking the next token instead redacted "Basic" and published the base64.` \
     `# Rest-of-line is deliberate for the bare header form — the value IS the` \
     `# rest — and costs any diagnostic printed after it on the same line.` \
     -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*[:=][[:space:]]*([A-Za-z]+[[:space:]]+)?).*/\1***REDACTED***/' \
-    `# lowerCamelCase names, FIRST because it is the narrower rule: accessToken,` \
-    `# clientSecret, dbPassword. Review found twelve of these leaking past the` \
-    `# rule below — it wants a separator before the secret word and camelCase has` \
-    `# none. Structural rather than a list, so slackToken and npmToken match` \
-    `# without being named.` \
-    `# The case test is doing two jobs, both measured. The capital on Token/Secret` \
-    `# /Password separates 'accessToken=' from a lexer's 'nexttoken:', 'betoken:'` \
-    `# and 'peektoken:'. The LOWERCASE first letter separates it from a parser` \
-    `# CLASS name — SyntaxToken, LexToken, HTMLToken, CommentToken are all real` \
-    `# shipped types, and an [A-Za-z] prefix here redacted every one of their` \
-    `# diagnostics. Credential identifiers are lowerCamelCase fields; type names` \
-    `# are UpperCamelCase. That one character is the whole discriminator.` \
-    `# Residuals, measured: a lowerCamelCase METHOD name still matches` \
-    `# ('Tokenizer.readToken: <10+ chars>' is redacted), and in the other` \
-    `# direction an UpperCamelCase credential name (AccessToken=) or a lowercase` \
-    `# glued one (slacktoken=) is not caught here at all.` \
-    -e "s#(^|[^A-Za-z0-9])([a-z][A-Za-z0-9]*)(Token|Secret|Password)([$dq$q]?[[:space:]]*[:=][[:space:]]*[$dq$q]?)[A-Za-z0-9._~+/=-]{10,}#\\1\\2\\3\\4***REDACTED***#g" \
+    `# Glued <prefix>Token / <prefix>Secret / <prefix>Password names, FIRST because` \
+    `# it is the narrower rule. The rule below wants a separator before the secret` \
+    `# word, so every camelCase and PascalCase form slipped past it: review found` \
+    `# twelve lowerCamelCase leaks (accessToken, clientSecret, dbPassword…) and,` \
+    `# after the first attempt at this rule, nine PascalCase ones — .NET` \
+    `# appsettings.json is PascalCase by convention, and Go's %+v on oauth2.Config` \
+    `# and oauth2.Token prints exported fields, which are necessarily capitalised.` \
+    `#` \
+    `# The prefix is ENUMERATED, and that is the second attempt at this rule. The` \
+    `# first tried to do it structurally, on the case of the first letter:` \
+    `# lowercase meant a credential field, uppercase a type name. Measured, case` \
+    `# carries no such information — accessToken and nextToken are both` \
+    `# lowerCamelCase, AccessToken and SyntaxToken are both PascalCase — so the` \
+    `# structural rule failed in BOTH directions at once: it leaked the nine` \
+    `# PascalCase credentials and redacted thirteen lexer-API names (nextToken:,` \
+    `# peekToken:, readToken:, expectToken:…), which are exactly the diagnostics` \
+    `# this feature exists to carry. A list that fails by missing an unlisted` \
+    `# prefix beats a structure that fails at both ends.` \
+    `# Residual, stated: an unlisted prefix (twilioToken=) is not matched here.` \
+    -e "s#(^|[^A-Za-z0-9])(([Aa]ccess|[Rr]efresh|[Ss]ession|[Ii]d|[Bb]earer|[Cc]lient|[Aa]pi|[Aa]uth|[Oo]auth|[Bb]ot|[Uu]ser|[Aa]dmin|[Ww]ebhook|[Ss]lack|[Nn]pm|[Gg]it[Hh]ub|[Gg]it[Ll]ab|[Ss]tripe|[Dd]b)(Token|Secret|Password))([$dq$q]?[[:space:]]*[:=][[:space:]]*[$dq$q]?)[A-Za-z0-9._~+/=-]{10,}#\\1\\2\\5***REDACTED***#g" \
     `# name=value whose NAME says secret/token/password/key. Three bounds, each` \
     `# one a defect the pulled round shipped: the word must START at a` \
     `# non-alphanumeric boundary (it matched 'key' inside 'monKEY'), it must END` \
