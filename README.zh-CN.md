@@ -156,6 +156,14 @@ bash skills/loop-testing/scripts/unattended-codex.sh --project <目标项目> \
 退出码:`0` 技能自身收敛终态 · `2` 参数错误 · `3` 达 `--max-sessions` · `4` 达 `--max-minutes`
 · `5` 连续两会话无进展。每会话进度写入 `docs/looptesting/driver.log`。
 
+**权限模型——首次无头运行前必读。** 两个驱动都以**关闭全部权限确认**的方式启动 agent:
+`claude -p … --permission-mode bypassPermissions` 与 `codex exec -s danger-full-access`。
+任何命令、编辑、联网都不会再问你——子会话以你当前用户在这台机器上的完整权限运行,技能的红线
+是提示词纪律,不是操作系统边界。真正的硬限制只有每会话墙钟看门狗(`--session-minutes`,
+`timeout -k`)、`--max-turns`(Claude)和上面的运行上限。请只在你能接受「无人值守 agent
+拥有该权限」的项目与机器上使用驱动(容器或虚拟机是安全默认),并在需要之前先读「已知限制」
+里的「提前停掉无人值守长跑」。
+
 ### MoA 多模型决策配置
 
 需决策的问题走 `scripts/moa.mjs`(Node ≥ 20,零第三方依赖)。**API key 只从环境变量读,日志一律脱敏。**
@@ -231,7 +239,11 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 git log qa-baseline..qa/loop-testing --oneline
 git merge qa/loop-testing            # 或 cherry-pick 选定哈希
 
-# 2. 一键清扫本次运行的全部自建物(marker 门控,仅限终态运行)
+# 2. 一键清扫本次运行的全部自建物(marker 门控,仅限终态运行)。
+#    SKILL_DIR 是技能的**安装目录**,不是目标项目——按你的安装方式先赋值再执行:
+SKILL_DIR=~/.codex/skills/loop-testing                                              # Codex
+SKILL_DIR=~/.claude/plugins/cache/loop-testing/loop-testing/<version>/skills/loop-testing  # Claude Code 插件(ls 该目录查 <version>)
+SKILL_DIR=<本仓库路径>/skills/loop-testing                                           # --plugin-dir 加载 / git clone
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
 #    分支相对基线仍有 commit 就一律保留——删不删由你定。若分支指针还能从
 #    其它 ref 到达(你已把它 merge 到某处),purge 会直接说明,不再要求你重新

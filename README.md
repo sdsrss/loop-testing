@@ -176,6 +176,17 @@ Exit codes: `0` skill reached a terminal status · `2` argument error · `3` hit
 `--max-sessions` · `4` hit `--max-minutes` · `5` two sessions with no progress. Per-session
 progress is appended to `docs/looptesting/driver.log`.
 
+**Permission model — read before the first headless run.** Both drivers launch the agent
+with every permission prompt disabled: `claude -p … --permission-mode bypassPermissions`
+and `codex exec -s danger-full-access`. Nothing asks you before a command, an edit or a
+network call — the child session runs with your user's full privileges on that machine,
+and the skill's red lines are prompt discipline, not an OS boundary. The only hard limits
+are the per-session wall-clock watchdog (`--session-minutes`, `timeout -k`), `--max-turns`
+(Claude), and the run limits above. Use the drivers only on a project and a machine where
+you would accept an unattended agent with that access (a container or VM is the safe
+default), and see "Stopping an unattended run early" under Known limitations before you
+need it.
+
 ### MoA decision configuration
 
 Decision-type issues call `scripts/moa.mjs` (Node ≥ 20, no third-party deps).
@@ -261,7 +272,12 @@ A finished run (after `sandbox-clean.sh`) **deliberately keeps** these artifacts
 git log qa-baseline..qa/loop-testing --oneline
 git merge qa/loop-testing            # or cherry-pick selected hashes
 
-# 2. Purge everything the run owned (marker-gated, terminal runs only)
+# 2. Purge everything the run owned (marker-gated, terminal runs only).
+#    SKILL_DIR is the INSTALLED skill directory, not the target project —
+#    set it for your install before running the command:
+SKILL_DIR=~/.codex/skills/loop-testing                                              # Codex
+SKILL_DIR=~/.claude/plugins/cache/loop-testing/loop-testing/<version>/skills/loop-testing  # Claude Code plugin (ls that dir for <version>)
+SKILL_DIR=<path to this repo>/skills/loop-testing                                   # --plugin-dir load / git clone
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
 #    a branch with commits beyond the baseline is always KEPT — deleting commits
 #    stays your call. When the tip is also reachable from another ref (you MERGED

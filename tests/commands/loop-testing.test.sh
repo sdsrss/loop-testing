@@ -34,7 +34,7 @@ pass() { printf '  ok: %s\n' "$1"; }
 fail() { printf '  FAIL: %s\n' "$1"; _fails=1; }
 # whitespace-flattened substring match: markdown wraps phrases across lines, so
 # collapse all runs of whitespace to a single space before matching.
-has()  { if tr '[:space:]' ' ' < "$1" | tr -s ' ' | grep -qF "$2"; then pass "$3"; else fail "$3 (missing '$2' in ${1##*/})"; fi; }
+has()  { if tr '[:space:]' ' ' < "$1" | tr -s ' ' | grep -qF -- "$2"; then pass "$3"; else fail "$3 (missing '$2' in ${1##*/})"; fi; }
 
 # ── both files exist ───────────────────────────────────────────────────────────
 [ -f "$SKILL" ]  && pass "claude skill file exists"  || fail "skills/loop-testing/SKILL.md missing"
@@ -128,6 +128,68 @@ for f in "$SKILL" "$PROMPT"; do
   has "$f" '最多 3 轮'      "$n gives the round-cap usage example"
   has "$f" 'max_rounds: N' "$n round-cap hint writes max_rounds into STATE.md"
 done
+
+# ── README / template / skill text contradictions (audit 2026-09-20 K-01/K-02/K-05/D-04) ──
+README_EN="$REPO_ROOT/README.md"
+README_ZH="$REPO_ROOT/README.zh-CN.md"
+TEMPLATE="$REPO_ROOT/skills/loop-testing/templates/FINAL_REPORT.md"
+
+# K-05: both READMEs run `bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge` — a
+# command a user pastes verbatim. Neither defined SKILL_DIR, so pasted as-is it ran
+# `/scripts/sandbox-clean.sh`. Assert a `SKILL_DIR=` assignment precedes the FIRST use.
+for f in "$README_EN" "$README_ZH"; do
+  n="${f##*/}"
+  first_use=$(grep -n '"\$SKILL_DIR"' "$f" | head -1 | cut -d: -f1)
+  first_def=$(grep -n '^SKILL_DIR=' "$f" | head -1 | cut -d: -f1)
+  if [ -z "$first_use" ]; then fail "$n: purge command using \"\$SKILL_DIR\" is gone (README purge section)"
+  elif [ -z "$first_def" ]; then fail "$n: \"\$SKILL_DIR\" is used (line $first_use) but never assigned (K-05)"
+  elif [ "$first_def" -lt "$first_use" ]; then pass "$n: SKILL_DIR is assigned (line $first_def) before its first use (line $first_use)"
+  else fail "$n: SKILL_DIR is first assigned at line $first_def, after its first use at line $first_use (K-05)"; fi
+  # every install shape a user can have gets a definition
+  has "$f" 'SKILL_DIR=~/.codex/skills/loop-testing' "$n defines SKILL_DIR for the Codex install"
+  has "$f" 'SKILL_DIR=~/.claude/plugins/cache/loop-testing/loop-testing/' "$n defines SKILL_DIR for the Claude Code plugin install"
+  # D-04: the permission mode the drivers actually use must be disclosed where the
+  # drivers are documented — the exact flags, so a reader can grep the driver for them.
+  has "$f" '--permission-mode bypassPermissions' "$n discloses the Claude driver's bypassPermissions mode (D-04)"
+  has "$f" '-s danger-full-access' "$n discloses the Codex driver's danger-full-access sandbox (D-04)"
+done
+# ...and the disclosure must not be stale: the drivers must still use exactly those flags.
+grep -qF -- '--permission-mode bypassPermissions' "$REPO_ROOT/skills/loop-testing/scripts/unattended-loop.sh" \
+  && pass "unattended-loop.sh still launches with bypassPermissions (README disclosure is current)" \
+  || fail "unattended-loop.sh no longer uses --permission-mode bypassPermissions — update the README permission paragraph"
+grep -qF -- '-s danger-full-access' "$REPO_ROOT/skills/loop-testing/scripts/unattended-codex.sh" \
+  && pass "unattended-codex.sh still launches with danger-full-access (README disclosure is current)" \
+  || fail "unattended-codex.sh no longer uses -s danger-full-access — update the README permission paragraph"
+
+# K-02: the template is what the model instantiates; its header said "run
+# sandbox-clean BEFORE the report", the reference (exit-and-report.md §4) says
+# report → terminal status → clean, and names clean-first as the unguarded window.
+if grep -qF '报告前先执行' "$TEMPLATE"; then fail "FINAL_REPORT template tells the model to clean BEFORE the report (K-02)"
+else pass "FINAL_REPORT template no longer orders clean before the report"; fi
+has "$TEMPLATE" '最后才执行 `sandbox-clean`' "FINAL_REPORT template puts sandbox-clean LAST, matching exit-and-report.md §4"
+has "$TEMPLATE" '写为终态' "FINAL_REPORT template names the terminal-status write between report and clean"
+
+# K-01: the script-not-found fallback told the model to isolate with a manual
+# `git worktree`, which round-0.md §7 forbids and whose isolation gate (ownership.env)
+# a manual worktree can never pass. The fallback must now stop with BLOCKED, and give
+# deterministic locate steps first.
+# The section is a single blockquote line headed `> **脚本与模板定位`; anchor on the
+# header, not on the phrase (an earlier paragraph cross-references it by name).
+fb="$(grep -F '> **脚本与模板定位' "$SKILL")"
+[ -n "$fb" ] && pass "SKILL.md has the 脚本与模板定位 blockquote (fallback section present)" \
+             || fail "SKILL.md lost the '> **脚本与模板定位' blockquote — the K-01 assertions below would pass vacuously"
+if printf '%s' "$fb" | grep -qF '用 `git worktree` 或 `qa/loop-testing` 分支隔离'; then
+  fail "SKILL.md fallback still tells the model to build a manual git worktree (K-01)"
+else pass "SKILL.md fallback no longer suggests a manual git worktree"; fi
+printf '%s' "$fb" | grep -qF 'status: BLOCKED' \
+  && pass "SKILL.md fallback stops with BLOCKED when sandbox-setup.sh cannot be located" \
+  || fail "SKILL.md fallback must end in status: BLOCKED, not a hand-built sandbox (K-01)"
+printf '%s' "$fb" | grep -qF 'plugins/cache/*/loop-testing/*/skills/loop-testing' \
+  && pass "SKILL.md fallback gives a deterministic plugin-cache locate step" \
+  || fail "SKILL.md fallback lacks the plugin-cache locate step"
+printf '%s' "$fb" | grep -qF 'ownership.env' \
+  && pass "SKILL.md fallback explains why a manual worktree fails the isolation gate" \
+  || fail "SKILL.md fallback must mention the ownership.env gate"
 
 finish() {
   if [ "$_fails" -eq 0 ]; then printf '%s: PASS\n' "$_name"; exit 0
