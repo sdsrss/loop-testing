@@ -161,6 +161,25 @@ extract_purge_block() { # readme -> the ```bash fence that assigns SKILL_DIR
   ' "$1"
 }
 
+# The glob's own segments must come from the manifests, not from agreement.
+# `cache` is Claude Code's layout; the marketplace segment and the version segment
+# are varied by fixtures below. The remaining two — the PLUGIN name and the SKILL
+# directory name — were pinned identically in the documented glob and in the
+# fixture, derived from nothing, so renaming the plugin in .claude-plugin/plugin.json
+# left every assertion green while the documented path went stale. Derive both.
+plugin_name=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$REPO_ROOT/.claude-plugin/plugin.json" \
+              | head -1 | sed 's/.*:[[:space:]]*"//; s/"$//')
+skill_name=""; skill_count=0
+for d in "$REPO_ROOT"/skills/*/; do
+  [ -f "$d/SKILL.md" ] || continue
+  skill_name="$(basename "$d")"; skill_count=$((skill_count+1))
+done
+[ -n "$plugin_name" ] && pass "read the plugin name from .claude-plugin/plugin.json ($plugin_name)" \
+                      || fail "could not read a plugin name from .claude-plugin/plugin.json"
+[ "$skill_count" -eq 1 ] && pass "exactly one skills/*/SKILL.md defines the skill dir name ($skill_name)" \
+                         || fail "expected exactly one skills/*/SKILL.md, found $skill_count"
+expected_glob="\"\$HOME\"/.claude/plugins/cache/*/$plugin_name/*/skills/$skill_name"
+
 K5=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-k05.XXXXXX")
 trap 'rm -rf "$K5"' EXIT
 mkdir -p "$K5/neutral"
@@ -218,6 +237,15 @@ for f in "$README_EN" "$README_ZH"; do
   # replace; quoted, a careless paste fails naming the placeholder instead.
   if grep -qE '^SKILL_DIR="' "$blk"; then pass "$n: SKILL_DIR is assigned a quoted value"
   else fail "$n: SKILL_DIR must be assigned a QUOTED value — unquoted <placeholder> parses as a redirection (K-05)"; fi
+
+  # the documented glob must name what the manifests actually say
+  cacheline=$(grep -F '.claude/plugins/cache/' "$blk" | head -1 \
+              | sed 's/^[[:space:]]*//; s/[[:space:]]*\\$//; s/[[:space:]]*$//')
+  if [ "$cacheline" = "$expected_glob" ]; then
+    pass "$n: the cache glob matches the plugin + skill names the manifests declare"
+  else
+    fail "$n: the documented glob does not match the manifests — expected [$expected_glob], README has [$cacheline]"
+  fi
 
   # fixture 1 — Codex default layout, no CODEX_HOME
   H="$K5/case-codex/a home dir"; mk_install "$H/.codex/skills/loop-testing"
@@ -313,7 +341,7 @@ for f in "$README_EN" "$README_ZH"; do
     || fail "$n: set -e aborted the listing (got: $outG)"
   if grep -qF 'paste one of the paths printed above' "$K5/err"; then
     pass "$n: under set -euo pipefail the block still reaches the purge step"
-  else fail "$n: set -e stopped the block before step 3 — add '|| true' to the listing"; fi
+  else fail "$n: set -e stopped the block before step 3 — the listing must not exit non-zero (the old 'ls -d' form did, once per install you lack)"; fi
 
   # pasted into a shell that cancels commands carrying an unmatched glob (zsh's
   # default nomatch; bash's failglob here). The Codex install exists and must
@@ -362,9 +390,9 @@ else pass "SKILL.md fallback no longer suggests a manual git worktree"; fi
 printf '%s' "$fb" | grep -qF 'status: BLOCKED' \
   && pass "SKILL.md fallback stops with BLOCKED when sandbox-setup.sh cannot be located" \
   || fail "SKILL.md fallback must end in status: BLOCKED, not a hand-built sandbox (K-01)"
-printf '%s' "$fb" | grep -qF 'plugins/cache/*/loop-testing/*/skills/loop-testing' \
-  && pass "SKILL.md fallback gives a deterministic plugin-cache locate step" \
-  || fail "SKILL.md fallback lacks the plugin-cache locate step"
+printf '%s' "$fb" | grep -qF "plugins/cache/*/$plugin_name/*/skills/$skill_name" \
+  && pass "SKILL.md fallback's locate step names the manifest plugin + skill names" \
+  || fail "SKILL.md fallback's plugin-cache glob does not match the manifests (want cache/*/$plugin_name/*/skills/$skill_name)"
 printf '%s' "$fb" | grep -qF 'ownership.env' \
   && pass "SKILL.md fallback explains why a manual worktree fails the isolation gate" \
   || fail "SKILL.md fallback must mention the ownership.env gate"

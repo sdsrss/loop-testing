@@ -277,18 +277,16 @@ Then purge. `SKILL_DIR` is the **installed skill** directory, not the target pro
 list your installs first and name the one you want, because this deletes things:
 
 ```bash
-# 2. Find your install — prints one line per install found.
+# 2. Find your install — prints one line per install found, as an absolute path,
+#    so it still means the same thing when you purge later from the target repo.
 #    Wrapped in `bash -c` so the globs behave the same in zsh (the macOS login
-#    shell, where an unmatched glob would cancel the whole command) as in bash,
-#    and `|| true` so a `set -e` caller cannot stop here on a non-zero status.
-#    Each hit is printed as an absolute path, so it still means the same thing
-#    when you purge later from the target repo.
+#    shell, where an unmatched glob would cancel the whole command) as in bash.
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}" bash -c 'CDPATH=; for d in \
       "$CODEX_HOME"/skills/loop-testing \
       "$HOME"/.claude/plugins/cache/*/loop-testing/*/skills/loop-testing \
       "$PWD"/skills/loop-testing; do
   if [ -r "$d/scripts/sandbox-clean.sh" ]; then ( cd "$d" && pwd ); fi
-done' || true
+done'
 
 # 3. Set it to one of the lines above, then purge.
 SKILL_DIR="<paste one of the paths printed above>"

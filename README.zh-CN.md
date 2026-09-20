@@ -244,17 +244,16 @@ git merge qa/loop-testing            # 或 cherry-pick 选定哈希
 你的安装列出来,再亲手指定用哪一份:
 
 ```bash
-# 2. 找到你的安装——每找到一份就打印一行。
+# 2. 找到你的安装——每找到一份就打印一行,且一律是**绝对路径**,这样你稍后切到
+#    目标仓库再执行清扫时,它指的仍然是同一个目录。
 #    套一层 `bash -c`,让通配符在 zsh(macOS 默认登录 shell,未匹配的通配符会
-#    直接取消整条命令)里与 bash 行为一致;末尾 `|| true` 保证列举这一步即使
-#    返回非零,也不会让开了 `set -e` 的调用方在此中断。每个命中都按**绝对路径**
-#    打印,这样你稍后切到目标仓库再执行清扫时,它指的仍然是同一个目录。
+#    直接取消整条命令)里与 bash 行为一致。
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}" bash -c 'CDPATH=; for d in \
       "$CODEX_HOME"/skills/loop-testing \
       "$HOME"/.claude/plugins/cache/*/loop-testing/*/skills/loop-testing \
       "$PWD"/skills/loop-testing; do
   if [ -r "$d/scripts/sandbox-clean.sh" ]; then ( cd "$d" && pwd ); fi
-done' || true
+done'
 
 # 3. 把它设为上面打印出的某一行,然后清扫。
 SKILL_DIR="<paste one of the paths printed above>"
