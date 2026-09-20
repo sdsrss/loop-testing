@@ -173,6 +173,23 @@ run_block() { # blockfile home codexhome cwd
   else                 ( cd "$4" && HOME="$2" env -u CODEX_HOME bash "$1" ) 2>"$K5/err"; fi
 }
 
+# CODEX_HOME set as a PLAIN SHELL VARIABLE, never exported. `bash -c` inherits
+# only exported variables, so a listing that reads $CODEX_HOME inside the quoted
+# `bash -c` string would silently fall back to ~/.codex here — the same class of
+# bug as the hardcoded path, and invisible to every other case in this file. The
+# block must therefore re-export it on the command itself.
+run_block_unexported() { # blockfile home codexhome cwd
+  ( cd "$4" && HOME="$2" env -u CODEX_HOME \
+      bash -c 'CODEX_HOME="$1"; . "$2"' _ "$3" "$1" ) 2>"$K5/err"
+}
+
+# the reader pastes into a script with `set -euo pipefail`, or into zsh, whose
+# default `nomatch` cancels a command carrying an unmatched glob (emulated here
+# with bash's failglob, the closest bash equivalent).
+run_block_opts() { # blockfile home cwd shellopts
+  ( cd "$3" && HOME="$2" env -u CODEX_HOME bash -c "$4"' ; . "$1"' _ "$1" ) 2>"$K5/err"
+}
+
 # every path the block prints must be a real, readable install
 assert_all_candidates_readable() { # listing label
   local line bad=0
@@ -210,13 +227,23 @@ for f in "$README_EN" "$README_ZH"; do
     && pass "$n: lists the default Codex install (space in \$HOME survives)" \
     || fail "$n: default Codex install not listed (got: $cands)"
 
-  # fixture 2 — CODEX_HOME pointed somewhere else
+  # fixture 2 — CODEX_HOME pointed somewhere else, in all three export states
   H2="$K5/case-codexhome/a home dir"; CH="$K5/case-codexhome/a codex home"
   mkdir -p "$H2"; mk_install "$CH/skills/loop-testing"
   outB=$(run_block "$blk" "$H2" "$CH" "$K5/neutral")
   printf '%s\n' "$outB" | grep -qxF "$CH/skills/loop-testing" \
-    && pass "$n: honours CODEX_HOME instead of ~/.codex" \
-    || fail "$n: CODEX_HOME install not listed (got: $outB)"
+    && pass "$n: honours an exported CODEX_HOME instead of ~/.codex" \
+    || fail "$n: exported CODEX_HOME install not listed (got: $outB)"
+  outB2=$(run_block_unexported "$blk" "$H2" "$CH" "$K5/neutral")
+  printf '%s\n' "$outB2" | grep -qxF "$CH/skills/loop-testing" \
+    && pass "$n: honours a CODEX_HOME that is set but NOT exported" \
+    || fail "$n: CODEX_HOME set but not exported fell back to the default (got: $outB2)"
+  # unset is fixture 1's path; assert here that it really is the default, not ""
+  H2D="$K5/case-codexunset/a home dir"; mk_install "$H2D/.codex/skills/loop-testing"
+  outB3=$(run_block "$blk" "$H2D" "" "$K5/neutral")
+  printf '%s\n' "$outB3" | grep -qxF "$H2D/.codex/skills/loop-testing" \
+    && pass "$n: with CODEX_HOME unset, falls back to \$HOME/.codex" \
+    || fail "$n: unset CODEX_HOME did not fall back to \$HOME/.codex (got: $outB3)"
 
   # fixture 3 — plugin cache holding several versions, one of them a commit SHA.
   # The block must PRINT them all and pick none: 0.9.0 sorts after 0.10.0
@@ -230,6 +257,27 @@ for f in "$README_EN" "$README_ZH"; do
   if [ "$nC" -eq 3 ]; then pass "$n: prints all three cached versions, choosing none"
   else fail "$n: expected 3 cached candidates, got $nC ($outC)"; fi
   assert_all_candidates_readable "$outC" "$n"
+
+  # fixture 3b — the marketplace segment is a wildcard for a reason. A fixture
+  # built under `cache/loop-testing/loop-testing/` cannot tell a correct glob from
+  # one that hardcodes this repo's own marketplace name, so use a different name
+  # here: the guard must follow the block, not agree with the fixture.
+  H3B="$K5/case-othermarket/a home dir"
+  mk_install "$H3B/.claude/plugins/cache/some-other-marketplace/loop-testing/1.2.3/skills/loop-testing"
+  outC2=$(run_block "$blk" "$H3B" "" "$K5/neutral")
+  printf '%s\n' "$outC2" | grep -qxF "$H3B/.claude/plugins/cache/some-other-marketplace/loop-testing/1.2.3/skills/loop-testing" \
+    && pass "$n: finds an install under a differently-named marketplace dir" \
+    || fail "$n: the marketplace path segment is hardcoded, not globbed (got: $outC2)"
+
+  # fixture 3c — CODEX_HOME given as a RELATIVE path. The listing happens in one
+  # directory and the purge runs later from the target repo, so a relative hit
+  # would bind somewhere else by then. Every printed line must be absolute.
+  H3C="$K5/case-relative/a home dir"; mkdir -p "$H3C"
+  mk_install "$K5/case-relative/rel codex/skills/loop-testing"
+  outC3=$( cd "$K5/case-relative" && HOME="$H3C" CODEX_HOME="rel codex" bash "$blk" 2>/dev/null )
+  printf '%s\n' "$outC3" | grep -qxF "$K5/case-relative/rel codex/skills/loop-testing" \
+    && pass "$n: a relative CODEX_HOME is printed as an absolute path" \
+    || fail "$n: relative CODEX_HOME printed a path that binds elsewhere at purge time (got: $outC3)"
 
   # fixture 4 — a clone you are standing in
   H4="$K5/case-clone/a home dir"; CL="$K5/case-clone/a clone dir"
@@ -255,6 +303,25 @@ for f in "$README_EN" "$README_ZH"; do
   if grep -qF 'paste one of the paths printed above' "$K5/err"; then
     pass "$n: an unedited paste fails naming the placeholder"
   else fail "$n: an unedited paste must fail naming the placeholder, stderr was: $(cat "$K5/err")"; fi
+
+  # pasted into a `set -euo pipefail` script: `ls` returns non-zero for every
+  # install the reader does not have, which is the normal case, so without the
+  # `|| true` the shell exits and step 3 never happens.
+  outG=$(run_block_opts "$blk" "$H" "$K5/neutral" 'set -euo pipefail')
+  printf '%s\n' "$outG" | grep -qxF "$H/.codex/skills/loop-testing" \
+    && pass "$n: under set -euo pipefail the listing still prints" \
+    || fail "$n: set -e aborted the listing (got: $outG)"
+  if grep -qF 'paste one of the paths printed above' "$K5/err"; then
+    pass "$n: under set -euo pipefail the block still reaches the purge step"
+  else fail "$n: set -e stopped the block before step 3 — add '|| true' to the listing"; fi
+
+  # pasted into a shell that cancels commands carrying an unmatched glob (zsh's
+  # default nomatch; bash's failglob here). The Codex install exists and must
+  # still be printed even though the plugin-cache glob matches nothing.
+  outH=$(run_block_opts "$blk" "$H" "$K5/neutral" 'shopt -s failglob')
+  printf '%s\n' "$outH" | grep -qxF "$H/.codex/skills/loop-testing" \
+    && pass "$n: an unmatched glob does not swallow the whole listing" \
+    || fail "$n: failglob/nomatch cancelled the listing, hiding a real install (got: $outH)"
 
   # and the edited paste — the reader substitutes a printed line and purges.
   chosen=$(printf '%s\n' "$outC" | grep "^$C3/" | sed -n '2p')
