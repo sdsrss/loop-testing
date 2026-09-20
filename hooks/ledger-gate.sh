@@ -32,9 +32,11 @@
 #     knowledge (`mv`, `cp`, `dd`, `install`, `truncate`);
 #   * a path computed at runtime — a variable, a command substitution, a glob —
 #     which is reported as unresolved and never guessed at;
-#   * a command past the length cap, or one the lexer rejects: both fall back to
-#     the regex leg below, which is weaker (its in-place arm still wants the flag
-#     and the path in one unbroken span). Without python3 that leg is all there is.
+#   * a command past the length cap falls back to the regex leg below, which is
+#     weaker (its in-place arm still wants the flag and the path in one unbroken
+#     span). Without python3 that leg is all there is. A command the lexer
+#     REJECTS is different: the shell would not run it either, so it is allowed
+#     outright rather than judged on a guess.
 #   * an in-place script supplied by `-f scriptfile`, whose text is not in the
 #     command;
 #   * a fake replay line written to a round log first — the original design
@@ -50,8 +52,9 @@ fi
 
 # Strip NUL bytes before the command substitution: bash warns on stderr about
 # them, and a PreToolUse hook that exits 0 with noise on stderr still shows that
-# noise to the model. No payload field can legitimately contain one.
-INPUT=$(cat | tr -d '\000')
+# noise to the model. No payload field can legitimately contain one. Both spellings
+# go: a raw byte, and the `\u0000` escape that the JSON parsers decode into one.
+INPUT=$(cat | tr -d '\000' | sed 's/\\[uU]0000//g')
 
 # --- anchor to the project root (audit HK-7) ----------------------------------
 # Same anchoring as stop-gate.sh: the hook cwd is not guaranteed to be the
@@ -140,7 +143,8 @@ $CONTENT"
 import sys,os,re,shlex,posixpath
 try:
     cmd=sys.stdin.read()
-    if len(cmd)>8192: sys.exit(0)          # length cap -> regex leg
+    if len(cmd)>8192:
+        print("LG_CAPPED=1"); sys.exit(0)  # too long to lex -> regex leg
     LED="docs/looptesting/ISSUES.md"
     armed=os.environ.get("LG_ARMED")=="1"
     def norm(t):
@@ -160,7 +164,7 @@ try:
     lx.commenters=""                       # a sed s#a#b# script is not a comment
     toks=list(lx)
     PUNCT=set("();<>|&;")
-    segs=[]; cur=[]; i=0; n=len(toks)
+    segs=[]; seps=[]; cur=[]; i=0; n=len(toks)
     while i<n:
         t=toks[i]
         if t and all(c in PUNCT for c in t):
@@ -168,11 +172,11 @@ try:
                 cur.append(("redir", toks[i+1] if i+1<n else None)); i+=2; continue
             if "<" in t:                    # input redirection is a READ
                 i+=2; continue
-            segs.append(cur); cur=[]; i+=1; continue
+            segs.append(cur); seps.append(t); cur=[]; i+=1; continue
         cur.append(("word",t)); i+=1
-    segs.append(cur)
+    segs.append(cur); seps.append("")
     ASSIGN=re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-    W=IP=UN=0; text=[]
+    W=IP=UN=0; text=[]; info=[]
     for seg in segs:
         words=[w for k,w in seg if k=="word"]
         j=0
@@ -188,25 +192,46 @@ try:
             elif unres(r): UN=1
         if verb in ("tee","sponge"):
             for o in ops:
-                if norm(o): w=1
+                # sponge soaks stdin and REPLACES the file, so it reaches every
+                # existing row exactly as `sed -i` does — the no-ID rule has to
+                # cover it. `tee` is not marked in-place: it truncates before the
+                # pipeline reads, which is the whole reason sponge exists.
+                if norm(o): w=1; ip=ip or (verb=="sponge")
                 elif unres(o): UN=1
         if verb in ("sed","gsed","perl","ruby") and any(isip(f) for f in flags):
             for o in ops:
                 if norm(o): w=1; ip=1
                 elif unres(o): UN=1
-        if w:
-            W=1; IP=IP or ip; text.extend(ops)
+        info.append((w,ip,ops))
+    # Text of a write = the operands of its whole PIPELINE, not of its own segment:
+    # in `sed s/…/VERIFIED/ ledger | sponge ledger` the substitution sits one
+    # segment upstream of the verb that writes. Only pipes join; `;` and `&&` do
+    # not, so a plain READ standing next to a downgrade cannot supply forgery text.
+    grp=[]
+    for k in range(len(segs)):
+        grp.append(k)
+        if seps[k] not in ("|","|&") or k==len(segs)-1:
+            if any(info[m][0] for m in grp):
+                W=1
+                IP=IP or max(info[m][1] for m in grp)
+                for m in grp: text.extend(info[m][2])
+            grp=[]
     print("LG_WRITE=%d" % W)
     print("LG_INPLACE=%d" % IP)
     print("LG_UNRESOLVED=%d" % UN)
     print("LG_TEXT=%s" % shlex.quote("\n".join(text)))
     print("LG_OK=1")
 except Exception:
-    pass                                   # unlexable -> regex leg, never a deny
+    # Unlexable (an unbalanced quote, a dangling escape): this is not a command
+    # the shell would run either. Say so, and let the caller ALLOW rather than
+    # hand a guess to the regex leg and accuse on it.
+    print("LG_LEXFAIL=1")
 ' 2>/dev/null) || LEXED=""
       fi
-      LG_OK=0; LG_WRITE=0; LG_INPLACE=0; LG_UNRESOLVED=0; LG_TEXT=""
-      case "$LEXED" in *LG_OK=1*) eval "$LEXED" 2>/dev/null || LG_OK=0 ;; esac
+      LG_OK=0; LG_WRITE=0; LG_INPLACE=0; LG_UNRESOLVED=0; LG_TEXT=""; LG_LEXFAIL=0; LG_CAPPED=0
+      case "$LEXED" in
+        *LG_OK=1*|*LG_LEXFAIL=1*|*LG_CAPPED=1*) eval "$LEXED" 2>/dev/null || LG_OK=0 ;;
+      esac
 
       INTRO_TEXT="$CMD"
       if [ "$LG_OK" = "1" ] && [ "$LG_WRITE" = "1" ]; then
@@ -217,7 +242,8 @@ except Exception:
       # ---- fallback leg: no python3, lexer refused, capped, or an unresolved
       # target. Weaker (its in-place arm still wants the flag and the path in one
       # unbroken span) but target-bound, so it never denies a plain read. ----
-      if [ "$TARGETS_LEDGER" -eq 0 ] && { [ "$LG_OK" != "1" ] || [ "$LG_UNRESOLVED" = "1" ]; }; then
+      if [ "$TARGETS_LEDGER" -eq 0 ] && [ "$LG_LEXFAIL" != "1" ] \
+         && { [ "$LG_OK" != "1" ] || [ "$LG_CAPPED" = "1" ] || [ "$LG_UNRESOLVED" = "1" ]; }; then
         if [ "$ARMED" = "1" ]; then LP='(docs/looptesting/)?ISSUES\.md'; else LP='docs/looptesting/ISSUES\.md'; fi
         WB='(^|[^[:alnum:]_])'
         # Whole-token match: ISSUES.md.bak is a different file (`\b` is avoided —
@@ -325,11 +351,14 @@ introduces_verified() {
   # replacement (rather than deleting the match side) is what makes this safe: a
   # half-stripped substitution leaves its closing delimiter behind, and the next
   # pass then reads `…/ VERIFIED/…` as an address and drops a real forgery.
+  # A DIGIT may precede the verb: `2s/…/…/`, `0s/…/…/`, `1,$s/…/…/` are addresses,
+  # not words. Leaving them out left the substitution unrecognised, and the
+  # address rule below then swallowed its replacement as a match position.
   x=$(printf '%s' "$1" | sed -E \
-    -e "s${d}(^|[^A-Za-z0-9_])[sy]/([^/]*)/([^/]*)/${d} \\3 ${d}g" \
-    -e "s${d}(^|[^A-Za-z0-9_])[sy]#([^#]*)#([^#]*)#${d} \\3 ${d}g" \
-    -e "s${d}(^|[^A-Za-z0-9_])[sy],([^,]*),([^,]*),${d} \\3 ${d}g" \
-    -e "s${d}(^|[^A-Za-z0-9_])[sy]\\|([^|]*)\\|([^|]*)\\|${d} \\3 ${d}g" \
+    -e "s${d}(^|[^A-Za-z_])[sy]/([^/]*)/([^/]*)/${d} \\3 ${d}g" \
+    -e "s${d}(^|[^A-Za-z_])[sy]#([^#]*)#([^#]*)#${d} \\3 ${d}g" \
+    -e "s${d}(^|[^A-Za-z_])[sy],([^,]*),([^,]*),${d} \\3 ${d}g" \
+    -e "s${d}(^|[^A-Za-z_])[sy]\\|([^|]*)\\|([^|]*)\\|${d} \\3 ${d}g" \
     -e "s${d}/[^/]*VERIFIED[^/]*/([dp!}'\"]|\$)${d} ${d}g" \
     -e "s${d}#[^#]*VERIFIED[^#]*#([dp!}'\"]|\$)${d} ${d}g" \
     2>/dev/null) || x="$1"

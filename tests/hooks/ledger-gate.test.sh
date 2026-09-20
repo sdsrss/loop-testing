@@ -335,21 +335,62 @@ run_nopy "$WS20" "$json"; assert_rc $? 0 "no python3: downgrade still allowed (r
 json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | x\" >> docs/looptesting/ISSUES.md.bak"}}'
 run_nopy "$WS20" "$json"; assert_rc $? 0 "no python3: ISSUES.md.bak is not the ledger (regex leg)"
 
-# 37. Fail-open: deliberately malformed SHELL (not JSON) must never deny or crash.
-#     A lexer that throws has to allow.
+# 37. Fail-open: shell the lexer REJECTS must be allowed, not judged on a guess.
+#     The shell would not run these either, so a deny would be an accusation
+#     aimed at a typo. (Without python3 there is no lexer and the regex leg
+#     decides — case 36 covers that path.)
 for c in \
   "echo \\\"unbalanced quote >> docs/looptesting/ISSUES.md" \
   "sed -i 's/a/VERIFIED/ docs/looptesting/ISSUES.md" \
+  "sed -i 's/FIXED_UNVERIFIED/VERIFIED/ docs/looptesting/ISSUES.md" \
   "echo VERIFIED >> docs/looptesting/ISSUES.md \\\\" \
-  "\\\$(echo sed) -i 's/x/VERIFIED/' docs/looptesting/ISSUES.md" \
 ; do
-  run_ledger "$WS20" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}"; rc=$?
-  if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then PASS=$((PASS+1)); else
-    FAIL=$((FAIL+1)); echo "  FAIL: malformed shell must exit 0 or 2, never crash: got $rc for [$c]" >&2; fi
+  run_ledger "$WS20" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}"
+  assert_rc $? 0 "unlexable shell -> allow, never accuse: $c"
 done
-# An unterminated quote is unparseable: the lexer must not deny on it.
+# Lexable but with the VERB computed at runtime: unresolved, so the regex leg is
+# consulted and may still deny. Either answer is defensible; neither may crash.
+run_ledger "$WS20" '{"tool_name":"Bash","tool_input":{"command":"$(echo sed) -i '"'"'s/x/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'; rc=$?
+if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: runtime-computed verb must exit 0 or 2, got $rc" >&2; fi
 json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/ docs/looptesting/ISSUES.md"}}'
 out=$( cd "$WS20" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" 2>/dev/null ); rc=$?
 assert_eq "" "$out" "unterminated quote -> empty stdout"
+
+# ── Review round 3: `sponge` is functionally in-place — it soaks stdin and
+#    replaces the file — so the "name the ISSUE-ID" rule has to reach it. The
+#    replacement text lives in an earlier segment of the same PIPELINE, which is
+#    why the substitution is read across the pipe rather than per segment. ──
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sponge: mass flip through a pipeline, no ID -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'/ISSUE-002/s/OPEN/VERIFIED/'"'"' docs/looptesting/ISSUES.md | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sponge: flip naming an unfootprinted ID -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'/ISSUE-003/s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "sponge: flip naming a footprinted ID -> allow"
+# The same guard the in-place rule needs everywhere: a downgrade is not a forgery.
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/VERIFIED/OPEN/'"'"' docs/looptesting/ISSUES.md | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "sponge: downgrade through a pipeline -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"grep -w VERIFIED docs/looptesting/ISSUES.md; sed '"'"'s/VERIFIED/OPEN/'"'"' docs/looptesting/ISSUES.md | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "sponge: a READ in an adjacent (non-piped) segment does not supply the forgery text"
+
+# A sed ADDRESS written directly before the `s` (`2s/…/`, `1,$s/…/`, `0s/…/`)
+# left the substitution unrecognised, and the address rule then ate `/VERIFIED/`
+# as if it were a match position — turning a forgery into an allow. Found by the
+# fail-open battery, not by review.
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'2s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "line-number address before s -> still denied"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'1,$s/OPEN/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "range address before s -> still denied"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i 0s/a/VERIFIED/ docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "unquoted address before s -> still denied"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'2s/VERIFIED/OPEN/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "line-number address on a downgrade -> allow"
+
+# A JSON-escaped NUL reaches bash through the parser, where a raw one never does.
+WS24=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL" "$WS20" "$WS21" "$WS22" "$WS23" "$NOPY" "$WS24"' EXIT
+json='{"tool_name":"Bash","tool_input":{"command":"echo a\u0000b"}}'
+err=$( cd "$WS24" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" 2>&1 >/dev/null ); rc=$?
+assert_rc $rc 0 "JSON-escaped NUL -> fail open"
+assert_eq "" "$err" "JSON-escaped NUL -> no warning on stderr"
 
 report "ledger-gate.test.sh"
