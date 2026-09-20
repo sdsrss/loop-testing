@@ -125,6 +125,12 @@ bash install/install-codex.sh --uninstall     # 卸载(fail-closed:非本插件�
 
 ### 启动
 
+> **目标项目必须是 git 仓库。** 沙箱本身就是从你的项目切出来的 git worktree(用
+> `--mode branch` 时是一条分支),不是仓库就没有可隔离的东西:`sandbox-setup.sh` 会以
+> 退出码 3 拒绝(*not a git repository — refusing to build a sandbox that cannot be
+> isolated*),第 0 轮的隔离闸门随后把本次运行判为 `BLOCKED`,而不会在你的工作树里
+> 裸跑。先在项目里执行 `git init` 即可;还没有任何提交的仓库也可以。
+
 在目标项目里,两种方式都行:
 
 - **Slash 命令(确定性,不靠触发词):**

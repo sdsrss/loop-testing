@@ -399,6 +399,52 @@ printf '%s' "$fb" | grep -qF 'ownership.env' \
   && pass "SKILL.md fallback explains why a manual worktree fails the isolation gate" \
   || fail "SKILL.md fallback must mention the ownership.env gate"
 
+# K-12: the template is instantiated verbatim, so anything the reference doc
+# (exit-and-report.md §5) requires and the template does not carry is a section
+# the model will not write. Two were missing outright, the red-line sentence was
+# short of two forbidden operations, and the commit list did not ask for the one
+# disclosure that matters. Each assertion below anchors a phrase the correct text
+# must contain and the previous text did not.
+REF="$REPO_ROOT/skills/loop-testing/references/exit-and-report.md"
+has "$TEMPLATE" '既有/环境问题' "FINAL_REPORT template carries the pre-existing/environment section (exit-and-report.md §5.7)"
+has "$TEMPLATE" '验证清单' "FINAL_REPORT template carries the verification checklist (exit-and-report.md §5.8)"
+has "$TEMPLATE" '未执行项与原因' "the checklist asks for what was NOT run, and why"
+has "$TEMPLATE" '逐分支列出' "the commit list is per-branch (exit-and-report.md §5.9)"
+has "$TEMPLATE" '主分支上的提交必须在此显式披露' "and a commit on the main branch must be disclosed explicitly"
+has "$TEMPLATE" 'amend / rebase' "the red-line declaration includes amend and rebase, like SKILL.md"
+# The reference doc has no P3-only section; the template had one, which put the
+# same issues in two places (§4 is already ordered P0->P3) and invited a split
+# where the ordered list ends and the leftovers begin.
+if grep -qF '遗留低级问题' "$TEMPLATE"; then
+  fail "FINAL_REPORT template still has a P3-only section the reference doc does not define (K-12)"
+else pass "FINAL_REPORT template has no section the reference doc does not define"; fi
+# Both scripts' red lines must say the same thing: the template is where the
+# claim gets written down, SKILL.md is where the rule lives.
+has "$SKILL" 'force / amend / rebase' "SKILL.md still carries the red line the template now mirrors"
+# If the reference doc ever drops these, the assertions above would pin the
+# template to a contract that no longer exists — so anchor the source too.
+has "$REF" '既有/环境问题' "exit-and-report.md still requires the pre-existing/environment section"
+has "$REF" '验证清单' "exit-and-report.md still requires the verification checklist"
+
+# K-13: the target has to be a git repository — sandbox-setup.sh exits 3 without
+# one and round-0's isolation gate then stops the run as BLOCKED. The README never
+# said so, in either language, so the first thing a user learned about the
+# prerequisite was a refusal.
+for _rm in "$REPO_ROOT/README.md" "$REPO_ROOT/README.zh-CN.md"; do
+  _rn="${_rm##*/}"
+  if tr '[:space:]' ' ' < "$_rm" | tr -s ' ' | grep -qF 'git init'; then
+    pass "$_rn states the git prerequisite with the command that satisfies it"
+  else fail "$_rn does not tell the user the target must be a git repository (K-13)"; fi
+  if tr '[:space:]' ' ' < "$_rm" | tr -s ' ' | grep -qF 'not a git repository'; then
+    pass "$_rn quotes the refusal the user would otherwise meet first"
+  else fail "$_rn does not quote sandbox-setup.sh's non-git refusal (K-13)"; fi
+done
+# The quoted refusal has to be the one the script actually prints.
+if grep -qF 'not a git repository — refusing to build a sandbox that cannot be isolated' \
+     "$REPO_ROOT/skills/loop-testing/scripts/sandbox-setup.sh"; then
+  pass "sandbox-setup.sh still prints the refusal the READMEs quote"
+else fail "sandbox-setup.sh's non-git refusal no longer matches the README text (K-13)"; fi
+
 finish() {
   printf '%s: %d passed, %d failed\n' "$_name" "$_pass" "$_failn"
   [ "$_fails" -eq 0 ]
