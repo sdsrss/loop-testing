@@ -1691,3 +1691,98 @@ test('redaction: a secret containing a JSON-escapable character is scrubbed from
     }
   });
 });
+
+// R4-P3: the sibling of R3-P3, on the other side of the colon. A secret sitting
+// in an object KEY inside the depth-capped blob is escaped by JSON.stringify the
+// same way a value is, so a credential carrying `"`, `\` or a control character
+// stops matching its own secret. Closing it needs the replacer to hand back a
+// rebuilt object: JSON.stringify serializes what the replacer RETURNS, so
+// rewriting the keys there does rename them in the output.
+test('redaction: a secret in an object KEY inside a depth-capped blob is scrubbed (R4-P3)', async () => {
+  await withWorkspace(async (dir) => {
+    const KEYS = [
+      ['plain', 'sk-PLAINKEY-abc123xyz'],
+      ['double quote', 'sk-KQ"UOTE-abc123xyz'],
+      ['backslash', 'sk-KB\\SLASH-abc123xyz'],
+    ];
+    for (const [label, SECRET] of KEYS) {
+      const stub = await startServer((req, res, body) => {
+        let model = '';
+        try { model = JSON.parse(body).model; } catch { /* ignore */ }
+        const auth = req.headers.authorization || '';
+        res.setHeader('content-type', 'application/json');
+        // Seven levels: the innermost object is past the depth cap, so it is
+        // serialized as an inert blob — and the secret is in its KEY this time.
+        const content = model === 'agg-model'
+          ? JSON.stringify({
+            summary: 'S', recommendation: 'R', rationale: 'RA',
+            risks: { a: { b: { c: { d: { e: { f: { [`echoed ${auth} here`]: 'v' } } } } } } },
+          })
+          : `opinion-from-${model}`;
+        res.statusCode = 200;
+        res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+      });
+      try {
+        const input = await writeInput(dir);
+        const config = await writeConfig(dir, TWO_REF_CONFIG);
+        const out = join(dir, 'DEC.md');
+        const { code, stdout, stderr } = await runMoa(
+          ['--input', input, '--config', config, '--output', out],
+          { OPENAI_API_KEY: SECRET, OPENAI_BASE_URL: `${stub.url}/v1` },
+        );
+        assert.equal(code, 0, `[${label}] stderr: ${stderr}`);
+        const doc = await readFile(out, 'utf8');
+        const escaped = JSON.stringify(SECRET).slice(1, -1);
+        assert.ok(!doc.includes(SECRET), `[${label}] the key-position secret leaked into DEC.md`);
+        assert.ok(!doc.includes(escaped), `[${label}] the JSON-escaped key-position secret leaked into DEC.md`);
+        assert.ok(!stdout.includes(escaped), `[${label}] the key-position secret leaked to stdout`);
+        assert.ok(doc.includes('REDACTED'), `[${label}] expected the redaction marker where the echoed key was`);
+      } finally {
+        await stub.close();
+      }
+    }
+  });
+});
+
+// The blob's own shape must survive the key rewrite: values of every JSON type
+// still render, and a non-secret key is untouched.
+test('the depth-capped blob still renders every JSON value type after the key rewrite (R4-P3)', async () => {
+  await withWorkspace(async (dir) => {
+    const stub = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      res.setHeader('content-type', 'application/json');
+      const content = model === 'agg-model'
+        ? JSON.stringify({
+          summary: 'S', recommendation: 'R', rationale: 'RA',
+          risks: {
+            a: { b: { c: { d: { e: { f: {
+              int: 7, neg: -1.5, yes: true, no: false, nul: null,
+              arr: [1, 'two', [3]], emptyObj: {}, emptyArr: [],
+              uni: '中文 ☃', jsonish: '{"not":"parsed"}', quoted: 'he said "hi"\\and\ttab',
+            } } } } } },
+          },
+        })
+        : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: 'sk-unrelated-key', OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      for (const needle of ['"int":7', '"neg":-1.5', '"yes":true', '"no":false', '"nul":null',
+        '"arr":[1,"two",[3]]', '"emptyObj":{}', '"emptyArr":[]', '中文 ☃', '{\\"not\\":\\"parsed\\"}']) {
+        assert.ok(doc.includes(needle), `depth-capped blob lost ${needle}:\n${doc.slice(doc.indexOf('## 风险与分歧点'))}`);
+      }
+    } finally {
+      await stub.close();
+    }
+  });
+});

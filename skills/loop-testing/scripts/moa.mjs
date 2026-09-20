@@ -732,12 +732,21 @@ function toMarkdownValue(v, redact, depth = 0) {
     // Redact DURING serialization, not after: JSON.stringify escapes as it
     // writes, so a credential containing `"`, `\` or a control character comes
     // out as `sk-QU\"OTE…` and stops matching its own secret. That leak needs no
-    // truncation at all — the blob below can be far under the cut. (Residual,
-    // narrower still: a secret inside an object KEY at this depth is escaped the
-    // same way, and a replacer cannot rename keys; the pass below catches it
-    // only when it carries no escapable character.)
+    // truncation at all — the blob below can be far under the cut.
+    // Keys are covered too, on both sides of the colon: JSON.stringify
+    // serializes what the replacer RETURNS, so handing back a rebuilt object
+    // renames them in the output. (One accepted wrinkle: two distinct keys that
+    // both redact to the marker collapse into one entry.)
     let inert;
-    try { inert = JSON.stringify(v, (_k, val) => (typeof val === 'string' ? redact(val) : val)); } catch { return null; }
+    try {
+      inert = JSON.stringify(v, (_k, val) => {
+        if (typeof val === 'string') return redact(val);
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          return Object.fromEntries(Object.entries(val).map(([k, x]) => [redact(k), x]));
+        }
+        return val;
+      });
+    } catch { return null; }
     if (!inert) return null;
     inert = redact(inert.replace(/`/g, "'"));
     return `\`${inert.length > 500 ? `${inert.slice(0, 500)}…` : inert}\``;
