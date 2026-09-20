@@ -507,4 +507,59 @@ if grep -qF "already gone" "$WS28/clean.out"; then
   FAIL=$((FAIL+1)); echo "  FAIL: clean leaked its own worktree (unfolded ..)" >&2
 else PASS=$((PASS+1)); fi
 
+# --- case 29: a FAILED `git worktree list` is not a verdict (audit S-04) ------
+# wt_ownership's own header says "a failed command must never be mistaken for an
+# ownership verdict", and every external command was removed from the path for
+# that reason — except the one the whole function is built on. `git worktree
+# list --porcelain` can fail outright: an unreadable or locked .git/worktrees, a
+# corrupted admin entry, a fork that cannot allocate. The empty output then
+# matched nothing, so a LIVE worktree read as `absent`: clean announced "already
+# gone", purge deleted the baseline tag, and the run ended "purge done." with
+# exit 0 — the success code — while the worktree it was supposed to remove was
+# still registered and still on disk. Exit 4 exists for exactly that state ("ran
+# but stopped short"), and the one verdict that would have raised it was the one
+# a failed command silently skipped. (Measured: the marker survived this fixture
+# only because git refused to delete a branch checked out in that very worktree,
+# which is a coincidence of the fixture, not a protection.)
+#
+# The shim fails ONLY `worktree list` and delegates every other subcommand to the
+# real git, resolved before the shim goes on PATH so it cannot recurse into
+# itself. A blanket "git is broken" fixture would prove nothing — the script
+# would fail at its first rev-parse and never reach the ownership question.
+WS29=$(mk_ws); WS_ALL="$WS_ALL $WS29"
+( cd "$WS29/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? 'fixture: setup for the failing worktree-list case'
+assert_exists "$WS29/proj-qa-loop" "fixture: the worktree really is there"
+# --purge is refused outside a terminal STATE, and the refusal happens before the
+# worktree stage — without this the case would pass on exit 3 having tested
+# nothing. Not `sed -i`: BSD sed needs an argument there, so the in-place form
+# this repo already avoids would fail on macOS.
+S29="$WS29/proj/docs/looptesting/STATE.md"
+sed 's/^status: RUNNING/status: CONVERGED/' "$S29" > "$S29.new" && mv "$S29.new" "$S29"
+assert_file_contains "$S29" "status: CONVERGED" "fixture: STATE is terminal so --purge is allowed to run"
+REAL_GIT29="$(command -v git)"
+mkdir -p "$WS29/shim"
+printf '#!/usr/bin/env bash\ncase " $* " in *" worktree list "*) exit 128 ;; esac\nexec %s "$@"\n' \
+  "$REAL_GIT29" > "$WS29/shim/git"
+chmod +x "$WS29/shim/git"
+# The shim must be a shim, not a brick: if it broke ordinary git the assertions
+# below would pass for the wrong reason.
+( cd "$WS29/proj" && PATH="$WS29/shim:$PATH" git rev-parse HEAD ) >/dev/null 2>&1
+assert_ok $? "fixture: the shim delegates everything except worktree list"
+( cd "$WS29/proj" && PATH="$WS29/shim:$PATH" git worktree list --porcelain ) >/dev/null 2>&1
+assert_nonzero $? "fixture: the shim really does fail worktree list"
+
+( cd "$WS29/proj" && PATH="$WS29/shim:$PATH" bash "$CLEAN" --purge ) > "$WS29/clean.out" 2>&1
+rc29=$?
+if grep -qF "already gone" "$WS29/clean.out"; then
+  FAIL=$((FAIL+1)); echo "  FAIL: a failed 'git worktree list' was reported as 'already gone'" >&2
+else PASS=$((PASS+1)); fi
+assert_eq 4 "$rc29" "purge exits 4 (stopped short) rather than 0 when it could not identify the worktree"
+assert_exists "$WS29/proj-qa-loop" "the live worktree is still on disk"
+# The marker is what makes the leftover recoverable at all.
+assert_exists "$WS29/proj/docs/looptesting/.sandbox/ownership.env" \
+  "purge kept the ownership marker that still names the worktree"
+assert_file_contains "$WS29/clean.out" "could not confirm" \
+  "clean says it could not answer the ownership question"
+
 report "worktree-identity.test.sh"
