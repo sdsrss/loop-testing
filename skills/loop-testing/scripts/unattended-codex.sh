@@ -162,14 +162,13 @@ acquire_lock() {
   # a signal in that window terminates, and an unset flag would leave a pid-less
   # lock dir that later runs read as a live holder and refuse forever.
   if mkdir "$LOCK_DIR" 2>/dev/null; then LOCK_OWNED=1; echo "$$" > "$LOCK_DIR/pid"; return 0; fi
-  local holder=""; [ -f "$LOCK_DIR/pid" ] && read -r holder < "$LOCK_DIR/pid" 2>/dev/null
+  local holder="" hstate=alive; [ -f "$LOCK_DIR/pid" ] && read -r holder < "$LOCK_DIR/pid" 2>/dev/null
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
   # Fail-closed: steal a present lock ONLY when its holder PID is readable AND
   # confirmed no longer alive (a crashed driver). An unreadable/empty holder is
   # treated as live and refused — never steal on ambiguity. (Two drivers starting in
   # the same sub-ms window could still both steal a genuinely-stale lock; this is a
   # best-effort accidental-double-launch guard, not a hard mutex — see README.)
-  hstate=alive
   [ -n "$holder" ] && hstate="$(holder_state "$holder")"
   case "$hstate" in
     alive)
