@@ -54,7 +54,7 @@ if ( cd "$WS/proj" && git worktree list --porcelain | grep -qxF "worktree $WS/sh
 foreign_worktree_repo; assert_ok $? "fixture 2: user worktree standing at the recorded path"; WS2="$FOREIGN_WS"
 ( cd "$WS2/proj" && bash "$SETUP" --mode worktree --worktree-path "$WS2/shared-wt" ) > "$WS2/setup.out" 2>&1
 setup_rc=$?
-assert_nonzero "$setup_rc" "setup refuses rather than adopting a foreign worktree"
+assert_eq "6" "$setup_rc" "setup refuses a foreign worktree with the documented exit 6, not merely non-zero"
 if grep -qF "already initialized" "$WS2/setup.out"; then
   FAIL=$((FAIL+1)); echo "  FAIL: setup called a foreign worktree an initialized sandbox" >&2
 else PASS=$((PASS+1)); fi

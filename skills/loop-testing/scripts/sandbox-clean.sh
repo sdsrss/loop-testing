@@ -19,8 +19,16 @@
 #                    run could not claim is still registered and the marker is the
 #                    only record of it. The tag and branch are identified by
 #                    the recorded baseline, not by name: the tag goes only if it
-#                    still points at that commit, the branch only if it descends
-#                    from it — anything else of the same name is kept and named.
+#                    is a lightweight tag still AT that commit, the branch only
+#                    if it descends from it — anything else of the same name is
+#                    kept and named. KNOWN LIMIT: a lightweight tag the user
+#                    re-created at exactly the recorded baseline commit is
+#                    byte-for-byte what this sandbox writes, so nothing on disk
+#                    can tell them apart and purge deletes it. Re-creating a
+#                    deleted lightweight tag at the same commit loses nothing;
+#                    anything a user would mind losing (a message, a signature,
+#                    a different commit) makes the tag distinguishable and is
+#                    kept.
 #                    The branch is deleted only when it has no fix commits beyond
 #                    the recorded baseline OR --discard-fixes is given — fix
 #                    commits exist ONLY on that branch, so harvest them (merge /
@@ -33,6 +41,11 @@
 # 2 usage error · 3 --purge refused (no marker / non-terminal STATE) · 4 --purge
 # ran but stopped short: a worktree it could not claim is still registered, so
 # the evidence dir and its marker were kept. Resolve that worktree and re-run.
+#
+# git floors: 2.5 (`worktree`), 2.7 (`worktree list --porcelain`,
+# `for-each-ref --contains`), 1.8.0 (`merge-base --is-ancestor`). Everything
+# newer is probed and falls back (`--absolute-git-dir`, `symbolic-ref` in place
+# of `branch --show-current`).
 set -u
 
 echo_info() { echo "sandbox-clean: $*"; }
@@ -42,7 +55,7 @@ DISCARD_FIXES=0
 # Print the header block as the help text (same mechanism as install-codex.sh):
 # one source of truth, so usage and exit codes cannot drift from the comment that
 # documents them.
-usage() { sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # --help is handled in its own pass, BEFORE the parse loop, so it wins over
 # --purge on the same line and can never reach the destructive path.
@@ -127,15 +140,21 @@ fi
 # dir were all still there. An unreadable marker is strictly LESS knowable than a
 # missing one, so it refuses at least as loudly.
 #
-# Validity = the three keys every marker version has written since v0.1.2:
+# Validity = the three keys every marker version has written since v0.1.0:
 # SANDBOX_VERSION (numeric), MODE and TOP. Deliberately not a whole-file schema —
 # v1 markers legitimately lack ADOPTED_*/UNCLAIMED_WORKTREE/WORKTREE_STAMP, and
 # rejecting those would strand every sandbox created before v0.10.0.
-# Both readers drop the trailing CR and whitespace: a CRLF marker (Windows
-# editor, core.autocrlf, an evidence dir copied through a zip) used to make every
-# value end in `\r`, so this validity check refused the file and setup, reading
-# the same bytes, called a live worktree gone (audit S-08).
-marker_key() { grep -aE "^$1=[^[:space:]]" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]]*$//'; }
+#
+# `marker_key` and `mval` below are byte-identical to sandbox-setup.sh's, so one
+# marker cannot be valid to one script and invalid to the other. Only the
+# trailing CR is stripped, and only one: a CRLF marker (Windows editor,
+# core.autocrlf, an evidence dir copied through a zip) made every value end in
+# `\r`, so this check refused the file while setup, reading the same bytes,
+# called a live worktree gone (audit S-08). Stripping all trailing whitespace
+# instead would silently shorten a path whose directory name legally ends in a
+# space. Parameter expansion, not `sed 's/\r$//'`: BSD sed does not interpret
+# `\r` and would eat a trailing literal `r` instead.
+marker_key() { local v; v="$(grep -aE "^$1=[^[:space:]]" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"; printf '%s' "${v%$'\r'}"; }
 M_VER="$(marker_key SANDBOX_VERSION)"
 M_MODE="$(marker_key MODE)"
 M_TOP="$(marker_key TOP)"
@@ -168,7 +187,7 @@ if [ "$PURGE" = 1 ]; then
 fi
 
 # Read marker fields by parsing (NEVER source: a tampered marker must not run).
-mval() { grep -aE "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]]*$//'; }
+mval() { local v; v="$(grep -aE "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"; printf '%s' "${v%$'\r'}"; }
 CREATED_WORKTREE="$(mval CREATED_WORKTREE)"
 SANDBOX_BRANCH="$(mval SANDBOX_BRANCH)"
 WORKTREE_STAMP="$(mval WORKTREE_STAMP)"
@@ -423,8 +442,17 @@ if [ "$PURGE" = 1 ]; then
   fi
 
   if [ -n "$P_TAG" ] && git -C "$TOP" rev-parse -q --verify "refs/tags/$P_TAG" >/dev/null 2>&1; then
+    # Two questions, and `^{commit}` answers only the second. It PEELS: an
+    # annotated tag object resolves to the commit it wraps, so a user's annotated
+    # tag sitting on the recorded baseline looked exactly like the sandbox's own.
+    # sandbox-setup only ever writes a lightweight tag (`git tag <name>`, never
+    # -a/-m/-s), so an annotated object of that name was made by someone else —
+    # and it carries their message and signature, which deleting destroys.
+    tag_type="$(git -C "$TOP" cat-file -t "refs/tags/$P_TAG" 2>/dev/null)"
     tag_at="$(git -C "$TOP" rev-parse -q --verify "refs/tags/$P_TAG^{commit}" 2>/dev/null)"
-    if [ "$base_ok" = 1 ] && [ -n "$tag_at" ] && [ "$tag_at" = "$P_BASE" ]; then
+    if [ "$tag_type" != commit ]; then
+      echo_info "purge: kept tag $P_TAG (it is an ${tag_type:-unreadable} object, and this sandbox only ever writes a lightweight tag — so this one is not ours; remove it by hand if you want it gone)"
+    elif [ "$base_ok" = 1 ] && [ -n "$tag_at" ] && [ "$tag_at" = "$P_BASE" ]; then
       git -C "$TOP" tag -d "$P_TAG" >/dev/null 2>&1 && echo_info "purge: deleted baseline tag $P_TAG"
     elif [ "$base_ok" = 1 ]; then
       echo_info "purge: kept tag $P_TAG (it no longer points at the recorded baseline ${P_BASE}, so it is not the one this sandbox created — remove it by hand if it is)"

@@ -21,6 +21,17 @@ set -u
 wt_count() { ( cd "$1" && git worktree list --porcelain | grep -c '^worktree ' ); }
 cr_named_worktree() { ( cd "$1" && git worktree list --porcelain | grep '^worktree ' | grep -c $'\r' ); }
 
+# Rewrite a file with CRLF line endings. NOT `sed 's/$/\r/'`: BSD/macOS sed does
+# not interpret `\r` in the replacement and would append a literal `r` to every
+# line, so the CRLF fixture would silently test nothing on the platform this repo
+# also targets. printf is POSIX and means the same byte everywhere.
+crlf_file() {
+  local f="$1" t line
+  t="$f.crlf.$$"
+  while IFS= read -r line || [ -n "$line" ]; do printf '%s\r\n' "$line"; done < "$f" > "$t"
+  mv "$t" "$f"
+}
+
 # --- A. S-01 exact: valid marker, CREATED_WORKTREE line gone, worktree gone ----
 # The honest outcomes are "rebuild the worktree" or "refuse". "already
 # initialized" with nothing isolated is the one outcome that must never happen.
@@ -54,7 +65,7 @@ case "$OUT2" in
   *"already initialized"*) FAIL=$((FAIL+1)); echo "  FAIL: S-01 — 'already initialized' over an unrecorded worktree — got: $OUT2" >&2 ;;
   *) PASS=$((PASS+1)) ;;
 esac
-assert_nonzero "$rc" "setup refuses rather than claiming a worktree it did not record"
+assert_eq "6" "$rc" "setup refuses with the documented exit 6 (worktree path taken), not merely non-zero"
 case "$OUT2" in *"$WT2"*) PASS=$((PASS+1)) ;;
   *) FAIL=$((FAIL+1)); echo "  FAIL: the refusal must name the path standing in the way — got: $OUT2" >&2 ;; esac
 assert_exists "$WT2" "the refusal left the standing worktree alone"
@@ -90,7 +101,7 @@ assert_eq "9" "$?" "truncated marker (no TOP) -> exit 9"
 WS5=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5"' EXIT
 REPO5="$WS5/proj"; WT5="$WS5/proj-qa-loop"; MARKER5="$REPO5/docs/looptesting/.sandbox/ownership.env"
 ( cd "$REPO5" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
-sed -i.bak 's/$/\r/' "$MARKER5"; rm -f "$MARKER5.bak"
+crlf_file "$MARKER5"
 if grep -q $'\r' "$MARKER5"; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: fixture — marker should be CRLF" >&2; fi
 OUT5=$( cd "$REPO5" && bash "$SETUP" --mode worktree 2>&1 ); rc=$?
 assert_eq "0" "$rc" "CRLF marker over a live sandbox -> exit 0"
@@ -110,7 +121,7 @@ WS6=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6"' EXIT
 REPO6="$WS6/proj"; WT6="$WS6/proj-qa-loop"; MARKER6="$REPO6/docs/looptesting/.sandbox/ownership.env"
 ( cd "$REPO6" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$REPO6" && git worktree remove --force "$WT6" ) >/dev/null 2>&1
-sed -i.bak 's/$/\r/' "$MARKER6"; rm -f "$MARKER6.bak"
+crlf_file "$MARKER6"
 ( cd "$REPO6" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_eq "0" "$?" "CRLF marker + gone worktree -> rebuild exits 0"
 assert_exists "$WT6" "rebuild recreated the worktree at the recorded (CR-stripped) path"
@@ -120,7 +131,7 @@ assert_eq "0" "$(cr_named_worktree "$REPO6")" "rebuild created no CR-named workt
 WS7=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7"' EXIT
 REPO7="$WS7/proj"; MARKER7="$REPO7/docs/looptesting/.sandbox/ownership.env"
 ( cd "$REPO7" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
-sed -i.bak 's/$/\r/' "$MARKER7"; rm -f "$MARKER7.bak"
+crlf_file "$MARKER7"
 sed -i.bak 's/^status: RUNNING/status: CONVERGED/' "$REPO7/docs/looptesting/STATE.md"; rm -f "$REPO7/docs/looptesting/STATE.md.bak"
 ( cd "$REPO7" && bash "$CLEAN" --purge ) >/dev/null 2>&1
 assert_eq "0" "$?" "--purge on a CRLF marker exits 0"
@@ -138,5 +149,49 @@ assert_eq "0" "$rc" "branch-mode resume exits 0"
 case "$OUT8" in *"already initialized"*) PASS=$((PASS+1)) ;;
   *) FAIL=$((FAIL+1)); echo "  FAIL: branch mode has no worktree by design and must still short-circuit — got: $OUT8" >&2 ;; esac
 assert_eq "1" "$(wt_count "$REPO8")" "branch-mode resume added no worktree"
+
+# --- I. a trailing SPACE in a recorded path is data, not noise ----------------
+# The S-08 CR strip must take the CR and nothing else. Stripping all trailing
+# whitespace instead silently rewrites a legitimate path: a worktree directory
+# whose name ends in a space is legal on every platform this runs on, and the
+# marker is the only record of it. The ownership lookup then misses (the stripped
+# path matches no `git worktree list` line), clean reports "already gone", and the
+# worktree leaks with nothing left naming it — the exact ownership-by-text shape
+# the identity work exists to remove.
+WS9=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9"' EXIT
+REPO9="$WS9/proj"; WT9="$WS9/qa wt "   # note the trailing space
+( cd "$REPO9" && bash "$SETUP" --mode worktree --worktree-path "$WT9" ) >/dev/null 2>&1
+assert_eq "0" "$?" "setup accepts a worktree path ending in a space"
+assert_exists "$WT9" "the worktree really is at the space-suffixed path"
+MARKER9="$REPO9/docs/looptesting/.sandbox/ownership.env"
+assert_file_contains "$MARKER9" "CREATED_WORKTREE=$WT9" "the marker records the path verbatim, trailing space included"
+# A resume must recognise it rather than calling it gone and rebuilding.
+OUT9=$( cd "$REPO9" && bash "$SETUP" --mode worktree 2>&1 )
+case "$OUT9" in *"already initialized"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: a space-suffixed worktree path must still read as ours — got: $OUT9" >&2 ;; esac
+assert_eq "2" "$(wt_count "$REPO9")" "no second worktree was built alongside it"
+# ...and clean must find and remove it, not report it already gone.
+OUT9c=$( cd "$REPO9" && bash "$CLEAN" 2>&1 )
+assert_eq "0" "$?" "clean over a space-suffixed worktree path exits 0"
+assert_absent "$WT9" "clean removed the space-suffixed worktree"
+case "$OUT9c" in *"already gone"*) FAIL=$((FAIL+1)); echo "  FAIL: clean lost the path to whitespace stripping and called it gone — got: $OUT9c" >&2 ;;
+  *) PASS=$((PASS+1)) ;; esac
+
+# --- J. one validity rule, two scripts ----------------------------------------
+# setup's comment claims it applies "the same validity rule as clean". A marker
+# whose TOP is present but blank is the case that told them apart: clean's reader
+# requires a non-blank first character, setup's accepted the whitespace. One
+# marker must not be valid to one script and invalid to the other.
+WSJ=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSJ"' EXIT
+REPOJ="$WSJ/proj"; MARKERJ="$REPOJ/docs/looptesting/.sandbox/ownership.env"
+( cd "$REPOJ" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+sed -i.bak 's|^TOP=.*|TOP=   |' "$MARKERJ"; rm -f "$MARKERJ.bak"
+( cd "$REPOJ" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_eq "9" "$?" "blank TOP -> setup refuses (exit 9)"
+OUTJ=$( cd "$REPOJ" && bash "$CLEAN" 2>&1 )
+case "$OUTJ" in *"unreadable"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: the same blank TOP must be unreadable to clean too — got: $OUTJ" >&2 ;; esac
+OUTJp=$( cd "$REPOJ" && bash "$CLEAN" --purge 2>&1 )
+assert_eq "3" "$?" "blank TOP -> --purge refuses (exit 3)"
 
 report "setup-marker-integrity.test.sh"

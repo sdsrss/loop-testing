@@ -112,4 +112,34 @@ if branch_exists "$REPO6"; then PASS=$((PASS+1)); else
 case "$OUT6" in *"kept tag qa-baseline"*) PASS=$((PASS+1)) ;;
   *) FAIL=$((FAIL+1)); echo "  FAIL: purge must say why the tag was kept — got: $OUT6" >&2 ;; esac
 
+# --- G. an ANNOTATED tag at the baseline is not ours --------------------------
+# `rev-parse refs/tags/X^{commit}` peels an annotated tag to the commit it points
+# at, so a user's annotated qa-baseline sitting on the recorded commit satisfied
+# a commit-only identity check. sandbox-setup only ever writes a LIGHTWEIGHT tag
+# (`git tag <name>`, no -a/-m/-s), so an annotated object of that name was made by
+# someone else — the tag object itself is the evidence, and it carries the user's
+# message and signature.
+WS7=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7"' EXIT
+REPO7="$WS7/proj"
+( cd "$REPO7" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? "setup (annotated-tag case)"
+# Replace the sandbox's lightweight tag with the user's annotated one, same name,
+# same commit — identical to a commit-only check, distinguishable by object type.
+( cd "$REPO7" && git tag -d qa-baseline && git tag -a qa-baseline -m "my release baseline" ) >/dev/null 2>&1
+assert_eq "tag" "$(cd "$REPO7" && git cat-file -t refs/tags/qa-baseline)" "fixture: the tag really is annotated"
+mark_terminal "$REPO7"
+OUT7=$( cd "$REPO7" && bash "$CLEAN" --purge 2>&1 )
+assert_eq "0" "$?" "purge over an annotated same-name tag exits 0"
+if tag_exists "$REPO7"; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: purge deleted a user's ANNOTATED tag at the baseline commit (data loss)" >&2; fi
+assert_eq "my release baseline" "$(cd "$REPO7" && git tag -l --format='%(contents:subject)' qa-baseline 2>/dev/null)" "the annotated tag's own object survived intact"
+case "$OUT7" in
+  *"kept tag qa-baseline"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: purge must say it kept the annotated tag — got: $OUT7" >&2 ;;
+esac
+case "$OUT7" in
+  *"deleted baseline tag"*) FAIL=$((FAIL+1)); echo "  FAIL: purge claimed to delete a tag it kept — got: $OUT7" >&2 ;;
+  *) PASS=$((PASS+1)) ;;
+esac
+
 report "purge-ref-identity.test.sh"

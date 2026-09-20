@@ -11,8 +11,17 @@
 #   branch             — switch the current tree to branch qa/loop-testing;
 #                        requires a clean tree (refuses when dirty).
 #
-# The evidence dir docs/looptesting/ always lives in the MAIN repo toplevel so it
-# survives worktree removal at cleanup time (see sandbox-clean.sh).
+# The evidence dir docs/looptesting/ lives in the MAIN repo toplevel so it
+# survives worktree removal at cleanup time (see sandbox-clean.sh). ONE layout
+# breaks that invariant, and git is the reason: with a --separate-git-dir or bare
+# repository, `git worktree list` names the GIT DIR as the main entry and nothing
+# points back to a work tree, so from inside a linked worktree there is no main
+# tree to find. This script then does not re-anchor (guessing "the repo that
+# contains the git dir" used to build the whole sandbox in an unrelated OUTER
+# repository — audit S-02), and the evidence dir is created where the script was
+# invoked: inside that linked worktree. Removing that worktree takes the evidence
+# with it. sandbox-clean, invoked from the same place, resolves the same path and
+# tears down correctly.
 #
 # Usage: sandbox-setup.sh [--mode worktree|branch] [--worktree-path PATH]
 #                         [--branch NAME] [--baseline-tag NAME] [--allow-dirty]
@@ -29,6 +38,11 @@
 # ownership marker is present but unreadable (missing or malformed
 # SANDBOX_VERSION / MODE / TOP): nothing in it can be trusted, so nothing was
 # done — inspect docs/looptesting/.sandbox/ownership.env.
+#
+# git floors: 2.5 (`worktree add`), 2.7 (`worktree list --porcelain`). Everything
+# newer is probed and falls back (`--absolute-git-dir` -> `--git-dir`,
+# `symbolic-ref` in place of `branch --show-current`); `switch` in branch mode
+# needs 2.23.
 set -u
 
 MODE="worktree"
@@ -79,7 +93,7 @@ die() {
 # Print the header block as the help text (same mechanism as install-codex.sh):
 # one source of truth, so usage and exit codes cannot drift from the comment that
 # documents them.
-usage() { sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # --help is handled in its own pass, BEFORE the parse loop: it must win over any
 # other flag on the line and never reach the filesystem.
@@ -235,30 +249,49 @@ INHERITED_CREATED_LT=""
 MARKER_PRESENT_AT_START=0
 [ -f "$MARKER" ] && MARKER_PRESENT_AT_START=1
 
-# Marker fields are read by parsing, never sourced. The ONE reader (mirrors
-# sandbox-clean's): first matching line, value after the first `=`, with the
-# trailing CR and whitespace dropped. A CRLF marker — a Windows editor,
-# core.autocrlf, an evidence dir copied through a zip — used to hand back
+# Marker fields are read by parsing, never sourced. These two readers are
+# byte-identical to sandbox-clean.sh's, and deliberately so: one marker must not
+# be valid to one script and invalid to the other.
+#   mval       — the value of a key, verbatim.
+#   marker_key — the same, but only when the value's first character is not
+#                blank. That is the validity rule: a key present with an empty or
+#                whitespace-only value carries no information.
+#
+# Only the trailing CR is stripped, and only one. A CRLF marker — a Windows
+# editor, core.autocrlf, an evidence dir copied through a zip — used to hand back
 # `path\r`, which matches no line of `git worktree list`, so a LIVE sandbox read
 # as "recorded worktree is gone" and setup rebuilt over it, at a path whose last
-# byte was the CR (audit S-08).
-mval() { grep -aE "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]]*$//'; }
+# byte was the CR (audit S-08). Stripping all trailing WHITESPACE instead would
+# fix that and break something worse: a directory name may legally end in a
+# space, the marker is the only record of the path, and a silently shortened path
+# makes the sandbox's own worktree unrecognisable to both scripts — the
+# ownership-by-text failure this whole area exists to remove. Parameter
+# expansion, not `sed 's/\r$//'`: BSD sed does not interpret `\r` and would eat a
+# trailing literal `r` instead.
+mval()       { local v; v="$(grep -aE "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"; printf '%s' "${v%$'\r'}"; }
+marker_key() { local v; v="$(grep -aE "^$1=[^[:space:]]" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"; printf '%s' "${v%$'\r'}"; }
 
 # Present is not the same as readable (audit S-01). sandbox-clean validates the
 # marker before trusting a field; this side used to read the same file with a
 # bare grep|cut and trust whatever came back — an empty CREATED_WORKTREE from a
 # truncated or hand-edited marker made the resume path call the worktree "ours",
 # print "already initialized", arm .active and exit 0 with no worktree at all:
-# the loop then ran against, and committed into, the main tree. Same validity
-# rule as clean: the three keys every marker has carried since v0.1.2.
+# the loop then ran against, and committed into, the main tree. The rule below is
+# the same one sandbox-clean applies, through the same reader: the three keys
+# every marker has carried since v0.1.0 (SANDBOX_VERSION was a literal in every
+# release tag, MODE is gated by its own `case … die 2`, and TOP by `|| die … 3`).
 if [ -f "$MARKER" ]; then
-  _mk_ver="$(mval SANDBOX_VERSION)"
+  _mk_ver="$(marker_key SANDBOX_VERSION)"
   _mk_bad=""
   case "$_mk_ver" in ''|*[!0-9]*) _mk_bad="SANDBOX_VERSION" ;; esac
-  [ -n "$(mval MODE)" ] || _mk_bad="${_mk_bad:+$_mk_bad, }MODE"
-  [ -n "$(mval TOP)" ]  || _mk_bad="${_mk_bad:+$_mk_bad, }TOP"
+  [ -n "$(marker_key MODE)" ] || _mk_bad="${_mk_bad:+$_mk_bad, }MODE"
+  [ -n "$(marker_key TOP)" ]  || _mk_bad="${_mk_bad:+$_mk_bad, }TOP"
   if [ -n "$_mk_bad" ]; then
-    die "the ownership marker at $MARKER is unreadable (missing or malformed: $_mk_bad) — nothing in it can be trusted, so this run did nothing. Inspect that file: if the sandbox it describes is finished and you recognise the leftovers, remove them by hand per the README cleanup section, delete the marker, and re-run" 9
+    # Name the command that unblocks them. "See the README cleanup section" sent
+    # the reader to a block about harvesting a FINISHED sandbox, which never
+    # mentions the marker — the one file standing between them and a working
+    # re-run.
+    die "the ownership marker at $MARKER is unreadable (missing or malformed: $_mk_bad) — nothing in it can be trusted, so this run did nothing (no worktree, no sentinel, and that file is unchanged). Read it: if it describes a sandbox you still want, repair those lines; if it is finished, harvest what you need from the qa branch, then 'rm $MARKER' and re-run this script to build a fresh sandbox. Removing the marker only forfeits this tool's record of what it created — it deletes no branch, tag, worktree or evidence" 9
   fi
 fi
 

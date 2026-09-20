@@ -119,7 +119,7 @@ assert_file_contains "$WS4/purge.out" "older version" "purge names the stale mar
 new_ws; WS5="$NEW_WS"; REPO5="$WS5/proj"
 mkdir -p "$WS5/proj-qa-loop"          # occupy the default worktree path -> setup fails
 ( cd "$REPO5" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
-assert_nonzero $? "first setup fails with the default worktree path occupied"
+assert_eq "6" "$?" "occupied default worktree path -> documented exit 6"
 assert_exists "$REPO5/docs/looptesting" "the failed setup left its evidence dir behind"
 ( cd "$REPO5" && bash "$SETUP" --mode worktree --worktree-path "$WS5/alt-wt" ) >/dev/null 2>&1
 assert_ok $? "retry with another worktree path succeeds"

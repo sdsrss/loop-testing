@@ -15,7 +15,7 @@
 # An unreadable marker is strictly less knowable than a missing one, so it must
 # refuse at least as loudly.
 #
-# The last case is the backward-compatibility guard: markers back to v0.1.2 carry
+# The last case is the backward-compatibility guard: markers back to v0.1.0 carry
 # SANDBOX_VERSION + MODE + TOP, so a genuine v1 marker must keep working. A
 # validity check that rejected v1 would strand every sandbox created before v0.10.0.
 set -u
@@ -89,7 +89,7 @@ if leftovers_intact; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: plain clean with a bad marker must delete nothing" >&2; fi
 
 # ── 5. BACKWARD COMPAT: a genuine v1 marker must still purge ──────────────────
-# Shape taken from v0.1.2..v0.9.1 sandbox-setup.sh: SANDBOX_VERSION=1, no
+# Shape taken from v0.1.0..v0.9.1 sandbox-setup.sh: SANDBOX_VERSION=1, no
 # ADOPTED_*/UNCLAIMED_WORKTREE/WORKTREE_STAMP keys at all. The validity check must
 # accept it — rejecting v1 would strand every sandbox created before v0.10.0.
 #

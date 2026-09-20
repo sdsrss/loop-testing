@@ -7,7 +7,7 @@ set -u
 # --- non-git dir is refused ---------------------------------------------------
 WS1=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-nongit.XXXXXX"); trap 'rm -rf "$WS1"' EXIT
 ( cd "$WS1" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
-assert_nonzero $? "non-git dir refused"
+assert_eq "3" "$?" "non-git dir refused with the documented exit 3"
 
 # --- clean repo, branch mode: creates sandbox --------------------------------
 WS=$(mk_ws); trap 'rm -rf "$WS1" "$WS"' EXIT
@@ -39,7 +39,7 @@ WS2=$(mk_ws); trap 'rm -rf "$WS1" "$WS" "$WS2"' EXIT
 REPO2="$WS2/proj"
 echo "uncommitted work" > "$REPO2/user-wip.txt"
 ( cd "$REPO2" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
-assert_nonzero $? "branch-mode setup refuses dirty tree"
+assert_eq "4" "$?" "branch-mode setup refuses a dirty tree with the documented exit 4"
 # ensure branch was NOT created on refusal
 if ( cd "$REPO2" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
   FAIL=$((FAIL+1)); echo "  FAIL: dirty refusal must not create branch" >&2
@@ -176,7 +176,7 @@ if [ "$(id -u)" = "0" ]; then
 else
 OUTA=$( cd "$REPOA" && bash "$SETUP" --mode worktree 2>&1 )
 RCA=$?
-assert_nonzero "$RCA" "unwritable evidence dir -> setup must refuse"
+assert_eq "8" "$RCA" "unwritable evidence dir -> documented exit 8"
 case "$OUTA" in
   *ready*) FAIL=$((FAIL+1)); echo "  FAIL: setup reported ready despite an unwritable evidence dir — got: $OUTA" >&2 ;;
   *) PASS=$((PASS+1)) ;;
@@ -202,7 +202,7 @@ mkdir -p "$REPOB/docs/looptesting/.sandbox"
 chmod a-w "$REPOB/docs/looptesting"          # .sandbox stays writable
 OUTB=$( cd "$REPOB" && bash "$SETUP" --mode worktree 2>&1 )
 RCB=$?
-assert_nonzero "$RCB" "unwritable docs/looptesting (writable .sandbox) -> refuse"
+assert_eq "8" "$RCB" "unwritable docs/looptesting (writable .sandbox) -> documented exit 8"
 assert_absent "$WSB/proj-qa-loop" "no worktree created by that refusal"
 if ( cd "$REPOB" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
   FAIL=$((FAIL+1)); echo "  FAIL: refusal left a qa branch behind (probe scope too narrow)" >&2

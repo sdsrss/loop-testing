@@ -44,7 +44,10 @@
 
 - 先记录 `git status`、当前分支、现有修改与未跟踪文件——它们可能属于用户：**不覆盖、不清理、不 stash、不提交、不回滚**；无法安全隔离的文件不提交并记录原因。
 - 调用：`bash "$SKILL_DIR"/scripts/sandbox-setup.sh`（默认 worktree 模式；`--mode branch` 仅在用户显式要求时才加）。`$SKILL_DIR` = 本技能安装目录——Claude：`${CLAUDE_PLUGIN_ROOT}/skills/loop-testing`，Codex：`${CODEX_HOME:-$HOME/.codex}/skills/loop-testing`（装时用 `--target DIR` 则为该 `DIR`）；定位与内联兜底见 SKILL.md「脚本与模板定位」。脚本幂等，会创建/复用 `docs/looptesting/` 并从 `templates/` 落盘状态文件。
-- **隔离自证闸（改任何代码前必过）**：`sandbox-setup.sh` 返回后，**必须**核验 `docs/looptesting/.sandbox/ownership.env` 存在；worktree 模式还须 `git worktree list` 含新建的同级检出，且**主工作树仍在用户原分支**（建沙箱前后主仓 `git branch --show-current` 不变）。任一不满足＝隔离未成立：立即停止一切代码改动，按 §6/§8 的基线 `BLOCKED` 处置并记录原因，**绝不在用户主工作树上直接编辑或提交**。
+- **隔离自证闸（改任何代码前必过）**：
+  1. **先看退出码，且必须为 0**。非 0 一律＝隔离未成立，不得用下面的现场检查「补证」——现场是上一次运行留下的，不是本次的成果。**尤其 exit 9（ownership marker 存在但不可读：脚本什么都没做）**：此时 marker 文件仍在、旧 worktree 仍注册、主工作树仍在原分支、`.active` 仍在——第 2 步的四项检查会**全部通过**，而本次运行没有建立任何隔离；退出码是唯一能区分二者的信号。完整退出码表见 `bash "$SKILL_DIR"/scripts/sandbox-setup.sh --help`。
+  2. 退出码为 0 后，**必须**核验 `docs/looptesting/.sandbox/ownership.env` 存在；worktree 模式还须 `git worktree list` 含新建的同级检出，且**主工作树仍在用户原分支**（建沙箱前后主仓 `git branch --show-current` 不变）。
+  3. 任一步不满足＝隔离未成立：立即停止一切代码改动，按 §6/§8 的基线 `BLOCKED` 处置并记录原因（把退出码原样写进 `ISSUES.md`），**绝不在用户主工作树上直接编辑或提交**。exit 9 的解除办法脚本自己会说——读那份 marker，要么修好它，要么确认旧沙箱已收割后删掉它再重跑；**不要绕过闸门继续跑**。
 - **武装续跑哨兵（勿省略）**：确认 `docs/looptesting/.active` 存在——脚本会创建；**内联建沙箱时手动创建（`: > docs/looptesting/.active`）**。Claude Code 的 stop-gate 仅在该哨兵存在时生效，缺失则「未收敛禁止停止」的机制层护栏静默失效；Codex 无 hook，该文件无害且退出序照常清理它。
 - 验证测试环境确实与生产隔离；无法确认则停止一切可能产生外部副作用的动作，仅继续只读检查与本地测试。
 
