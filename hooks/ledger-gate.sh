@@ -12,12 +12,33 @@
 # DESIGN POSITION (architecture §2.4): this is a cheat-cost raiser, NOT a
 # complete gate. It deliberately checks "any round log mentions the ID" rather
 # than "this exact round replayed it", to stay conservative — 宁可放过不可误杀
-# (prefer a miss over a false-positive). A model that first writes a fake replay
-# line into a round log can still get past it, and so can a Bash write through a
-# verb this hook does not bind to the ledger (mv/cp/dd/python onto the path); that
-# residual is covered by the red lines in the prompt and human diff review, not
-# by this hook. Reads are never denied: a Bash command counts as a ledger write
-# only when a redirection, `tee`, or an in-place sed/perl names the ledger.
+# (prefer a miss over a false-positive). The common accidental and lazy forms of
+# a fake verdict are denied; a determined model walks through the front door by
+# writing a fake replay line into a round log first. Describe this as a SOFT gate
+# that raises the cost of cheating, never as "mechanically prevents" (audit K-04).
+#
+# WHAT A Bash COMMAND HAS TO BE to count as a ledger write: the ledger must be an
+# operand of a verb that writes it — a redirection target, a `tee`/`sponge`
+# operand, or a file operand of an in-place `sed`/`perl`/`ruby`. That decision is
+# made by LEXING the command (python3 `shlex`, no expansion, no grammar, no
+# execution) and comparing operand TOKENS to the ledger path. A read of the
+# ledger is never a write, however many write-looking tokens share the command
+# line — H-01 was that false deny, and the accusation this hook prints at a
+# correct action is its most expensive failure mode.
+#
+# RESIDUAL — these still reach the ledger unseen, by design:
+#   * indirection through another interpreter: `xargs`, `bash -c`, `python3 -c`,
+#     `ruby -e`, `ed`, and file-copy verbs whose target needs per-verb argument
+#     knowledge (`mv`, `cp`, `dd`, `install`, `truncate`);
+#   * a path computed at runtime — a variable, a command substitution, a glob —
+#     which is reported as unresolved and never guessed at;
+#   * a command past the length cap, or one the lexer rejects: both fall back to
+#     the regex leg below, which is weaker (its in-place arm still wants the flag
+#     and the path in one unbroken span). Without python3 that leg is all there is.
+#   * an in-place script supplied by `-f scriptfile`, whose text is not in the
+#     command;
+#   * a fake replay line written to a round log first — the original design
+#     residual, unchanged.
 #
 # Fails OPEN on any parse problem or missing tooling — a gate must never brick a
 # session. Escape hatch (humans, not models): LOOP_TESTING_DISABLE_LEDGER_GATE=1.
@@ -27,7 +48,10 @@ if [ "${LOOP_TESTING_DISABLE_LEDGER_GATE:-0}" = "1" ]; then
   cat > /dev/null; exit 0
 fi
 
-INPUT=$(cat)
+# Strip NUL bytes before the command substitution: bash warns on stderr about
+# them, and a PreToolUse hook that exits 0 with noise on stderr still shows that
+# noise to the model. No payload field can legitimately contain one.
+INPUT=$(cat | tr -d '\000')
 
 # --- anchor to the project root (audit HK-7) ----------------------------------
 # Same anchoring as stop-gate.sh: the hook cwd is not guaranteed to be the
@@ -55,19 +79,24 @@ if command -v jq >/dev/null 2>&1; then
   NEWSTR="$NEWSTR
 $MULTI"
   # old_string(s): used only to resolve the ISSUE-ID a minimal VERIFIED edit flips.
+  # For MultiEdit, ONLY the edits that actually introduce VERIFIED contribute: a
+  # sibling edit's header line used to supply the ID, so the gate denied an issue
+  # the call never verified.
   OLDSTR=$(printf '%s' "$INPUT"  | jq -r '.tool_input.old_string // empty'     2>/dev/null) || OLDSTR=""
-  MULTIOLD=$(printf '%s' "$INPUT" | jq -r '(.tool_input.edits // [])[].old_string // empty' 2>/dev/null) || MULTIOLD=""
+  MULTIOLD=$(printf '%s' "$INPUT" | jq -r '[(.tool_input.edits // [])[] | select(((.new_string // "") | test("(^|[^A-Za-z0-9_])VERIFIED([^A-Za-z0-9_]|$)"))) | (.old_string // "")] | join("\n")' 2>/dev/null) || MULTIOLD=""
   OLDSTR="$OLDSTR
 $MULTIOLD"
   CMD=$(printf '%s' "$INPUT"     | jq -r '.tool_input.command // empty'        2>/dev/null) || CMD=""
 elif command -v python3 >/dev/null 2>&1; then
   PARSED=$(printf '%s' "$INPUT" | python3 -c '
-import json,sys,shlex
+import json,sys,shlex,re
 try: d=json.load(sys.stdin)
 except Exception: sys.exit(0)
 ti=d.get("tool_input") or {}
 multi="\n".join((e or {}).get("new_string","") for e in (ti.get("edits") or []))
-multiold="\n".join((e or {}).get("old_string","") for e in (ti.get("edits") or []))
+_V=re.compile(r"(^|[^A-Za-z0-9_])VERIFIED([^A-Za-z0-9_]|$)")
+multiold="\n".join((e or {}).get("old_string","") for e in (ti.get("edits") or [])
+                   if _V.search((e or {}).get("new_string","") or ""))
 print("TOOL=%s"    % shlex.quote(str(d.get("tool_name",""))))
 print("FILE=%s"    % shlex.quote(str(ti.get("file_path",""))))
 print("NEWSTR=%s"  % shlex.quote(str(ti.get("new_string",""))+"\n"+multi))
@@ -94,27 +123,116 @@ $CONTENT"
       LT_DIR="$(dirname "$FILE")"
     fi ;;
   Bash)
-    # A command is a WRITE only when the verb itself targets the ledger (audit
-    # H-01): a redirection whose target is the ledger path, `tee` naming it, or an
-    # in-place `sed -i` / `perl -i` naming it. Merely mentioning the path, an ID and
-    # VERIFIED in a read (`grep … ISSUES.md 2>/dev/null`, `sed -n`) used to be
-    # denied with the red-line accusation. Anchor to the loop path (or a bare
-    # ISSUES.md only while the loop is armed in cwd = project root) so an unrelated
-    # project using the same convention on its own ISSUES.md is never denied.
-    # `\b` is avoided on purpose: BSD grep does not honor it (H-07).
-    if [ -f docs/looptesting/.active ]; then LP='(docs/looptesting/)?ISSUES\.md'; else LP='docs/looptesting/ISSUES\.md'; fi
-    WB='(^|[^[:alnum:]_])'
-    # In-place editors reach EXISTING rows, so they are also the H-04 shape (a
-    # substitution that introduces VERIFIED without naming an ID). The span is
-    # not stopped at `|` — sed scripts on this ledger contain the column pipes.
-    if printf '%s' "$CMD" | grep -qaE "${WB}(sed|perl)[[:space:]]+([^;&]*[[:space:]]+)?(-[[:alpha:]]*i([^[:alnum:]]|$)|--in-place)[^;&]*${LP}"; then
-      TARGETS_LEDGER=1; INPLACE=1
-    elif printf '%s' "$CMD" | grep -qaE ">>?[[:space:]]*[\"']?[^[:space:]|;&>]*${LP}|${WB}tee[[:space:]][^|;&]*[[:space:]][\"']?[^[:space:]|;&]*${LP}"; then
-      TARGETS_LEDGER=1
-    fi
-    if [ "$TARGETS_LEDGER" -eq 1 ]; then
-      TEXT="$CMD"
-      LT_DIR="docs/looptesting"
+    # Prefilter: no mention of the ledger's basename anywhere -> nothing to weigh,
+    # and no lexer process for the overwhelming majority of Bash calls.
+    if printf '%s' "$CMD" | grep -qaF 'ISSUES.md'; then
+      ARMED=0; [ -f docs/looptesting/.active ] && ARMED=1
+      # ---- primary leg: lex, then compare operand TOKENS to the ledger path ----
+      # No expansion, no execution, no grammar: shlex hands back shell operators as
+      # their own tokens and quoted text as one token, which is exactly the
+      # structure the decision needs. `grep -n … ISSUES.md 2>/dev/null` lexes to
+      # (grep)(-n)(pat)(ledger)(2)(>)(/dev/null): the redirect target is /dev/null
+      # and the ledger is a READ operand of grep. No regex over the raw string can
+      # draw that line, which is how H-01 happened.
+      LEXED=""
+      if command -v python3 >/dev/null 2>&1; then
+        LEXED=$(printf '%s' "$CMD" | LG_ARMED="$ARMED" python3 -c '
+import sys,os,re,shlex,posixpath
+try:
+    cmd=sys.stdin.read()
+    if len(cmd)>8192: sys.exit(0)          # length cap -> regex leg
+    LED="docs/looptesting/ISSUES.md"
+    armed=os.environ.get("LG_ARMED")=="1"
+    def norm(t):
+        x=t
+        while x.startswith("./"): x=x[2:]
+        if x==LED or x.endswith("/"+LED): return True
+        if armed and (x=="ISSUES.md" or x.endswith("/ISSUES.md")): return True
+        return False
+    def unres(t):
+        return ("$" in t) or ("`" in t) or ("*" in t) or ("?" in t)
+    def isip(f):
+        if f=="--in-place" or f.startswith("--in-place="): return True
+        if f.startswith("--"): return False
+        return bool(re.match(r"^-[A-Za-z0-9]*i", f))
+    lx=shlex.shlex(cmd, posix=True, punctuation_chars="();<>|&;")
+    lx.whitespace_split=True
+    lx.commenters=""                       # a sed s#a#b# script is not a comment
+    toks=list(lx)
+    PUNCT=set("();<>|&;")
+    segs=[]; cur=[]; i=0; n=len(toks)
+    while i<n:
+        t=toks[i]
+        if t and all(c in PUNCT for c in t):
+            if ">" in t:
+                cur.append(("redir", toks[i+1] if i+1<n else None)); i+=2; continue
+            if "<" in t:                    # input redirection is a READ
+                i+=2; continue
+            segs.append(cur); cur=[]; i+=1; continue
+        cur.append(("word",t)); i+=1
+    segs.append(cur)
+    ASSIGN=re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+    W=IP=UN=0; text=[]
+    for seg in segs:
+        words=[w for k,w in seg if k=="word"]
+        j=0
+        while j<len(words) and ASSIGN.match(words[j]): j+=1
+        verb=posixpath.basename(words[j]) if j<len(words) else ""
+        rest=words[j+1:] if j<len(words) else []
+        flags=[r for r in rest if r.startswith("-") and len(r)>1]
+        ops=[r for r in rest if not (r.startswith("-") and len(r)>1)]
+        w=ip=0
+        for k,r in seg:
+            if k!="redir" or r is None: continue
+            if norm(r): w=1
+            elif unres(r): UN=1
+        if verb in ("tee","sponge"):
+            for o in ops:
+                if norm(o): w=1
+                elif unres(o): UN=1
+        if verb in ("sed","gsed","perl","ruby") and any(isip(f) for f in flags):
+            for o in ops:
+                if norm(o): w=1; ip=1
+                elif unres(o): UN=1
+        if w:
+            W=1; IP=IP or ip; text.extend(ops)
+    print("LG_WRITE=%d" % W)
+    print("LG_INPLACE=%d" % IP)
+    print("LG_UNRESOLVED=%d" % UN)
+    print("LG_TEXT=%s" % shlex.quote("\n".join(text)))
+    print("LG_OK=1")
+except Exception:
+    pass                                   # unlexable -> regex leg, never a deny
+' 2>/dev/null) || LEXED=""
+      fi
+      LG_OK=0; LG_WRITE=0; LG_INPLACE=0; LG_UNRESOLVED=0; LG_TEXT=""
+      case "$LEXED" in *LG_OK=1*) eval "$LEXED" 2>/dev/null || LG_OK=0 ;; esac
+
+      INTRO_TEXT="$CMD"
+      if [ "$LG_OK" = "1" ] && [ "$LG_WRITE" = "1" ]; then
+        TARGETS_LEDGER=1
+        INTRO_TEXT="$LG_TEXT"
+        [ "$LG_INPLACE" = "1" ] && INPLACE=1
+      fi
+      # ---- fallback leg: no python3, lexer refused, capped, or an unresolved
+      # target. Weaker (its in-place arm still wants the flag and the path in one
+      # unbroken span) but target-bound, so it never denies a plain read. ----
+      if [ "$TARGETS_LEDGER" -eq 0 ] && { [ "$LG_OK" != "1" ] || [ "$LG_UNRESOLVED" = "1" ]; }; then
+        if [ "$ARMED" = "1" ]; then LP='(docs/looptesting/)?ISSUES\.md'; else LP='docs/looptesting/ISSUES\.md'; fi
+        WB='(^|[^[:alnum:]_])'
+        # Whole-token match: ISSUES.md.bak is a different file (`\b` is avoided —
+        # BSD grep does not honor it, audit H-07).
+        TGT="[\"']?[^[:space:]|;&<>\"']*${LP}([[:space:]\"';&|<>)]|\$)"
+        if printf '%s' "$CMD" | grep -qaE "${WB}(sed|gsed|perl|ruby)[[:space:]]+([^;&]*[[:space:]]+)?(-[[:alnum:]]*i[^[:space:]]*|--in-place[^[:space:]]*)([^;&]*[[:space:]]+)?${TGT}"; then
+          TARGETS_LEDGER=1; INPLACE=1
+        elif printf '%s' "$CMD" | grep -qaE "[0-9]*>>?[[:space:]]*${TGT}|${WB}(tee|sponge)([[:space:]]+-[^[:space:]]+)*[[:space:]]+${TGT}"; then
+          TARGETS_LEDGER=1
+        fi
+      fi
+      if [ "$TARGETS_LEDGER" -eq 1 ]; then
+        TEXT="$CMD"
+        LT_DIR="docs/looptesting"
+      fi
     fi ;;
 esac
 
@@ -162,10 +280,15 @@ if [ -z "$IDS" ] && [ "$TOOL" != "Bash" ] && [ -f "$FILE" ]; then
     fi
   fi
 fi
-if [ -z "$IDS" ]; then
+# Steps 4-5 are Bash-only: a shell one-liner has no row header to read
+# (`perl -i -pe 's/OPEN/VERIFIED/ if /ISSUE-014/'`), so a bare ID is the best
+# available anchor. For an Edit they would re-open exactly the H-05 shape this
+# fix closes — a title-cited ID becoming the checked one whenever the file
+# lookup above misses — so an unresolvable Edit falls through to allow instead.
+if [ -z "$IDS" ] && [ "$TOOL" = "Bash" ]; then
   IDS=$(printf '%s\n' "$VLINES" | grep -aoE 'ISSUE-[0-9]+' | sort -u)
 fi
-if [ -z "$IDS" ]; then
+if [ -z "$IDS" ] && [ "$TOOL" = "Bash" ]; then
   IDS=$(printf '%s\n' "$OLDSTR" | grep -aoE 'ISSUE-[0-9]+' | sort -u)
 fi
 
@@ -187,8 +310,38 @@ deny() {
 # ISSUE-ID (`sed -i 's/FIXED_UNVERIFIED/VERIFIED/' …ISSUES.md`) can flip every
 # pending row at once and used to pass at zero cost because the ID was simply
 # unresolvable (audit H-04). It must say which ISSUE it verifies.
-if [ "$INPLACE" -eq 1 ] && [ -z "$IDS" ]; then
-  deny "an in-place edit (sed -i / perl -i) introducing VERIFIED on ISSUES.md must name the ISSUE-ID it verifies (e.g. '/ISSUE-NNN/s/FIXED_UNVERIFIED/VERIFIED/')."
+#
+# The rule is conditioned on VERIFIED being on the REPLACEMENT side. Taking a row
+# back to OPEN (`s/VERIFIED/OPEN/`) or dropping it (`/VERIFIED/d`) is what the
+# protocol says to do when a re-verification fails, and denying that — with the
+# red-line accusation, no less — is a false accusation at correct work. Strip the
+# MATCH positions (the LHS of each s/// and each /…/ address that holds the
+# token), then ask whether VERIFIED survives; a replacement-side VERIFIED has no
+# opening delimiter left in front of it, so it always does.
+introduces_verified() {
+  local x d
+  d=$(printf '\001')   # a delimiter no shell command carries, so sed needs no escaping
+  # Rewrite each `s<D>LHS<D>RHS<D>` to just its RHS, fenced by spaces. Keeping the
+  # replacement (rather than deleting the match side) is what makes this safe: a
+  # half-stripped substitution leaves its closing delimiter behind, and the next
+  # pass then reads `…/ VERIFIED/…` as an address and drops a real forgery.
+  x=$(printf '%s' "$1" | sed -E \
+    -e "s${d}(^|[^A-Za-z0-9_])[sy]/([^/]*)/([^/]*)/${d} \\3 ${d}g" \
+    -e "s${d}(^|[^A-Za-z0-9_])[sy]#([^#]*)#([^#]*)#${d} \\3 ${d}g" \
+    -e "s${d}(^|[^A-Za-z0-9_])[sy],([^,]*),([^,]*),${d} \\3 ${d}g" \
+    -e "s${d}(^|[^A-Za-z0-9_])[sy]\\|([^|]*)\\|([^|]*)\\|${d} \\3 ${d}g" \
+    -e "s${d}/[^/]*VERIFIED[^/]*/([dp!}'\"]|\$)${d} ${d}g" \
+    -e "s${d}#[^#]*VERIFIED[^#]*#([dp!}'\"]|\$)${d} ${d}g" \
+    2>/dev/null) || x="$1"
+  printf '%s\n' "$x" | grep -qawE 'VERIFIED'
+}
+
+if [ "$INPLACE" -eq 1 ] && introduces_verified "$INTRO_TEXT"; then
+  if [ -z "$IDS" ]; then
+    deny "an in-place edit (sed -i / perl -i) introducing VERIFIED on ISSUES.md must name the ISSUE-ID it verifies (e.g. '/ISSUE-NNN/s/FIXED_UNVERIFIED/VERIFIED/')."
+  fi
+elif [ "$INPLACE" -eq 1 ]; then
+  exit 0   # in-place, but VERIFIED only on the match side: a downgrade or a delete
 fi
 
 [ -n "$IDS" ] || exit 0   # nothing marked VERIFIED, or ID unresolvable -> allow

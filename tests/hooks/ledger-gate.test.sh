@@ -190,4 +190,166 @@ run_ledger "$WS20" "$json"; assert_rc $? 0 "H-05: partial Edit, ID from enclosin
 json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | same as ISSUE-003\" >> docs/looptesting/ISSUES.md"}}'
 run_ledger "$WS20" "$json"; assert_rc $? 2 "H-05 control: leading-column ID without footprint -> deny"
 
+# ── Review round 2: the Bash leg decides per TOKEN, not by searching the command
+#    string. Shapes below are the reviewer's measured table; the allowed column is
+#    a deliberate, documented choice (see the residual list in the hook header). ──
+# Same workspace shape as the block above: ISSUE-002 has NO footprint,
+# ISSUE-003 HAS one.
+L20="docs/looptesting/ISSUES.md"
+
+# 25. P0: one extra character must not walk past the in-place rule. The old span
+#     between the -i flag and the path stopped at `;` and `&`, so a single
+#     trailing semicolon turned a denied bulk flip into an allowed one.
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/;'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "P0: sed -i script ending in a semicolon -> still denied"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED&/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "P0: sed -i script with an & backreference -> still denied"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/a/b/;s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "P0: two-statement sed -i script -> still denied"
+json='{"tool_name":"Bash","tool_input":{"command":"perl -pi -e '"'"'s/FIXED_UNVERIFIED/VERIFIED/ ; 1;'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "P0: perl -pi script with a semicolon -> still denied"
+
+# 26. P1 regression: `tee <ledger>` with no flag and a single space is a write.
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | x\" | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "P1: bare tee <ledger>, one space, no flag -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | x\" | tee --append docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "P1: tee --append <ledger> -> deny"
+
+# 27. P1 regression: a downgrade or a deletion REMOVES VERIFIED. Re-verification
+#     failing and moving a row back to OPEN is protocol behavior, and must never
+#     draw the "faking verification is a red line" accusation.
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/VERIFIED/OPEN/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "P1: sed -i downgrading VERIFIED -> OPEN -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'/VERIFIED/d'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "P1: sed -i deleting VERIFIED rows -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'/ISSUE-002/s/| VERIFIED |/| OPEN |/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "P1: downgrade naming an ID with no footprint -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"perl -ni -e '"'"'print unless /VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "P1: perl -ni dropping VERIFIED rows -> allow"
+
+# 28. DOCUMENTED RESIDUAL: a redirection target computed at runtime. The lexer
+#     does not expand anything, so `>> "$L"` is an unresolved target, not a ledger
+#     one. Closing it would need either variable resolution or matching the path
+#     anywhere in the command — and anywhere-matching denies a read of the ledger
+#     that merely sits in the same compound command (case 30), which is the
+#     expensive failure for a hook that accuses. Allowed, and named in the header.
+json='{"tool_name":"Bash","tool_input":{"command":"L=docs/looptesting/ISSUES.md; echo \"### ISSUE-002 | P1 | VERIFIED | x\" >> \"$L\""}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "documented residual: runtime-computed redirect target -> allow"
+
+# 29. P2: the path comparison is a whole-token match, so a sibling file whose name
+#     merely starts with the ledger's is not the ledger.
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | x\" >> docs/looptesting/ISSUES.md.bak"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "P2: >> ISSUES.md.bak is not the ledger -> allow"
+
+# 30. The reviewer's false-denial list. Every one of these is a READ of the ledger
+#     or a write to something else, and a false deny here accuses the model of
+#     faking verification and derails the loop.
+for c in \
+  "grep -n 'ISSUE-002.*VERIFIED' docs/looptesting/ISSUES.md 2>/dev/null" \
+  "rg -n 'ISSUE-002.*VERIFIED' docs/looptesting/ISSUES.md" \
+  "sed -n '/ISSUE-002/p' docs/looptesting/ISSUES.md | grep -c VERIFIED" \
+  "awk '/VERIFIED/ {print}' docs/looptesting/ISSUES.md" \
+  "cat docs/looptesting/ISSUES.md | grep -w VERIFIED" \
+  "git diff -- docs/looptesting/ISSUES.md" \
+  "git log -S VERIFIED -- docs/looptesting/ISSUES.md" \
+  "cat docs/looptesting/ISSUES.md | tee /tmp/lg-copy.txt | grep -w VERIFIED" \
+  "echo '### ISSUE-002 replay: cmd -> pass, now VERIFIED' >> docs/looptesting/runs/round-1.md" \
+  "sed -i 's/pending/### ISSUE-002 VERIFIED/' docs/looptesting/runs/round-1.md" \
+  "sed -i 's/x/y/' other-file.md && grep -n 'ISSUE-002' docs/looptesting/ISSUES.md" \
+  "diff <(grep VERIFIED docs/looptesting/ISSUES.md) /tmp/lg-expected.txt" \
+; do
+  esc=$(printf '%s' "$c" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  run_ledger "$WS20" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$esc\"}}"
+  assert_rc $? 0 "read/elsewhere-write must not be denied: $c"
+done
+
+# 31. Verbs whose write target is identifiable from the token alone are bound too.
+json='{"tool_name":"Bash","tool_input":{"command":"ruby -i -pe '"'"'gsub(/FIXED_UNVERIFIED/, \"VERIFIED\")'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "ruby -i on the ledger -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"printf '"'"'### ISSUE-002 | P1 | VERIFIED |\\n'"'"' | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sponge <ledger> -> deny"
+
+# 32. DOCUMENTED RESIDUAL. These reach the ledger through a verb whose target this
+#     gate does not resolve, and they are allowed — matching the residual list in
+#     the hook header. The assertions pin the documentation, not the desirability:
+#     this is a soft gate that raises the cost of cheating (see K-04), and closing
+#     these needs argument-position knowledge per verb.
+for c in \
+  "mv /tmp/lg-forged.md docs/looptesting/ISSUES.md" \
+  "cp /tmp/lg-forged.md docs/looptesting/ISSUES.md" \
+  "dd if=/tmp/lg-forged.md of=docs/looptesting/ISSUES.md" \
+  "python3 -c \\\"open('docs/looptesting/ISSUES.md','a').write('### ISSUE-002 | P1 | VERIFIED |')\\\"" \
+  "printf '### ISSUE-002 | P1 | VERIFIED |' | ed -s docs/looptesting/ISSUES.md" \
+; do
+  run_ledger "$WS20" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}"
+  assert_rc $? 0 "documented residual (verb target not resolved), allowed: $c"
+done
+
+# 33. P2: an Edit whose old_string is not found in the ledger must not fall back to
+#     an ID cited in the title — that re-opened the H-05 shape whenever the anchor
+#     lookup missed.
+WS21=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL" "$WS20" "$WS21"' EXIT
+printf '# ISSUES\n\n### ISSUE-003 | P1 | FIXED_UNVERIFIED | crash\n### ISSUE-005 | P2 | OPEN | dup ids\n' > "$WS21/docs/looptesting/ISSUES.md"
+echo "replayed ISSUE-003: repro -> pass" > "$WS21/docs/looptesting/runs/round-1.md"
+json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS21")\",\"old_string\":\"text that is not in the file at all\",\"new_string\":\"| VERIFIED | same root cause as ISSUE-005\"}}"
+run_ledger "$WS21" "$json"; assert_rc $? 0 "P2: anchor lookup misses -> do not fall back to a title-cited ID"
+
+# 34. P2: MultiEdit must not lift a header ID out of a NON-verifying edit and deny
+#     that issue. edit 1 touches ISSUE-005 (no footprint, no VERIFIED); edit 2
+#     verifies ISSUE-003, which has one. The call is legitimate.
+json="{\"tool_name\":\"MultiEdit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS21")\",\"edits\":[{\"old_string\":\"### ISSUE-005 | P2 | OPEN | dup ids\",\"new_string\":\"### ISSUE-005 | P2 | WONT_FIX | dup ids\"},{\"old_string\":\"FIXED_UNVERIFIED\",\"new_string\":\"VERIFIED\"}]}}"
+run_ledger "$WS21" "$json"; assert_rc $? 0 "P2: MultiEdit resolves the ID from the VERIFYING edit only"
+# Control: the same MultiEdit shape where the verifying edit's issue has NO
+# footprint must still be denied.
+WS22=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL" "$WS20" "$WS21" "$WS22"' EXIT
+printf '# ISSUES\n\n### ISSUE-007 | P1 | FIXED_UNVERIFIED | crash\n### ISSUE-005 | P2 | OPEN | dup ids\n' > "$WS22/docs/looptesting/ISSUES.md"
+json="{\"tool_name\":\"MultiEdit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS22")\",\"edits\":[{\"old_string\":\"### ISSUE-005 | P2 | OPEN | dup ids\",\"new_string\":\"### ISSUE-005 | P2 | WONT_FIX | dup ids\"},{\"old_string\":\"FIXED_UNVERIFIED\",\"new_string\":\"VERIFIED\"}]}}"
+run_ledger "$WS22" "$json"; assert_rc $? 2 "P2 control: MultiEdit verifying an unfootprinted issue -> deny"
+
+# 35. P3: a NUL byte in the payload must not make bash warn on stderr. A hook that
+#     exits 0 with noise on stderr still shows that noise to the model.
+WS23=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL" "$WS20" "$WS21" "$WS22" "$WS23"' EXIT
+err=$( cd "$WS23" && printf 'not json \000 with a NUL' | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" 2>&1 >/dev/null ); rc=$?
+assert_rc $rc 0 "NUL byte in stdin -> fail open"
+assert_eq "" "$err" "NUL byte in stdin -> no warning on stderr"
+
+# 36. The no-python3 path. Lexing lives in a python3 leg; without it the gate
+#     falls back to the (weaker, documented) regex leg, which must still deny the
+#     canonical shapes and must still never deny a read.
+NOPY=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-nopy.XXXXXX")
+trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL" "$WS20" "$WS21" "$WS22" "$WS23" "$NOPY"' EXIT
+for b in bash grep sed head cut tr cat rm date printf dirname sort jq; do
+  p=$(command -v "$b" 2>/dev/null) && ln -sf "$p" "$NOPY/$b"
+done
+run_nopy() { ( cd "$1" && printf '%s' "$2" | env -u CLAUDE_PROJECT_DIR PATH="$NOPY" bash "$LEDGER" ) >/dev/null 2>&1; }
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+run_nopy "$WS20" "$json"; assert_rc $? 2 "no python3: canonical in-place flip still denied (regex leg)"
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | x\" >> docs/looptesting/ISSUES.md"}}'
+run_nopy "$WS20" "$json"; assert_rc $? 2 "no python3: redirect write still denied (regex leg)"
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | x\" | tee docs/looptesting/ISSUES.md"}}'
+run_nopy "$WS20" "$json"; assert_rc $? 2 "no python3: bare tee <ledger> still denied (regex leg)"
+json='{"tool_name":"Bash","tool_input":{"command":"grep -n '"'"'ISSUE-002.*VERIFIED'"'"' docs/looptesting/ISSUES.md 2>/dev/null"}}'
+run_nopy "$WS20" "$json"; assert_rc $? 0 "no python3: read-only grep still allowed (regex leg)"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/VERIFIED/OPEN/'"'"' docs/looptesting/ISSUES.md"}}'
+run_nopy "$WS20" "$json"; assert_rc $? 0 "no python3: downgrade still allowed (regex leg)"
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | x\" >> docs/looptesting/ISSUES.md.bak"}}'
+run_nopy "$WS20" "$json"; assert_rc $? 0 "no python3: ISSUES.md.bak is not the ledger (regex leg)"
+
+# 37. Fail-open: deliberately malformed SHELL (not JSON) must never deny or crash.
+#     A lexer that throws has to allow.
+for c in \
+  "echo \\\"unbalanced quote >> docs/looptesting/ISSUES.md" \
+  "sed -i 's/a/VERIFIED/ docs/looptesting/ISSUES.md" \
+  "echo VERIFIED >> docs/looptesting/ISSUES.md \\\\" \
+  "\\\$(echo sed) -i 's/x/VERIFIED/' docs/looptesting/ISSUES.md" \
+; do
+  run_ledger "$WS20" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}"; rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: malformed shell must exit 0 or 2, never crash: got $rc for [$c]" >&2; fi
+done
+# An unterminated quote is unparseable: the lexer must not deny on it.
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/ docs/looptesting/ISSUES.md"}}'
+out=$( cd "$WS20" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" 2>/dev/null ); rc=$?
+assert_eq "" "$out" "unterminated quote -> empty stdout"
+
 report "ledger-gate.test.sh"
