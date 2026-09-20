@@ -17,12 +17,16 @@
 #                    field being measured; the field says the question was never
 #                    answered (an upgraded sandbox lands here); or a worktree this
 #                    run could not claim is still registered and the marker is the
-#                    only record of it. The branch is deleted only when it has
-#                    no fix commits beyond the recorded baseline OR
-#                    --discard-fixes is given — fix commits exist ONLY on that
-#                    branch, so harvest them (merge / cherry-pick) first.
-#                    Refuses (exit 3) without an ownership marker or a terminal
-#                    STATE. Default behavior without --purge is unchanged.
+#                    only record of it. The tag and branch are identified by
+#                    the recorded baseline, not by name: the tag goes only if it
+#                    still points at that commit, the branch only if it descends
+#                    from it — anything else of the same name is kept and named.
+#                    The branch is deleted only when it has no fix commits beyond
+#                    the recorded baseline OR --discard-fixes is given — fix
+#                    commits exist ONLY on that branch, so harvest them (merge /
+#                    cherry-pick) first. Refuses (exit 3) without an ownership
+#                    marker or a terminal STATE. Default behavior without
+#                    --purge is unchanged.
 #
 # Exit codes: 0 cleaned (or nothing to clean) · 1 internal abort (re-anchored to
 # the main tree but cannot cd there — applies to both plain clean and --purge) ·
@@ -38,7 +42,7 @@ DISCARD_FIXES=0
 # Print the header block as the help text (same mechanism as install-codex.sh):
 # one source of truth, so usage and exit codes cannot drift from the comment that
 # documents them.
-usage() { sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # --help is handled in its own pass, BEFORE the parse loop, so it wins over
 # --purge on the same line and can never reach the destructive path.
@@ -378,19 +382,54 @@ if [ "$PURGE" = 1 ]; then
   kept_branch=""
   adopted_note=""
 
+  # A name is not an identity (audit S-03). The marker says what this sandbox
+  # created: a tag AT BASELINE_HEAD, and a branch STARTING FROM it. A tag of that
+  # name pointing anywhere else, or a branch of that name that does not descend
+  # from that commit, is something the user made in the meantime — the same
+  # workflow the ADOPTED_* rule already protects across lifecycles, only within
+  # one. So every deletion below is gated on the recorded baseline: no baseline
+  # recorded (or no longer resolvable) means nothing can be identified, and
+  # nothing is deleted.
+  base_ok=0
+  if [ -n "$P_BASE" ] && git -C "$TOP" rev-parse -q --verify "$P_BASE^{commit}" >/dev/null 2>&1; then
+    base_ok=1
+  fi
+
   if [ -n "$P_TAG" ] && git -C "$TOP" rev-parse -q --verify "refs/tags/$P_TAG" >/dev/null 2>&1; then
-    git -C "$TOP" tag -d "$P_TAG" >/dev/null 2>&1 && echo_info "purge: deleted baseline tag $P_TAG"
+    tag_at="$(git -C "$TOP" rev-parse -q --verify "refs/tags/$P_TAG^{commit}" 2>/dev/null)"
+    if [ "$base_ok" = 1 ] && [ -n "$tag_at" ] && [ "$tag_at" = "$P_BASE" ]; then
+      git -C "$TOP" tag -d "$P_TAG" >/dev/null 2>&1 && echo_info "purge: deleted baseline tag $P_TAG"
+    elif [ "$base_ok" = 1 ]; then
+      echo_info "purge: kept tag $P_TAG (it no longer points at the recorded baseline ${P_BASE}, so it is not the one this sandbox created — remove it by hand if it is)"
+    else
+      echo_info "purge: kept tag $P_TAG (the marker records no resolvable baseline, so this run cannot tell the sandbox's tag from one of yours)"
+    fi
   fi
 
   if [ -n "$P_BRANCH" ] && git -C "$TOP" rev-parse -q --verify "refs/heads/$P_BRANCH" >/dev/null 2>&1; then
     cur="$(git -C "$TOP" symbolic-ref --short -q HEAD 2>/dev/null)"
     fixes=-1   # -1 = unknown (unverifiable baseline) -> fail-closed like >0
-    if [ -n "$P_BASE" ] && git -C "$TOP" rev-parse -q --verify "$P_BASE^{commit}" >/dev/null 2>&1; then
-      fixes="$(git -C "$TOP" rev-list --count "$P_BASE..refs/heads/$P_BRANCH" 2>/dev/null)"
-      case "$fixes" in ''|*[!0-9]*) fixes=-1 ;; esac
+    # Ours only if the recorded baseline is an ancestor of the tip: the branch
+    # was cut from that commit and only ever gained commits on top of it. A tip
+    # that does NOT contain the baseline (the user's own branch of the same name
+    # at an older commit, say) reads as "0 commits beyond the baseline" to
+    # rev-list, which the old code took as permission to delete it.
+    descends=0
+    if [ "$base_ok" = 1 ]; then
+      if git -C "$TOP" merge-base --is-ancestor "$P_BASE" "refs/heads/$P_BRANCH" 2>/dev/null; then
+        descends=1
+        fixes="$(git -C "$TOP" rev-list --count "$P_BASE..refs/heads/$P_BRANCH" 2>/dev/null)"
+        case "$fixes" in ''|*[!0-9]*) fixes=-1 ;; esac
+      fi
     fi
     if [ "$cur" = "$P_BRANCH" ]; then
       kept_branch="$P_BRANCH (currently checked out — switch away, then delete it by hand)"
+    elif [ "$descends" = 0 ]; then
+      if [ "$base_ok" = 1 ]; then
+        kept_branch="$P_BRANCH (it does not descend from the recorded baseline ${P_BASE}, so it is not the branch this sandbox created — remove it by hand if it is)"
+      else
+        kept_branch="$P_BRANCH (the marker records no resolvable baseline, so this run cannot tell the sandbox's branch from one of yours — remove it by hand once you have harvested)"
+      fi
     elif [ "$fixes" = "0" ] || [ "$DISCARD_FIXES" = 1 ]; then
       if git -C "$TOP" branch -D "$P_BRANCH" >/dev/null 2>&1; then
         echo_info "purge: deleted branch $P_BRANCH"
