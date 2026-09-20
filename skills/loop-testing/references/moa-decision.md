@@ -47,7 +47,7 @@ node "$SKILL_DIR"/scripts/moa.mjs \
 可选参数：
 
 - `--config <moa.config.json>`：覆盖默认模型组合。默认还会自动读取当前工作目录下的 `docs/looptesting/moa.config.json`（存在即生效）。
-- `--dry-run`：只打印解析后的配置（模型、provider、代理开关、各 key 是否 `set`/`missing`），**不发起任何网络请求**，用于排查配置与 key/代理是否就绪。
+- `--dry-run`：只打印解析后的配置（模型、provider、代理逐端点决策与 `NO_PROXY`、各 key 是否 `set`/`missing`），**不发起任何网络请求**，用于排查配置与 key/代理是否就绪。末尾若出现 `warnings:` 段，表示配置能解析但这样跑会失败——例如命名空间形式的 `vendor/model` id 最终解析到 `api.openai.com`，那里没有这个模型，每个请求都会 404。该告警在真实运行时也会在发起调用前打到 stderr。
 
 环境变量（**key 只从环境变量读，禁止写入代码/配置/日志**）：
 
