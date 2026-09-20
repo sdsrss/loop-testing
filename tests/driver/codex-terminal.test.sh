@@ -38,14 +38,17 @@ if [ -w "$FAKE/SKILL.md" ]; then
   PASS=$((PASS+1)); echo "  ok: protect restores skill-dir writability on normal exit"
 else FAIL=$((FAIL+1)); echo "  FAIL: skill-dir left read-only after normal exit" >&2; fi
 
-# E. the restore trap is wired for signal interrupts (INT/TERM), not just EXIT (C18),
-# AND the signal handlers terminate: a bash trap handler otherwise returns into the
-# loop, un-protecting the skill dir and dropping the lock while full-access sessions
-# keep launching. End-to-end behavior is covered by codex-limits.test.sh T.
+# E. the restore trap is wired for signal interrupts (INT/TERM/HUP), not just EXIT
+# (C18), AND the signal handlers stop the running session FIRST (audit D-01) and
+# then terminate: a bash trap handler otherwise returns into the loop,
+# un-protecting the skill dir and dropping the lock while full-access sessions
+# keep launching. End-to-end behavior is covered by codex-limits.test.sh T and
+# shutdown.test.sh.
 if grep -qE "^trap +cleanup +EXIT" "$CODEX_DRIVER" \
-   && grep -qE "^trap +'cleanup; exit [0-9]+' +INT" "$CODEX_DRIVER" \
-   && grep -qE "^trap +'cleanup; exit [0-9]+' +TERM" "$CODEX_DRIVER"; then
-  PASS=$((PASS+1)); echo "  ok: cleanup trap covers EXIT and terminates on INT/TERM"
-else FAIL=$((FAIL+1)); echo "  FAIL: protect trap not wired for INT/TERM (or handler does not exit)" >&2; fi
+   && grep -qE "^trap +'stop_child; cleanup; exit [0-9]+' +INT" "$CODEX_DRIVER" \
+   && grep -qE "^trap +'stop_child; cleanup; exit [0-9]+' +TERM" "$CODEX_DRIVER" \
+   && grep -qE "^trap +'stop_child; cleanup; exit [0-9]+' +HUP" "$CODEX_DRIVER"; then
+  PASS=$((PASS+1)); echo "  ok: cleanup trap covers EXIT and stops the session then terminates on INT/TERM/HUP"
+else FAIL=$((FAIL+1)); echo "  FAIL: protect trap not wired for INT/TERM/HUP with stop_child first (or handler does not exit)" >&2; fi
 
 report "codex-terminal.test.sh"

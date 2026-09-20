@@ -17,12 +17,14 @@
 #                      [--plugin-dir <path>] [--max-turns 300] [--claude-bin claude]
 #                      [--session-minutes 50] [--no-watchdog]
 #
-# Shutdown: SIGINT (Ctrl-C) hits the whole process group and stops the child
-# session immediately. A bare `kill -TERM <driver-pid>` is honored only BETWEEN
-# sessions — bash defers the trap while the foreground child runs, so the
-# worst-case latency is the remaining session budget (--session-minutes,
-# watchdog-bounded). For prompt programmatic shutdown, signal the process
-# group: `kill -TERM -- -<driver-pgid>`. (audit DR-6)
+# Shutdown: SIGINT (Ctrl-C), SIGTERM or SIGHUP to the driver — bare pid or
+# process group — stops the driver AND the running session at once. The session
+# is launched in the background and awaited with `wait`, which a trapped signal
+# interrupts immediately; the handler then signals the session's own process
+# group before releasing the lock. That group is distinct from the driver's:
+# `timeout` (GNU and uutils) calls setpgid(0,0), so `kill -TERM -- -<driver-pgid>`
+# alone killed the driver, freed .driver.lock, and left a bypassPermissions
+# session running for a later driver to race (audit D-01).
 #
 # Exit codes:
 #   0  STATE reached a terminal status (CONVERGED / INCOMPLETE / BLOCKED) — the
@@ -33,6 +35,7 @@
 #   5  NO_PROGRESS: two consecutive sessions with no change in the composite
 #      progress fingerprint (round | issues | converged_streak | runs count+bytes |
 #      round-0 bootstrap bytes).
+#   129 / 130 / 143  stopped by SIGHUP / SIGINT / SIGTERM (session stopped too).
 set -u
 
 PROJECT=""
@@ -72,6 +75,7 @@ for v in MAX_SESSIONS MAX_MINUTES SESSION_MINUTES MAX_TURNS; do
   # FATAL bad substitution on stock macOS bash 3.2 — and this line runs on every
   # invocation, not just the error path (tests/portability/bash3.test.sh guards it).
   eval "val=\$$v"; flag=$(printf '%s' "$v" | tr 'A-Z_' 'a-z-')
+  # shellcheck disable=SC2154  # val is assigned by the eval above
   is_uint "$val" || die "--$flag must be a non-negative integer, got: $val"
 done
 # Default plugin-dir = this plugin's repo root (scripts/ -> loop-testing/ -> skills/ -> root).
@@ -168,9 +172,26 @@ acquire_lock() {
 # terminate with the conventional 128+n status (same shape as install-codex.sh).
 # release_lock is idempotent (LOCK_OWNED=0), so the EXIT trap firing after these
 # is a no-op.
+#
+# The session is stopped FIRST (audit D-01). It runs under `timeout`, which puts
+# itself and the agent in a process group of its own (pgid == its pid), so a
+# signal aimed at the driver — or at the driver's whole group — never reached
+# it: the driver died, the lock was freed, and the session ran on. The child
+# pid is known because the session is launched with `&` and awaited with
+# `wait` (which a trapped signal interrupts at once, unlike a foreground
+# child), so the handler can signal the session's group by that pid. Without a
+# watchdog binary the agent is a direct background child in the driver's own
+# group and has no group of its own; the plain-pid kill covers that case.
+CHILD=""
+stop_child() {
+  [ -n "$CHILD" ] || return 0
+  kill -0 "$CHILD" 2>/dev/null || return 0
+  kill -TERM -- -"$CHILD" 2>/dev/null || kill -TERM "$CHILD" 2>/dev/null
+}
 trap release_lock EXIT
-trap 'release_lock; exit 130' INT
-trap 'release_lock; exit 143' TERM
+trap 'stop_child; release_lock; exit 130' INT
+trap 'stop_child; release_lock; exit 143' TERM
+trap 'stop_child; release_lock; exit 129' HUP
 acquire_lock
 
 START_EPOCH=$(date +%s)
@@ -251,19 +272,29 @@ while true; do
   # sanitized → full set incl. Bash/Edit/Read/Write/Skill.
   SANITIZE_ENV=(env -u CLAUDE_CODE_COORDINATOR_MODE -u CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
                 -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID)
+  # Background + `wait`, never a foreground subshell: see the shutdown note above
+  # the traps. `exec` makes $! the watchdog's own pid (and therefore its pgid),
+  # so stop_child can address the session's whole process group. `timeout` is
+  # kept in the default (non --foreground) mode on purpose: its own group is what
+  # lets `-k 15` reach the agent's grandchildren (dev servers, test runners).
+  # An async list in a non-interactive shell gets stdin from /dev/null and
+  # SIGINT ignored; `<&0` and `trap - INT` hand the session the same stdin and
+  # signal dispositions the old foreground subshell gave it.
   if [ -n "$TIMEOUT_BIN" ]; then
-    ( cd "$PROJECT" && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 "$TIMEOUT_BIN" -k 15 "$sess_budget" \
+    ( trap - INT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" \
-      >/dev/null 2>&1 )
-    rc=$?
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" ) \
+      <&0 >/dev/null 2>&1 &
   else
-    ( cd "$PROJECT" && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+    ( trap - INT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" \
-      >/dev/null 2>&1 )
-    rc=$?
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" ) \
+      <&0 >/dev/null 2>&1 &
   fi
+  CHILD=$!
+  wait "$CHILD"
+  rc=$?
+  CHILD=""
 
   cur_round="$(round_of)"
   cur_issues="$(issue_count)"

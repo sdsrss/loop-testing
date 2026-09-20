@@ -329,11 +329,12 @@ rm -rf ~/.cache/loop-testing     # 可选:更新检查节流文件,仅 Codex / -
 的防误重启守卫,非硬互斥**。若某次被 `SIGKILL` 且锁内 PID 不可读,后续启动会**保守拒绝**并提示——
 确认无驱动在跑后 `rm -rf docs/looptesting/.driver.lock` 即可。
 
-**提前停掉无人值守长跑:** Ctrl-C(SIGINT 打到整个进程组)会立即停掉驱动与子会话。裸的
-`kill -TERM <driver-pid>` 只在**会话间隙**生效——bash 在前台子进程运行期间推迟 trap,最坏延迟
-= 剩余会话预算(`--session-minutes`,受看门狗封顶)。程序化即时停机请对进程组发信号:
-`kill -TERM -- -<driver-pgid>`。另外:PATH 上没有 `timeout`/`gtimeout` 时驱动现在**拒绝启动**
-(否则 wall-clock 看门狗会静默缺失);确要接受无界会话请显式传 `--no-watchdog`。
+**提前停掉无人值守长跑:** Ctrl-C、`kill -TERM <driver-pid>` 或挂断(关终端 / SSH 断线)都会
+**立即停掉驱动和它正在跑的会话**,驱动分别以 130 / 143 / 129 退出。会话跑在自己的进程组里
+(`timeout` 会建一个),所以驱动会先给那个进程组发信号,再释放 `.driver.lock`——早先版本里,
+给驱动或驱动进程组发信号只会杀掉驱动、释放锁,而那个全权限的会话继续跑。另外:PATH 上没有
+`timeout`/`gtimeout` 时驱动**拒绝启动**(否则 wall-clock 看门狗会静默缺失);确要接受无界会话
+请显式传 `--no-watchdog`。
 
 ---
 

@@ -25,10 +25,11 @@ for d in "$DRIVER" "$CODEX"; do
   assert_absent "$out" 'set -u'      "$name --help stops before code (no set -u)"
   assert_absent "$out" 'PROJECT=""'  "$name --help stops before code (no PROJECT=\"\")"
 
-  # 2. The header prints in full — last line is the final header comment, so the
-  #    exit-code-5 explanation is complete, not truncated mid-sentence.
+  # 2. The header prints in full — last line is the final header comment (the
+  #    signal exit codes, after the exit-code-5 explanation), so nothing is
+  #    truncated mid-sentence.
   last="$(printf '%s\n' "$out" | tail -1)"
-  assert_eq '#      round-0 bootstrap bytes).' "$last" "$name --help ends at the full header"
+  assert_eq '#   129 / 130 / 143  stopped by SIGHUP / SIGINT / SIGTERM (session stopped too).' "$last" "$name --help ends at the full header"
 
   # 3. The multi-line exit-code-5 body is present (would be cut by an under-range).
   assert_file_contains <(printf '%s\n' "$out") 'progress fingerprint' \

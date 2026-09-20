@@ -28,12 +28,14 @@
 #                       [--skill-dir ~/.codex/skills/loop-testing] [--no-protect]
 #                       [--no-watchdog]
 #
-# Shutdown: SIGINT (Ctrl-C) hits the whole process group and stops the child
-# session immediately. A bare `kill -TERM <driver-pid>` is honored only BETWEEN
-# sessions — bash defers the trap while the foreground child runs, so the
-# worst-case latency is the remaining session budget (--session-minutes,
-# watchdog-bounded). For prompt programmatic shutdown, signal the process
-# group: `kill -TERM -- -<driver-pgid>`. (audit DR-6)
+# Shutdown: SIGINT (Ctrl-C), SIGTERM or SIGHUP to the driver — bare pid or
+# process group — stops the driver AND the running session at once, then
+# restores the skill dir and releases the lock. The session is launched in the
+# background and awaited with `wait`, which a trapped signal interrupts
+# immediately; the handler then signals the session's own process group, which
+# `timeout` (GNU and uutils, via setpgid) keeps separate from the driver's — so
+# a signal to the driver's group alone used to free the lock and leave a
+# danger-full-access session running (audit D-01).
 #
 # Exit codes (mirror unattended-loop.sh):
 #   0  STATE reached a terminal status (CONVERGED / INCOMPLETE / BLOCKED).
@@ -43,6 +45,7 @@
 #   5  NO_PROGRESS: two consecutive sessions with no change in the composite
 #      progress fingerprint (round | issues | converged_streak | runs count+bytes |
 #      round-0 bootstrap bytes).
+#   129 / 130 / 143  stopped by SIGHUP / SIGINT / SIGTERM (session stopped too).
 set -u
 
 PROJECT=""
@@ -80,6 +83,7 @@ for v in MAX_SESSIONS MAX_MINUTES SESSION_MINUTES; do
   # FATAL bad substitution on stock macOS bash 3.2 — and this line runs on every
   # invocation, not just the error path (tests/portability/bash3.test.sh guards it).
   eval "val=\$$v"; flag=$(printf '%s' "$v" | tr 'A-Z_' 'a-z-')
+  # shellcheck disable=SC2154  # val is assigned by the eval above
   is_uint "$val" || die "--$flag must be a non-negative integer, got: $val"
 done
 
@@ -158,9 +162,24 @@ cleanup() {
 # TERM` un-protected the skill dir and dropped the lock while the loop kept
 # launching full-access sessions. Clean up, then terminate with the conventional
 # 128+n status. cleanup is idempotent, so the EXIT trap after these is a no-op.
+#
+# The session is stopped FIRST (audit D-01; kept identical to unattended-loop.sh).
+# `timeout` puts itself and `codex exec` in a process group of their own (pgid ==
+# its pid), so a signal to the driver or its group never reached the session.
+# The pid is known because the session is launched with `&` and awaited with
+# `wait` (interruptible by a trapped signal, unlike a foreground child). Without
+# a watchdog the agent is a direct child in the driver's own group; the plain-pid
+# kill covers that.
+CHILD=""
+stop_child() {
+  [ -n "$CHILD" ] || return 0
+  kill -0 "$CHILD" 2>/dev/null || return 0
+  kill -TERM -- -"$CHILD" 2>/dev/null || kill -TERM "$CHILD" 2>/dev/null
+}
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+trap 'stop_child; cleanup; exit 130' INT
+trap 'stop_child; cleanup; exit 143' TERM
+trap 'stop_child; cleanup; exit 129' HUP
 acquire_lock
 if [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
   # Arm the restore BEFORE the chmod, not after: the INT/TERM handlers now exit,
@@ -278,16 +297,24 @@ while true; do
   [ "$sess_budget" -lt 1 ] && sess_budget=1
 
   # Wall-clock watchdog around the single-shot codex session; cwd = project.
+  # Background + `wait`, never a foreground subshell (shutdown note above the
+  # traps). `exec` makes $! the watchdog's own pid, hence its pgid, so stop_child
+  # can address the session's whole group; `timeout` stays in its default
+  # (non --foreground) mode so `-k 15` still reaches the agent's grandchildren.
+  # `<&0` + `trap - INT`: an async list would otherwise get /dev/null stdin and
+  # SIGINT ignored — the foreground subshell it replaces passed both through.
   if [ -n "$TIMEOUT_BIN" ]; then
-    ( cd "$PROJECT" && "$TIMEOUT_BIN" -k 15 "$sess_budget" \
-      "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" \
-      >/dev/null 2>&1 )
-    rc=$?
+    ( trap - INT; cd "$PROJECT" && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
+      "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" ) \
+      <&0 >/dev/null 2>&1 &
   else
-    ( cd "$PROJECT" && "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" \
-      >/dev/null 2>&1 )
-    rc=$?
+    ( trap - INT; cd "$PROJECT" && exec "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" ) \
+      <&0 >/dev/null 2>&1 &
   fi
+  CHILD=$!
+  wait "$CHILD"
+  rc=$?
+  CHILD=""
 
   cur_round="$(round_of)"
   cur_issues="$(issue_count)"
