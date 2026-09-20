@@ -396,7 +396,17 @@ wt_ownership() {
   # command must never be mistaken for an ownership verdict — so there are none.
   nl='
 '
-  list="$(git -C "$TOP" worktree list --porcelain 2>/dev/null)$nl"
+  # The one external command left on this path, and it can fail like any other:
+  # an unreadable or locked .git/worktrees, a corrupted admin entry, a fork that
+  # cannot allocate. Its empty output used to flow straight into the match below
+  # and come out as `absent` — a live worktree reported "already gone", purge
+  # closing with exit 0 over a sandbox still standing (audit S-04). A failed
+  # command is not a verdict: `unknown` is, and every caller already treats it as
+  # "cannot tell, so touch nothing".
+  if ! list="$(git -C "$TOP" worktree list --porcelain 2>/dev/null)"; then
+    printf 'unknown'; return
+  fi
+  list="$list$nl"
   case "$nl$list" in
     *"${nl}worktree $p${nl}"*) : ;;
     *) printf 'absent'; return ;;
