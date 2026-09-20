@@ -389,9 +389,13 @@ watchdog forwards the `SIGTERM` and only escalates fifteen seconds later, so a d
 signalled and exited would leave the lock free while a full-permission session was still
 shutting down — and a second driver could start right there. The wait is bounded at 20
 seconds, which is that fifteen-second guarantee plus margin; at the bound the driver sends one
-`SIGKILL` to the session's group. If the session is then gone the lock is released, and a
-straggling grandchild (a dev server the agent left behind) is named in `driver.log` rather
-than holding the project up. In the pathological case where the session itself outlives
+`SIGKILL` to the session's group. **While it waits it prints the session's pid and the bound on
+stderr, and a second signal escalates to `SIGKILL` immediately** instead of cancelling the wait
+— so pressing Ctrl-C twice means "stop it now", and never releases the lock out from under a
+live session. If the session is then gone the lock is released, and a straggling grandchild
+still in the session's process group (a dev server the agent left behind) is named in
+`driver.log` rather than holding the project up; a grandchild that called `setsid` has left
+that group and is neither stopped nor named. In the pathological case where the session itself outlives
 `SIGKILL`, the driver **keeps** the lock and rewrites it to name that process: a stale lock is
 visible and refuses the next run, while a released one would silently permit a second
 full-permission session on the same `STATE.md`. `SIGKILL` to the driver skips all of this —

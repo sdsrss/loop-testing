@@ -41,12 +41,18 @@
 #     refuses the next driver by design; a released one would silently permit a
 #     second full-permission session on the same STATE.md.
 #
+# A SECOND stop signal during that wait does not cancel it — it collapses the
+# deadline, so the SIGKILL escalation happens at once. The wait announces itself
+# on stderr with the session pid and the bound, because a silent pause after a
+# Ctrl-C reads as a hang and invites exactly that second press.
+#
 # Known limits (all pre-existing, none closed here):
 #   - SIGKILL to the DRIVER skips every handler: the session keeps running and
 #     the lock stays behind naming a dead holder, which the next driver steals.
 #     Use one of the signals above instead.
 #   - A grandchild that calls setsid() leaves the session's process group and is
-#     reachable by neither `timeout -k` nor the handler.
+#     reachable by neither `timeout -k` nor the handler — and, because the
+#     straggler search is `pgrep -g`, it is not named in driver.log either.
 #   - `timeout -k` is not a group reaper on every build: measured here, uutils
 #     0.8.0 signals only its direct child, so a TERM-ignoring grandchild in the
 #     same group survives it (GNU's timeout does signal the group).
@@ -232,13 +238,40 @@ acquire_lock() {
 STOP_GRACE="${LOOP_TESTING_STOP_GRACE:-20}"
 case "$STOP_GRACE" in ''|*[!0-9]*) STOP_GRACE=20 ;; esac
 STOP_KILL_GRACE=2
+STOP_DEADLINE=0       # global so a SECOND signal can collapse it (see shutdown_handler)
+STOPPING=0            # a shutdown is in progress (re-entrancy, not idempotency)
+STOP_DONE=0           # a shutdown has completed (idempotency, not re-entrancy)
 CHILD=""              # pid of the running session (the watchdog leads its group)
+CHILD_START=""        # its start time — a pid alone is not an identity
 CHILD_SURVIVED=""     # set only when that pid outlives SIGKILL
-poll_sleep() { sleep 0.2 2>/dev/null || sleep 1; }
+POLL_STEP=auto
+poll_sleep() {
+  local rc
+  if [ "$POLL_STEP" = auto ]; then
+    sleep 0.2 2>/dev/null; rc=$?
+    # Exit >= 128 means the sleep was INTERRUPTED by a second stop signal, not
+    # that this platform rejects a fractional argument — only the latter should
+    # downgrade the poll to whole seconds.
+    if [ "$rc" -eq 0 ] || [ "$rc" -ge 128 ]; then POLL_STEP=0.2; else POLL_STEP=1; sleep 1; fi
+    return 0
+  fi
+  sleep "$POLL_STEP" 2>/dev/null || true
+}
+# The kernel reuses pids. Across a 20 s wait the session's number could come
+# back as an unrelated process, and this code signals a whole process GROUP at
+# the bound — so pair the pid with its start time and read a mismatch as "the
+# session is gone", never as "something to kill".
+proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' ' '; }
+child_alive() { # pid start-time
+  kill -0 "$1" 2>/dev/null || return 1
+  [ -n "$2" ] || return 0            # no start time recorded: pid-only, as before
+  [ "$(proc_start "$1")" = "$2" ] || return 1
+  return 0
+}
 stop_child() {
   [ -n "$CHILD" ] || return 0
-  local c pg grp deadline left
-  c="$CHILD"; CHILD=""     # idempotent: the EXIT trap must not signal twice
+  local c start pg grp kdeadline left
+  c="$CHILD"; start="$CHILD_START"
   # Address the session's process group only when the child actually LEADS one
   # (it does whenever a watchdog wraps it). Without a watchdog the agent is a
   # direct child in the driver's own group, and `-<pid>` could name some
@@ -246,30 +279,41 @@ stop_child() {
   pg="$(ps -o pgid= -p "$c" 2>/dev/null | tr -d ' ')"
   if [ "$pg" = "$c" ]; then grp=1; else grp=0; fi
   if [ "$grp" = 1 ]; then kill -TERM -- -"$c" 2>/dev/null; else kill -TERM "$c" 2>/dev/null; fi
-  deadline=$(( $(date +%s) + STOP_GRACE ))
-  while kill -0 "$c" 2>/dev/null; do
-    [ "$(date +%s)" -ge "$deadline" ] && break
+  # Say so. A silent wait of up to 20 s after a Ctrl-C reads as a hang, and the
+  # user's next move is another Ctrl-C — which is precisely the signal this
+  # handler must survive, so tell them what it will do.
+  echo "unattended-loop: stopping session pid $c — waiting up to ${STOP_GRACE}s for it to exit, then SIGKILL. Signal again to escalate now." >&2
+  STOP_DEADLINE=$(( $(date +%s) + STOP_GRACE ))
+  while child_alive "$c" "$start"; do
+    [ "$(date +%s)" -ge "$STOP_DEADLINE" ] && break
     poll_sleep
   done
-  if kill -0 "$c" 2>/dev/null; then
+  if child_alive "$c" "$start"; then
     if [ "$grp" = 1 ]; then kill -KILL -- -"$c" 2>/dev/null; else kill -KILL "$c" 2>/dev/null; fi
-    deadline=$(( $(date +%s) + STOP_KILL_GRACE ))
-    while kill -0 "$c" 2>/dev/null; do
-      [ "$(date +%s)" -ge "$deadline" ] && break
+    # Deliberately a LOCAL deadline: a third signal must not be able to cut the
+    # post-SIGKILL settle short and have a session that was 0.2 s from death
+    # recorded as a survivor.
+    kdeadline=$(( $(date +%s) + STOP_KILL_GRACE ))
+    while child_alive "$c" "$start"; do
+      [ "$(date +%s)" -ge "$kdeadline" ] && break
       poll_sleep
     done
   fi
-  if kill -0 "$c" 2>/dev/null; then
+  if child_alive "$c" "$start"; then
     CHILD_SURVIVED="$c"
+    CHILD=""; CHILD_START=""
     return 1
   fi
   # The session is down. Decide on the session pid alone: a straggler left in
   # the group is a grandchild, which cannot advance STATE.md or hold the
   # worktree as the session — name it, do not hold the project hostage to it.
+  # Only the group is searched, so a grandchild that escaped via setsid() is
+  # neither stopped nor named here (see Known limits in the header).
   if [ "$grp" = 1 ]; then
     left="$(pgrep -g "$c" 2>/dev/null | tr '\n' ' ')"
     [ -n "$left" ] && log_line "shutdown: session $c stopped; still in its process group (grandchildren, not the session): $left"
   fi
+  CHILD=""; CHILD_START=""
   return 0
 }
 LOCK_HOLD_WARNED=0
@@ -290,13 +334,40 @@ release_lock_or_hold() {
   fi
   release_lock
 }
+# One shutdown at a time, and a SECOND signal must not cancel the first.
+# `CHILD` used to carry both duties: stop_child cleared it on entry, so a signal
+# arriving while the first handler was still waiting found it empty, returned
+# at once, released the lock and exited — out from under a session that was
+# still alive. That is reachable by an ordinary impatient Ctrl-C, not just by an
+# adversary, which is why the two duties are now separate flags:
+#   STOPPING  — a handler is inside the wait (re-entrancy)
+#   STOP_DONE — a handler finished (idempotency, for the EXIT trap)
+# The nested call neither releases nor exits. It collapses the deadline instead,
+# so pressing the stop key twice means "escalate to SIGKILL now" — which is what
+# the user is asking for — and the FIRST handler still owns the sequence.
+shutdown_handler() { # [exit-code]
+  if [ "$STOPPING" = 1 ]; then
+    STOP_DEADLINE=0
+    echo "unattended-loop: second stop signal — escalating to SIGKILL now." >&2
+    return 0
+  fi
+  [ "$STOP_DONE" = 1 ] && return 0
+  STOPPING=1
+  stop_child
+  release_lock_or_hold
+  STOP_DONE=1
+  STOPPING=0
+  # EXIT passes no code: exiting from the EXIT trap would re-enter it.
+  [ $# -ge 1 ] && [ -n "$1" ] && exit "$1"
+  return 0
+}
 # EXIT routes through the same stop-then-release sequence: a terminating path
 # outside INT/TERM/HUP/QUIT must not free the lock and orphan the session.
-trap 'stop_child; release_lock_or_hold' EXIT
-trap 'stop_child; release_lock_or_hold; exit 130' INT
-trap 'stop_child; release_lock_or_hold; exit 143' TERM
-trap 'stop_child; release_lock_or_hold; exit 129' HUP
-trap 'stop_child; release_lock_or_hold; exit 131' QUIT
+trap 'shutdown_handler' EXIT
+trap 'shutdown_handler 130' INT
+trap 'shutdown_handler 143' TERM
+trap 'shutdown_handler 129' HUP
+trap 'shutdown_handler 131' QUIT
 acquire_lock
 
 START_EPOCH=$(date +%s)
@@ -402,9 +473,10 @@ while true; do
       <&0 &
   fi
   CHILD=$!
+  CHILD_START="$(proc_start "$CHILD")"
   wait "$CHILD"
   rc=$?
-  CHILD=""
+  CHILD=""; CHILD_START=""
 
   cur_round="$(round_of)"
   cur_issues="$(issue_count)"

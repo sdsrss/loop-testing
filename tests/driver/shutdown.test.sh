@@ -127,10 +127,10 @@ run_case() {
       # foreground process group — the same path as a user's Ctrl-C.
       mkfifo "$ws/tty-in"
       exec 3<>"$ws/tty-in"
-      ( ( trap - INT QUIT; exec script -q -c "$*" /dev/null < "$ws/tty-in" > /dev/null 2>&1 ) & )
+      ( ( trap - INT QUIT; exec script -q -c "$*" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
       ;;
     *)
-      ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2>&1 ) & )
+      ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
       ;;
   esac
   drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — driver never wrote its lock pid" >&2; [ "$method" = pty ] && exec 3>&-; return 0; }
@@ -183,7 +183,94 @@ run_case() {
     FAIL=$((FAIL+1)); echo "  FAIL: $label — orphaned session processes: $(pgrep -f "$stub" | tr '\n' ' ')" >&2
     for p in $(pgrep -f "$stub"); do pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null; done
   else PASS=$((PASS+1)); fi
+  # The wait must announce itself: a silent pause of up to the bound reads as a
+  # hang, and the user's next move is a second signal.
+  if grep -qF "stopping session pid $sess" "$ws/driver.err" 2>/dev/null; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — the driver never said it was stopping session pid $sess" >&2; fi
   [ "$method" = pty ] && exec 3>&-
+  return 0
+}
+
+# A SECOND signal during the wait must not cancel it. The first handler owns the
+# sequence; the nested one only collapses the deadline. The stub ignores SIGTERM
+# so the wait is real, and the bound is left at its 20 s default so the window
+# is as wide as a user would meet it.
+# run_double <label> <kind: claude|codex> <first> <second>   signals: TERM INT HUP QUIT pty
+run_double() {
+  local label="$1" kind="$2" first="$3" second="$4"
+  local ws stub drv sess lock pgid saw raced t0 tdead
+  ws=$(mk_proj); WS_ALL="$WS_ALL $ws"
+  stub=$(write_stubborn_stub "$ws")
+  write_state "$ws" RUNNING 0
+  lock="$ws/docs/looptesting/.driver.lock"
+  if [ "$kind" = codex ]; then
+    set -- bash "$CODEX_DRIVER" --project "$ws" --codex-bin "$stub" --no-protect --max-sessions 3 --max-minutes 5 --session-minutes 2
+  else
+    set -- bash "$DRIVER" --project "$ws" --claude-bin "$stub" --max-sessions 3 --max-minutes 5 --session-minutes 2
+  fi
+  if [ "$first" = pty ]; then
+    mkfifo "$ws/tty-in"; exec 3<>"$ws/tty-in"
+    ( ( trap - INT QUIT; exec script -q -c "$*" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
+  else
+    ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
+  fi
+  drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — driver never wrote its lock pid" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
+  wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); echo "  FAIL: $label — child session never started beating" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
+  sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no session process group found under the driver" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
+  pgid=$(ps -o pgid= -p "$drv" | tr -d ' ')
+  send_sig "$first" "$drv" "$pgid"
+  sleep 2   # the first handler is now inside its wait
+  # Mid-wait: the driver is holding the line. If any of this is already false the
+  # wait is not happening and the second-signal case below would prove nothing.
+  if kill -0 "$drv" 2>/dev/null && kill -0 "$sess" 2>/dev/null && [ -e "$lock" ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — mid-wait state wrong (driver $(kill -0 "$drv" 2>/dev/null && echo alive || echo dead), session $(kill -0 "$sess" 2>/dev/null && echo alive || echo dead), lock $([ -e "$lock" ] && echo present || echo absent))" >&2; fi
+  t0=$(date +%s)
+  send_sig "$second" "$drv" "$pgid"
+  # THE invariant: the lock may never be absent while the session lives.
+  saw=0; raced=0
+  for _ in $(seq 1 600); do
+    if [ ! -e "$lock" ]; then
+      saw=1
+      kill -0 "$sess" 2>/dev/null && raced=1
+      break
+    fi
+    sleep 0.05
+  done
+  if [ "$saw" = 1 ] && [ "$raced" = 0 ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1))
+    if [ "$saw" = 0 ]; then echo "  FAIL: $label — .driver.lock was never released" >&2
+    else echo "  FAIL: $label — second signal released the lock with session pid $sess still alive" >&2; fi
+  fi
+  # And the second signal is USEFUL: it collapses the deadline, so the session
+  # dies now rather than at the 20 s bound.
+  for _ in $(seq 1 120); do kill -0 "$sess" 2>/dev/null || break; sleep 0.25; done
+  tdead=$(( $(date +%s) - t0 ))
+  if kill -0 "$sess" 2>/dev/null; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — session still alive 30s after the second signal" >&2
+  elif [ "$tdead" -le 10 ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — second signal did not escalate (session took ${tdead}s to die)" >&2; fi
+  for _ in $(seq 1 40); do kill -0 "$drv" 2>/dev/null || break; sleep 0.25; done
+  if kill -0 "$drv" 2>/dev/null; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — driver still alive" >&2; kill -KILL "$drv" 2>/dev/null
+  else PASS=$((PASS+1)); fi
+  if pgrep -f "$stub" > /dev/null 2>&1; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — orphaned session processes: $(pgrep -f "$stub" | tr '\n' ' ')" >&2
+    for p in $(pgrep -f "$stub"); do pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null; done
+  else PASS=$((PASS+1)); fi
+  if grep -qF "second stop signal" "$ws/driver.err" 2>/dev/null; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — the second signal was not acknowledged on stderr" >&2; fi
+  [ "$first" = pty ] && exec 3>&-
+  return 0
+}
+
+send_sig() { # signal driver-pid driver-pgid
+  case "$1" in
+    TERM) kill -TERM -- -"$3" 2>/dev/null ;;
+    INT)  kill -INT  -- -"$3" 2>/dev/null ;;
+    HUP)  kill -HUP  -- -"$3" 2>/dev/null ;;
+    QUIT) kill -QUIT -- -"$3" 2>/dev/null ;;
+    pty)  printf '\003' >&3 ;;
+  esac
   return 0
 }
 
@@ -210,6 +297,18 @@ if command -v script > /dev/null 2>&1 && script -q -c true /dev/null > /dev/null
 else
   echo "  skip: util-linux script unavailable — pty Ctrl-C cases not run"
 fi
+
+# A second signal mid-wait: the impatient user, and the reason the wait has to
+# announce itself. Every ordering, both drivers.
+for k in claude codex; do
+  run_double "$k driver, SIGTERM then SIGTERM"  "$k" TERM TERM
+  run_double "$k driver, SIGTERM then SIGINT"   "$k" TERM INT
+  run_double "$k driver, SIGTERM then SIGHUP"   "$k" TERM HUP
+  run_double "$k driver, SIGTERM then SIGQUIT"  "$k" TERM QUIT
+  if command -v script > /dev/null 2>&1 && script -q -c true /dev/null > /dev/null 2>&1; then
+    run_double "$k driver, two Ctrl-C on a pty" "$k" pty pty
+  fi
+done
 
 # A bare `kill -TERM <driver-pid>` — no process group — must be honored WHILE a
 # session runs, not deferred to the session boundary (bash only defers a trap
@@ -240,10 +339,16 @@ if [ "$elapsed" -lt 20 ]; then PASS=$((PASS+1)); else
 # hold branch is asserted structurally; its CONSEQUENCE is exercised below.
 for d in "$DRIVER" "$CODEX_DRIVER"; do
   n="$(basename "$d")"
-  if grep -qE "^trap 'stop_child; (release_lock_or_hold|cleanup)' EXIT" "$d"; then PASS=$((PASS+1)); else
+  if grep -qE "^trap 'shutdown_handler' EXIT" "$d"; then PASS=$((PASS+1)); else
     FAIL=$((FAIL+1)); echo "  FAIL: $n — the EXIT trap must stop the session before releasing the lock" >&2; fi
-  if grep -qE "^trap 'stop_child; (release_lock_or_hold|cleanup); exit 131' QUIT" "$d"; then PASS=$((PASS+1)); else
+  if grep -qE "^trap 'shutdown_handler 131' QUIT" "$d"; then PASS=$((PASS+1)); else
     FAIL=$((FAIL+1)); echo "  FAIL: $n — SIGQUIT must be handled like the other stop signals" >&2; fi
+  # Re-entrancy and idempotency must be separate flags: one variable doing both
+  # is what let a second signal return early and release the lock mid-wait.
+  if grep -qF 'if [ "$STOPPING" = 1 ]; then' "$d" && grep -qF 'STOP_DEADLINE=0' "$d"; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: $n — a second stop signal must collapse the deadline, not cancel the wait" >&2; fi
+  if grep -qF 'CHILD_START="$(proc_start "$CHILD")"' "$d"; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: $n — the session must be identified by pid AND start time before it is SIGKILLed" >&2; fi
   if grep -qF 'STOP_GRACE="${LOOP_TESTING_STOP_GRACE:-20}"' "$d"; then PASS=$((PASS+1)); else
     FAIL=$((FAIL+1)); echo "  FAIL: $n — the derived 20 s shutdown bound is gone (see the header for why it is 20)" >&2; fi
   if grep -qF 'echo "$CHILD_SURVIVED" > "$LOCK_DIR/pid"' "$d"; then PASS=$((PASS+1)); else
