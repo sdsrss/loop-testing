@@ -58,7 +58,7 @@ node "$SKILL_DIR"/scripts/moa.mjs \
 | `OPENAI_BASE_URL` | OpenAI 兼容端点 base（默认 `https://api.openai.com/v1`）|
 | `OPENROUTER_BASE_URL` | 覆盖 OpenRouter base（默认官方地址；主要用于测试指向本地 stub）|
 | `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | 存在即 LLM 调用走代理（FR-5.4）。只支持 `http://` 代理；`https://` / `socks5://` 等其它 scheme 在配置期即报错 exit 1（不会明文发送 CONNECT 与代理凭据）|
-| `NO_PROXY` / `no_proxy` | 逗号分隔的代理豁免列表：`host`（含子域）、`.suffix`、`host:port`、`*`；命中的端点（如本地 Ollama/vLLM）直连，`--dry-run` 按端点逐行显示 |
+| `NO_PROXY` / `no_proxy` | 逗号分隔的代理豁免列表：`host`（含子域）、`.suffix`、`host:port`、IPv6 字面量（`::1` 或 `[::1]`）、`*`；取两者中第一个非空值。命中的端点（如本地 Ollama/vLLM）直连，`--dry-run` 按端点逐行显示走代理还是直连。**不支持 CIDR 网段**（如 `192.168.0.0/16`，curl 7.86+ 支持）：此类条目不匹配，端点继续走代理（fail-closed），在 `--dry-run` 里可见 |
 | `LOOP_TESTING_MOA_MODELS` | 逗号分隔覆盖参考模型列表 |
 | `LOOP_TESTING_MOA_AGGREGATOR` | 覆盖聚合模型 |
 

@@ -278,23 +278,49 @@ function proxyEnabled(env) {
 // Only http:// proxies are implemented. An https:// proxy URL used to be spoken
 // to in PLAINTEXT on port 443 — CONNECT plus `Proxy-Authorization: Basic …`
 // unencrypted on the wire — and socks5:// was treated as an HTTP proxy until the
-// request timed out (M-03). Refuse at config time, before any network call and
-// in --dry-run too. Never echo the value: it can carry credentials.
-function validateProxyEnv(env) {
-  for (const name of PROXY_ENV_NAMES) {
-    const v = (env[name] || '').trim();
-    if (!v) continue;
-    let u;
-    try { u = new URL(v); } catch {
-      throw new Error(`${name} is not a valid proxy URL — expected the form http://[user:pass@]host:port`);
-    }
-    if (u.protocol !== 'http:' || !u.hostname) {
-      throw new Error(
-        `unsupported proxy scheme "${u.protocol}//" in ${name}: only http:// proxies are supported `
-        + '(an https:// proxy would send CONNECT and Proxy-Authorization in plaintext; socks is not implemented) '
-        + '— expected the form http://[user:pass@]host:port',
-      );
-    }
+// request timed out (M-03). Returns the reason the value is unusable, or null.
+// Never echoes the value itself: it can carry credentials.
+function proxyUrlProblem(name, value) {
+  let u;
+  try { u = new URL(value); } catch {
+    return `${name} is not a valid proxy URL — expected the form http://[user:pass@]host:port`;
+  }
+  if (u.protocol !== 'http:') {
+    return `unsupported proxy scheme "${u.protocol}//" in ${name}: only http:// proxies are supported `
+      + '(an https:// proxy would send CONNECT and Proxy-Authorization in plaintext; socks is not implemented) '
+      + '— expected the form http://[user:pass@]host:port';
+  }
+  return null;
+}
+
+// The chat-completions URLs this run would actually call — one per distinct
+// provider base URL, which is what decides WHICH proxy variable applies.
+function configuredEndpoints(cfg, env) {
+  const urls = [];
+  for (const entry of [...cfg.reference_models, cfg.aggregator]) {
+    const { baseUrl } = resolveModelProvider(entry, env);
+    const url = `${baseUrl}/chat/completions`;
+    if (!urls.includes(url)) urls.push(url);
+  }
+  return urls;
+}
+
+// Refuse an unsupported proxy at config time — before --dry-run and before any
+// network call — but ONLY for the variable an endpoint actually selects.
+// Checking all six broke the standard Clash / v2rayA export (http_proxy +
+// https_proxy at an http proxy, all_proxy at socks5): that configuration never
+// touches the socks value, yet it died at config time, and a missing key that
+// moa-decision.md §5 promises as exit 2 came back as exit 1, which tells the
+// orchestrator to fix its config instead of degrading to single-model.
+// An unsupported value that IS selected stays a hard error: skipping it would
+// silently reroute the origin through another proxy or straight out.
+function validateProxyEnv(cfg, env) {
+  for (const url of configuredEndpoints(cfg, env)) {
+    let sel;
+    try { sel = proxyFor(env, url); } catch { continue; }   // unparseable base URL: surfaces on its own
+    if (!sel.url || sel.bypass) continue;
+    const problem = proxyUrlProblem(sel.source, sel.url);
+    if (problem) throw new Error(problem);
   }
 }
 
@@ -303,9 +329,28 @@ function validateProxyEnv(env) {
 //   host           the host and every subdomain of it
 //   .suffix        same as `suffix` (a leading dot or `*.` is ignored)
 //   host:port      only that port on that host
+//   ::1 / [::1]    an IPv6 literal, bracketed or bare
+// NOT supported: CIDR blocks (curl 7.86+ honors them). They fail closed — the
+// endpoint keeps using the proxy — and the dry-run report shows which endpoints
+// bypass, so a missed entry is visible rather than silent.
+//
+// The first NON-EMPTY of NO_PROXY / no_proxy wins (Go's rule). `??` treated a
+// set-but-empty NO_PROXY="" — common in CI images — as a real value that masked
+// no_proxy entirely.
 function parseNoProxy(env) {
-  const raw = env.NO_PROXY ?? env.no_proxy ?? '';
+  const raw = [env.NO_PROXY, env.no_proxy].find((v) => v && String(v).trim()) || '';
   return String(raw).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+// -> { host, port } for one NO_PROXY entry, or null if it is unusable.
+function parseNoProxyEntry(entry) {
+  const bracketed = entry.match(/^\[([^\]]+)\](?::(\d+))?$/);
+  if (bracketed) return { host: bracketed[1], port: bracketed[2] || null };
+  // A bare IPv6 literal (`::1`, `fe80::1`) — what a user types for a local
+  // endpoint. More than one colon means it cannot be host:port.
+  if ((entry.match(/:/g) || []).length > 1) return { host: entry, port: null };
+  const m = entry.match(/^([^:]+)(?::(\d+))?$/);
+  return m ? { host: m[1], port: m[2] || null } : null;
 }
 
 function noProxyMatches(entries, target) {
@@ -313,11 +358,11 @@ function noProxyMatches(entries, target) {
   const port = target.port || (target.protocol === 'https:' ? '443' : '80');
   for (const entry of entries) {
     if (entry === '*') return true;
-    const m = entry.match(/^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/);
-    if (!m) continue;
-    const h = m[1].replace(/^\[|\]$/g, '').replace(/^\*?\./, '');
+    const parsed = parseNoProxyEntry(entry);
+    if (!parsed) continue;
+    const h = parsed.host.replace(/^\[|\]$/g, '').replace(/^\*?\./, '');
     if (!h) continue;
-    if (m[2] && m[2] !== port) continue;
+    if (parsed.port && parsed.port !== port) continue;
     if (host === h || host.endsWith(`.${h}`)) return true;
   }
   return false;
@@ -340,7 +385,29 @@ function proxyFor(env, urlStr) {
 }
 
 function makeProxyResolver(env) {
-  return (urlStr) => proxyFor(env, urlStr).url;
+  return (urlStr) => {
+    const sel = proxyFor(env, urlStr);
+    // Defense in depth for an endpoint validateProxyEnv could not pre-resolve:
+    // never speak plaintext HTTP/CONNECT to a socks (or TLS) proxy port.
+    if (sel.url) {
+      const problem = proxyUrlProblem(sel.source, sel.url);
+      if (problem) throw new Error(problem);
+    }
+    return sel.url;
+  };
+}
+
+// Print an endpoint without its userinfo. A corporate AI gateway base URL can
+// carry `user:pass@`, and collectSecrets never gathers base-URL credentials, so
+// the report's own redactor cannot save it. Returns null when the base URL does
+// not parse — the caller reports that instead of throwing, because --dry-run is
+// the required pre-flight before paid calls are authorized and must never be
+// the thing that crashes.
+function displayEndpoint(baseUrl) {
+  try {
+    const u = new URL(baseUrl);
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+  } catch { return null; }
 }
 
 // ===========================================================================
@@ -758,11 +825,16 @@ function dryRunReport(cfg, env) {
     lines.push(`  NO_PROXY: ${noProxy.length ? noProxy.join(',') : '(unset)'}`);
     const seen = new Set();
     for (const entry of [...cfg.reference_models, cfg.aggregator]) {
-      const { baseUrl } = resolveModelProvider(entry, env);
+      const { baseUrl, provider } = resolveModelProvider(entry, env);
       if (seen.has(baseUrl)) continue;
       seen.add(baseUrl);
+      const shown = displayEndpoint(baseUrl);
+      if (shown === null) {
+        lines.push(`  ${provider}: base URL is not a parseable URL — proxy selection unresolved (the run would fail at request time)`);
+        continue;
+      }
       const d = proxyFor(env, `${baseUrl}/chat/completions`);
-      lines.push(`  ${baseUrl}: ${d.bypass ? `direct (NO_PROXY match, ${d.source} not used)` : `via ${d.source}`}`);
+      lines.push(`  ${shown}: ${d.bypass ? `direct (NO_PROXY match, ${d.source} not used)` : `via ${d.source}`}`);
     }
   } else {
     lines.push('proxy: off');
@@ -812,7 +884,7 @@ async function main() {
   let cfg;
   try {
     cfg = await resolveConfig(args, env);
-    validateProxyEnv(env);   // M-03: before dry-run and before any network call
+    validateProxyEnv(cfg, env);   // M-03: before dry-run and before any network call
   } catch (e) {
     process.stderr.write(`error: ${redact(e.message)}\n`);
     return 1;

@@ -1379,3 +1379,261 @@ test('the raw-output fallback is length-capped like a rendered field', async () 
     }
   });
 });
+
+// ===========================================================================
+// Review round 2 — regressions and gaps found in the M-01..M-05 fixes.
+// ===========================================================================
+
+// R2-P0: validateProxyEnv checked ALL SIX proxy variables, but proxyFor only
+// ever uses the one matching the origin's scheme. The standard Clash / v2rayA
+// export — http_proxy + https_proxy at an http proxy, all_proxy at socks5 —
+// worked before the M-03 fix and never touched the socks value; afterwards it
+// died at config time. Only the variable actually selected may be refused.
+test('proxy: an unsupported scheme in a variable the origin never selects does not block the run (R2-P0)', async () => {
+  await withWorkspace(async (dir) => {
+    // The proxy stub doubles as responder; the origin is unroutable, so success
+    // proves the traffic went through the proxy named by http_proxy.
+    const proxy = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        {
+          OPENAI_API_KEY: 'sk-fake',
+          OPENAI_BASE_URL: 'http://10.255.255.1/v1',
+          http_proxy: proxy.url,
+          https_proxy: proxy.url,
+          all_proxy: 'socks5://127.0.0.1:1080',   // never selected for an http origin
+        },
+      );
+      assert.equal(code, 0, `a socks all_proxy that is never selected must not fail the run, stderr: ${stderr}`);
+      assert.ok(proxy.requests.length >= 3, `expected >=3 proxied calls, got ${proxy.requests.length}`);
+    } finally {
+      await proxy.close();
+    }
+  });
+});
+
+// Same shape, exit-code contract: moa-decision.md §5 promises exit 2 when a key
+// is missing, so the orchestrator degrades to single-model and the loop
+// continues. Turning that into exit 1 tells the orchestrator to fix its config.
+test('proxy: an unselected socks variable does not convert the documented missing-key exit 2 into exit 1 (R2-P0)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const config = await writeConfig(dir, TWO_REF_CONFIG);
+    const { code, stderr } = await runMoa(
+      ['--input', input, '--config', config],
+      {
+        OPENAI_BASE_URL: 'http://10.255.255.1/v1',
+        HTTP_PROXY: 'http://127.0.0.1:9',           // selected, supported
+        ALL_PROXY: 'socks5://127.0.0.1:1080',       // not selected
+      }, dir,
+    );
+    assert.equal(code, 2, `missing key must stay exit 2 (degrade), stderr: ${stderr}`);
+    assert.match(stderr, /key/i);
+  });
+});
+
+// The other half of the constraint: when the scheme-preferred variable is unset,
+// selection falls through the chain and genuinely picks the unsupported one.
+// That must still exit 1 — never skip it and connect directly / via another
+// proxy, which would route traffic outside the proxy the user intended.
+test('proxy: an unsupported scheme in the variable selection actually lands on is still refused (R2-P0)', async () => {
+  await withWorkspace(async (dir) => {
+    // A reachable direct stub: if the unsupported variable were silently skipped,
+    // the request would succeed directly and the stub would see it.
+    const direct = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      for (const mode of ['run', 'dry-run']) {
+        direct.requests.length = 0;
+        const args = ['--input', input, '--config', config, ...(mode === 'dry-run' ? ['--dry-run'] : [])];
+        // http origin; HTTP_PROXY / http_proxy unset -> selection reaches ALL_PROXY.
+        const res = await runMoa(args, {
+          OPENAI_API_KEY: 'sk-fake',
+          OPENAI_BASE_URL: `${direct.url}/v1`,
+          ALL_PROXY: 'socks5://127.0.0.1:1080',
+        });
+        assertCleanUserError(res);
+        assert.match(res.stderr, /ALL_PROXY/, `[${mode}] the message must name the selected variable`);
+        assert.equal(direct.requests.length, 0, `[${mode}] a refused proxy must not fall through to a direct connection`);
+      }
+      // And M-03's original hole stays closed: a socks HTTPS_PROXY on an https
+      // origin is selected, so it is refused before any plaintext CONNECT.
+      const viaHttps = await runMoa(['--input', input, '--config', config, '--dry-run'], {
+        OPENAI_API_KEY: 'sk-fake',
+        OPENAI_BASE_URL: 'https://api.openai.com/v1',
+        HTTPS_PROXY: 'socks5://127.0.0.1:1080',
+      }, dir);
+      assertCleanUserError(viaHttps);
+      assert.match(viaHttps.stderr, /HTTPS_PROXY/);
+    } finally {
+      await direct.close();
+    }
+  });
+});
+
+// R2-P1: the per-endpoint proxy lines parse the resolved base URL. A base URL
+// without a scheme made --dry-run throw `TypeError: Invalid URL` and exit 1,
+// where it used to report and exit 0 — and the reference doc makes --dry-run
+// the required pre-flight before authorizing paid calls.
+test('dry-run: an unparseable base URL is reported, not a crash, when a proxy is set (R2-P1)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const { code, stdout, stderr } = await runMoa(
+      ['--input', input, '--dry-run'],
+      {
+        OPENAI_API_KEY: 'sk-fake',
+        OPENAI_BASE_URL: 'api.internal.corp/v1',   // no scheme
+        HTTPS_PROXY: 'http://127.0.0.1:7890',
+      }, dir,
+    );
+    assert.equal(code, 0, `dry-run must survive an unparseable base URL, stderr: ${stderr}`);
+    assert.ok(!/Invalid URL|TypeError|fatal:/.test(`${stdout}${stderr}`), `dry-run crashed: ${stderr}`);
+    assert.ok(!/^\s+at /m.test(stderr), `stack trace leaked: ${stderr}`);
+    assert.match(stdout, /parseable|unresolved/i, `the report must say the endpoint could not be resolved:\n${stdout}`);
+  });
+});
+
+// R2-P1 (pre-existing): a `\u`-escaped secret in the aggregator's JSON content
+// is invisible to a literal match on arrival, and JSON.parse re-materializes it
+// inside the rendered field — where mdField's length cap can cut through it and
+// leave a usable prefix. The endpoint picks the padding, so it picks how much
+// survives. Redaction has to happen after the parse and before the cap.
+test('redaction: a \\u-escaped secret re-materialized by JSON.parse leaves no prefix at the field cap (R2-P1)', async () => {
+  await withWorkspace(async (dir) => {
+    const SECRET = 'sk-ESCAPED-0123456789abcdefghijklmnopqrstuvwxyz';   // 48 chars
+    const esc = (s) => [...s].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+    const stub = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      res.setHeader('content-type', 'application/json');
+      // 20 chars of the secret sit before the 20000-char field cap, 28 after it.
+      const content = model === 'agg-model'
+        ? `{"summary":"S","recommendation":"${'x'.repeat(20000 - 20)}${esc(SECRET)}-tail","rationale":"RA","risks":"RK"}`
+        : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stdout, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: SECRET, OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      const prefix = SECRET.slice(0, 20);
+      assert.ok(!doc.includes(prefix), `an escaped key left a ${prefix.length}-char prefix in DEC.md`);
+      assert.ok(!doc.includes(SECRET), 'the escaped key was re-materialized into DEC.md whole');
+      assert.ok(!stdout.includes(prefix), 'escaped key prefix leaked to stdout');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+// R2-P2: a minimum secret length leaks short credentials outright, and inverts
+// M-01 — a raw value `"abc "` is 4 chars and gets listed while the trimmed
+// `"abc"` that is actually SENT is 3 and does not. Everything on the list is a
+// credential (the proxy username, the one ordinary word, was removed in M-05).
+test('redaction: a short key is redacted, in both its raw and its trimmed form (R2-P2)', async () => {
+  await withWorkspace(async (dir) => {
+    for (const raw of ['abc', 'abc ', 'ab']) {
+      const stub = await startServer(echoAuthHandler({ aggModel: 'agg-model' }));
+      try {
+        const input = await writeInput(dir);
+        const config = await writeConfig(dir, TWO_REF_CONFIG);
+        const out = join(dir, 'DEC.md');
+        const sent = raw.trim();
+        const { code, stdout, stderr } = await runMoa(
+          ['--input', input, '--config', config, '--output', out],
+          { OPENAI_API_KEY: raw, OPENAI_BASE_URL: `${stub.url}/v1` },
+        );
+        assert.equal(code, 0, `stderr: ${stderr}`);
+        const doc = await readFile(out, 'utf8');
+        // The endpoint echoes `Bearer <key>`; asserting on that exact pair keeps
+        // the check precise for a key short enough to occur inside ordinary words.
+        assert.ok(!doc.includes(`Bearer ${sent}`), `short key ${JSON.stringify(raw)} leaked into DEC.md`);
+        assert.ok(!stdout.includes(`Bearer ${sent}`), `short key ${JSON.stringify(raw)} leaked to stdout`);
+      } finally {
+        await stub.close();
+      }
+    }
+  });
+});
+
+// R2-P2: the per-endpoint proxy lines printed the resolved base URL verbatim.
+// Corporate AI gateways and some self-hosted OpenAI-compatible endpoints accept
+// userinfo, and collectSecrets never gathers base-URL credentials — so the
+// report's own redactor cannot save it.
+test('dry-run: a credentialed base URL does not print its password (R2-P2)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const { code, stdout, stderr } = await runMoa(
+      ['--input', input, '--dry-run'],
+      {
+        OPENAI_API_KEY: 'sk-fake',
+        OPENAI_BASE_URL: 'http://gwuser:GWSECRETPW@gw.corp.example.com/v1',
+        HTTPS_PROXY: 'http://127.0.0.1:7890',
+      }, dir,
+    );
+    assert.equal(code, 0, stderr);
+    assert.ok(!stdout.includes('GWSECRETPW'), `base-URL password printed by the dry-run report:\n${stdout}`);
+    assert.ok(!stdout.includes('gwuser:'), `base-URL userinfo printed by the dry-run report:\n${stdout}`);
+    assert.ok(stdout.includes('gw.corp.example.com'), 'the endpoint should still be identifiable');
+  });
+});
+
+// R2-P2: `NO_PROXY=""` is a set-but-empty value, which `??` treats as real and
+// which masks `no_proxy` entirely. Empty exports are common in CI images; curl
+// and Go both take the first NON-EMPTY of the two.
+test('proxy: an empty NO_PROXY does not mask no_proxy (R2-P2)', async () => {
+  await withWorkspace(async (dir) => {
+    const direct = await startServer(chatHandler({ aggModel: 'agg-model' }));
+    const proxy = await startServer((_req, res) => { res.statusCode = 502; res.end('{"error":"proxied"}'); });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        {
+          OPENAI_API_KEY: 'sk-fake',
+          OPENAI_BASE_URL: `${direct.url}/v1`,
+          HTTPS_PROXY: proxy.url,
+          NO_PROXY: '',                  // set but empty
+          no_proxy: '127.0.0.1',
+        },
+      );
+      assert.equal(code, 0, `an empty NO_PROXY must not mask no_proxy, stderr: ${stderr}`);
+      assert.equal(proxy.requests.length, 0, 'request went through the proxy despite no_proxy');
+      assert.ok(direct.requests.length >= 3, `expected >=3 direct calls, got ${direct.requests.length}`);
+    } finally {
+      await direct.close();
+      await proxy.close();
+    }
+  });
+});
+
+// R2-P3: a bare, unbracketed IPv6 entry (`::1`) is what a user types for a local
+// endpoint; the entry parser required brackets and silently ignored it. Asserted
+// through the dry-run report, which resolves through the same proxyFor().
+test('proxy: a bare IPv6 NO_PROXY entry matches an IPv6 endpoint (R2-P3)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+    const base = { OPENAI_API_KEY: 'sk-fake', OPENAI_BASE_URL: 'http://[::1]:11434/v1', HTTPS_PROXY: 'http://127.0.0.1:7890' };
+    const hit = await runMoa(['--input', input, '--dry-run'], { ...base, NO_PROXY: '::1' }, dir);
+    assert.equal(hit.code, 0, hit.stderr);
+    assert.match(hit.stdout, /\[::1\]:11434.*direct/i, `bare IPv6 NO_PROXY entry ignored:\n${hit.stdout}`);
+    const bracketed = await runMoa(['--input', input, '--dry-run'], { ...base, NO_PROXY: '[::1]' }, dir);
+    assert.match(bracketed.stdout, /\[::1\]:11434.*direct/i, `bracketed IPv6 entry should keep working:\n${bracketed.stdout}`);
+    const miss = await runMoa(['--input', input, '--dry-run'], { ...base, NO_PROXY: '::2' }, dir);
+    assert.match(miss.stdout, /\[::1\]:11434.*via HTTPS_PROXY/, `a non-matching IPv6 entry must not bypass:\n${miss.stdout}`);
+  });
+});
