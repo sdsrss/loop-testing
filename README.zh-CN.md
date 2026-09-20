@@ -156,6 +156,14 @@ bash skills/loop-testing/scripts/unattended-codex.sh --project <目标项目> \
 退出码:`0` 技能自身收敛终态 · `2` 参数错误 · `3` 达 `--max-sessions` · `4` 达 `--max-minutes`
 · `5` 连续两会话无进展。每会话进度写入 `docs/looptesting/driver.log`。
 
+**会话失败时你能看到什么。** agent 的 stdout 是它的会话记录,直接丢弃;stderr 不丢。每会话结束后,
+stderr 的最后 20 行(4000 字节)会以 `session N stderr:` 追加进 `driver.log`——密钥过期、限流、
+未知 flag、错误的工作目录,都只有在这里才会说出自己是什么;没有它,这些失败一律表现为 `exit=N`
+加一句无进展,彼此无法区分。写入前先脱敏已知的凭据形态(`sk-…`、`ghp_…`、`xox…`、`AKIA…`、
+`Bearer …`、`Authorization:`,以及长串不透明 token)。**该脱敏是尽力而为,不是保证**:它按形态匹配,
+不认识的形态会原样落盘。`driver.log` 就在那个建议你阅读并附给他人的证据目录里,如果你不接受这个
+取舍,设 `LOOP_TESTING_DISABLE_SESSION_STDERR=1`,会话 stderr 回到 `/dev/null`。
+
 **权限模型——首次无头运行前必读。** 两个驱动都以**关闭全部权限确认**的方式启动 agent:
 `claude -p … --permission-mode bypassPermissions` 与 `codex exec -s danger-full-access`。
 任何命令、编辑、联网都不会再问你——子会话以你当前用户在这台机器上的完整权限运行,技能的红线

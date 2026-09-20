@@ -242,6 +242,7 @@ STOP_DEADLINE=0       # global so a SECOND signal can collapse it (see shutdown_
 STOPPING=0            # a shutdown is in progress (re-entrancy, not idempotency)
 STOP_DONE=0           # a shutdown has completed (idempotency, not re-entrancy)
 CHILD=""              # pid of the running session (the watchdog leads its group)
+SESSION_ERR=""        # this session's stderr capture file (audit D-05)
 CHILD_START=""        # its start time — a pid alone is not an identity
 CHILD_SURVIVED=""     # set only when that pid outlives SIGKILL
 POLL_STEP=auto
@@ -368,6 +369,8 @@ shutdown_handler() { # [exit-code]
   STOPPING=1
   stop_child
   release_lock_or_hold
+  [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR"
+  SESSION_ERR=""
   STOP_DONE=1
   STOPPING=0
   # EXIT passes no code: exiting from the EXIT trap would re-enter it.
@@ -395,6 +398,50 @@ no_progress=0
 prev_sig="$(progress_sig)"
 
 log_line() { printf '%s\n' "$1" >> "$DRIVER_LOG"; }
+
+# --- session stderr capture (audit D-05) -------------------------------------
+# The agent's stdout is its transcript and STAYS on /dev/null: capturing it would
+# grow the evidence directory without bound. Its stderr is where an expired key,
+# a rate limit, an unknown flag and a bad working directory say what happened —
+# all of which reached this log as `exit=N` and the no-progress verdict, with
+# nothing to tell them apart. D-02 survived to the audit for exactly that reason.
+#
+# Redaction is best effort, NOT a guarantee: driver.log lives in the evidence
+# directory a user is told to read and attach, so known credential shapes are
+# masked before the tail is written, and LOOP_TESTING_DISABLE_SESSION_STDERR=1
+# turns the capture off entirely for anyone who would rather have none of it.
+SESSION_ERR_LINES=20
+SESSION_ERR_BYTES=4000
+session_err_open() {   # truncate (or create) this session's capture file
+  [ "${LOOP_TESTING_DISABLE_SESSION_STDERR:-0}" != "1" ] || { SESSION_ERR=""; return 0; }
+  if [ -n "$SESSION_ERR" ]; then : > "$SESSION_ERR" 2>/dev/null; return 0; fi
+  SESSION_ERR="$(mktemp "${TMPDIR:-/tmp}/loop-testing-session-err.XXXXXX" 2>/dev/null)" || SESSION_ERR=""
+  return 0
+}
+session_err_redact() {
+  # Specific shapes first, so a partially masked value cannot re-match; the last
+  # rule is a catch-all for long opaque tokens (the `#` delimiter avoids escaping
+  # the `/` inside the bearer character class).
+  sed -E \
+    -e 's/(sk-[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+/\1***REDACTED***/g' \
+    -e 's/(gh[pousr]_)[A-Za-z0-9]{8,}/\1***REDACTED***/g' \
+    -e 's/(xox[baprs]-)[A-Za-z0-9-]{8,}/\1***REDACTED***/g' \
+    -e 's/AKIA[0-9A-Z]{16}/AKIA***REDACTED***/g' \
+    -e 's#([Bb]earer )[A-Za-z0-9._~+/-]{8,}=*#\1***REDACTED***#g' \
+    -e 's/([Aa]uthorization:[[:space:]]*)[^[:space:]]+/\1***REDACTED***/g' \
+    -e 's/[A-Za-z0-9_-]{40,}/***REDACTED***/g' 2>/dev/null
+}
+session_err_log() { # <session-number>
+  [ -n "$SESSION_ERR" ] && [ -s "$SESSION_ERR" ] || return 0
+  log_line "session $1 stderr (last $SESSION_ERR_LINES lines, redacted — best effort, not a guarantee):"
+  # Bounded twice: bytes first, so one runaway line cannot be read whole.
+  tail -c "$SESSION_ERR_BYTES" "$SESSION_ERR" 2>/dev/null | tail -n "$SESSION_ERR_LINES" 2>/dev/null \
+    | session_err_redact \
+    | while IFS= read -r eline || [ -n "$eline" ]; do log_line "  | $eline"; done
+  : > "$SESSION_ERR" 2>/dev/null
+  return 0
+}
+
 summary_exit() { # code, verdict
   # round via round_of (normalized), not the raw field — parity with unattended-codex.sh
   # and with the per-session log lines below, which already use round_of.
@@ -474,15 +521,17 @@ while true; do
   # stdin and dispositions the old foreground subshell gave it. The output
   # redirections stay on the exec'd command rather than the subshell, so a
   # failing `cd "$PROJECT"` still says so.
+  session_err_open
+  ERR_SINK=/dev/null; [ -n "$SESSION_ERR" ] && ERR_SINK="$SESSION_ERR"
   if [ -n "$TIMEOUT_BIN" ]; then
     ( trap - INT QUIT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>&1 ) \
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>"$ERR_SINK" ) \
       <&0 &
   else
     ( trap - INT QUIT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>&1 ) \
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>"$ERR_SINK" ) \
       <&0 &
   fi
   CHILD=$!
@@ -496,6 +545,7 @@ while true; do
   cur_status="$(state_field status)"; [ -n "$cur_status" ] || cur_status="?"
   cur_sig="$(progress_sig)"
   log_line "session $session: exit=$rc round=$cur_round issues=$cur_issues status=$cur_status sig=$cur_sig"
+  session_err_log "$session"
 
   # C9: a session that didn't even create STATE.md made no progress and resuming
   # can't help — fail fast instead of waiting out the 2-session no-progress window.

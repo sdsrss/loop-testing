@@ -176,6 +176,18 @@ Exit codes: `0` skill reached a terminal status · `2` argument error · `3` hit
 `--max-sessions` · `4` hit `--max-minutes` · `5` two sessions with no progress. Per-session
 progress is appended to `docs/looptesting/driver.log`.
 
+**What a failed session tells you.** The agent's stdout is its transcript and is discarded;
+its stderr is not. After each session the last 20 lines (4000 bytes) of that stderr are
+appended to `driver.log` under `session N stderr:`, which is where an expired key, a rate
+limit, an unknown flag or a bad working directory actually says so — without it every one
+of those arrives as `exit=N` and the no-progress verdict, indistinguishable from each
+other. Known credential shapes (`sk-…`, `ghp_…`, `xox…`, `AKIA…`, `Bearer …`,
+`Authorization:`, and long opaque tokens) are masked first. **That masking is best effort,
+not a guarantee**: it matches shapes, so a secret in a form it does not know reaches the
+file. `driver.log` is in the evidence directory you are invited to read and attach, so if
+that trade is not one you want, set `LOOP_TESTING_DISABLE_SESSION_STDERR=1` and the session's
+stderr goes back to `/dev/null`.
+
 **Permission model — read before the first headless run.** Both drivers launch the agent
 with every permission prompt disabled: `claude -p … --permission-mode bypassPermissions`
 and `codex exec -s danger-full-access`. Nothing asks you before a command, an edit or a
