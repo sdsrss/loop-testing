@@ -314,4 +314,37 @@ assert_file_lacks    "$WS15/$LOG" "6543210ABCDEFGHIJK" "a credential straddling 
 assert_file_lacks    "$WS15/$LOG" "ENDOFLONGLINE"      "and no other part of the over-long line is published either"
 assert_file_contains "$WS15/$LOG" "nothing shown"      "and the log says why it is empty rather than looking broken"
 
+# M. THE BYTE CAP MUST SURVIVE A PADDING `wc`. BSD/macOS `wc` right-aligns its
+#    count in a fixed-width field, and command substitution strips trailing
+#    newlines but not leading spaces — so a bare `wc -c` returns "      4091",
+#    a numeric guard reads the space as non-numeric, the size becomes 0, the
+#    truncation branch is never taken, and the cap does not exist on that
+#    platform. CI is ubuntu-only on purpose, so nothing mechanical would catch
+#    it; this shim is the mechanism. Six other places in the repo already strip
+#    that padding, including :150 and :159 of the driver itself.
+WS19=$(mk_proj); SHIM=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-wcshim.XXXXXX"); CLEAN="$CLEAN $WS19 $SHIM"
+cat > "$SHIM/wc" <<'WCSHIM'
+#!/usr/bin/env bash
+# BSD/macOS wc: right-aligned in a fixed-width field.
+printf '%10s\n' "$(/usr/bin/wc "$@" | tr -d ' ')"
+WCSHIM
+chmod +x "$SHIM/wc"
+stub=$(write_stub "$WS19"); write_state "$WS19" RUNNING 0
+STUB_STDERR_LONGLINE=1 STUB_EXIT=1 PATH="$SHIM:$PATH" \
+  bash "$DRIVER" --project "$WS19" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
+assert_file_lacks    "$WS19/$LOG" "6543210ABCDEFGHIJK" "no fragment is published under a padding wc either"
+assert_file_contains "$WS19/$LOG" "nothing shown"      "a padding wc does not disable the byte cap (BSD/macOS) — this is the discriminating one"
+
+# N. …and the empty body's OTHER cause. `[ -z "$body" ]` is reached whenever the
+#    body ends up empty, and truncation is only one way. A capture holding a
+#    single newline used to produce "the tail was one line longer than 4000
+#    bytes" about a 1-byte file — a false statement written into the evidence
+#    directory the user is told to attach.
+WS20=$(mk_proj); CLEAN="$CLEAN $WS20"
+stub=$(write_stub "$WS20"); write_state "$WS20" RUNNING 0
+STUB_STDERR_BLANK=1 STUB_EXIT=1 \
+  bash "$DRIVER" --project "$WS20" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
+assert_file_contains "$WS20/$LOG" "no printable line"   "a blank capture says what actually happened"
+assert_file_lacks    "$WS20/$LOG" "one line longer than" "and does not claim a cause it never checked"
+
 report "session-stderr.test.sh"

@@ -569,11 +569,20 @@ session_err_log() { # <session-number>
   # on both drivers, 18 of a 31-character secret published into driver.log, with
   # the filler after it masked so the line read as redacted. No rule can fix
   # that: the input was mutilated before any rule saw it. So when the cap
-  # actually truncated, the partial first line is dropped. The cost is at most
-  # one line of the OLDEST context; the alternative is publishing an arbitrary
-  # fragment of whatever straddled the boundary.
+  # actually truncated, the first line of the window is dropped. It is USUALLY a
+  # fragment, and when the cut happens to land exactly on a newline it is a
+  # complete line dropped for nothing — the cost is one line of the OLDEST
+  # context either way, against publishing an arbitrary fragment of whatever
+  # straddled the boundary.
   local sz body
-  sz=$(wc -c < "$SESSION_ERR" 2>/dev/null)
+  # `tr -dc` because BSD/macOS `wc` right-aligns its count in a fixed-width
+  # field, and command substitution strips trailing newlines but not leading
+  # spaces. A bare `wc -c` returns "      4091", the guard below reads the space
+  # as non-numeric, sz becomes 0, the truncation branch is never taken and THE
+  # BYTE CAP DOES NOT EXIST on that platform — the driver then `cat`s a capture
+  # this file's own header calls unbounded. Six other places in this repo already
+  # strip that padding, including :150 and :159 of this script.
+  sz=$(wc -c < "$SESSION_ERR" 2>/dev/null | tr -dc '0-9')
   case "$sz" in ''|*[!0-9]*) sz=0 ;; esac
   body=$({ if [ "$sz" -gt "$SESSION_ERR_BYTES" ]; then
              tail -c "$SESSION_ERR_BYTES" "$SESSION_ERR" 2>/dev/null | sed '1d'
@@ -583,8 +592,16 @@ session_err_log() { # <session-number>
   # Dropping the partial line can leave nothing at all — a single line longer
   # than the cap, which is exactly the HTTP-dump shape that carries credentials.
   # Say so, rather than printing a bare header that reads like a broken capture.
+  # Two causes, and the message must not claim the one it did not check: a
+  # capture holding a single newline also reaches here, and saying "one line
+  # longer than 4000 bytes" about a 1-byte file is a false statement written into
+  # the evidence directory.
   if [ -z "$body" ]; then
-    log_line "  | (nothing shown: the tail was one line longer than $SESSION_ERR_BYTES bytes, and an excerpt of a line that long can publish a credential whose label was cut off)"
+    if [ "$sz" -gt "$SESSION_ERR_BYTES" ]; then
+      log_line "  | (nothing shown: the tail was one line longer than $SESSION_ERR_BYTES bytes, and an excerpt of a line that long can publish a credential whose label was cut off)"
+    else
+      log_line "  | (nothing shown: the capture held $sz byte(s) and no printable line)"
+    fi
   else
     printf '%s\n' "$body" | while IFS= read -r eline || [ -n "$eline" ]; do log_line "  | $eline"; done
   fi

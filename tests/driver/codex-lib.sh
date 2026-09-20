@@ -87,6 +87,10 @@ EOS
 if [ -n "${STUB_STDERR_LINES:-}" ]; then
   i=1; while [ "$i" -le "$STUB_STDERR_LINES" ]; do printf 'stderr line %s.\n' "$i" >&2; i=$((i+1)); done
 fi
+# STUB_STDERR_BLANK: a capture holding one newline and nothing else — the other
+# way session_err_log's body comes out empty, which must not be reported as a
+# line longer than the byte cap.
+[ -n "${STUB_STDERR_BLANK:-}" ] && printf '\n' >&2
 # STUB_GRANDCHILD: the cross-session fd-2 fixture. Session 1 pushes the shared
 # offset past the tail window and leaves a background process holding fd 2;
 # session 2 prints its own error and lingers long enough for that process to
