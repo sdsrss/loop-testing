@@ -19,15 +19,28 @@ description: Autonomous QA self-test / self-fix / self-iterate loop. Use after a
   若 `docs/looptesting/STATE.md` 已存在则**续跑**：从其「下一动作」继续，**禁止重置轮数 (do NOT
   reset the round count)**、禁止清空总账；否则**从第 0 轮开始 (start from round 0)**。照本技能执行
   （第 0 轮盘点 → 五步轮循环 → 收敛退出），红线与机制层 hook 同样生效。
+  **例外：若已存在的 `STATE.md` 机器 `status:` 是终态**（`CONVERGED` / `INCOMPLETE` / `BLOCKED`）
+  则**不开新一轮**，改按下面 `report` 模式输出并说明现状——与无人值守驱动一致（它读到终态即
+  exit 0）。崩溃邻近的四种现场（终态再触发、报告已在而 RUNNING、半写的轮日志、哨兵缺失）逐条
+  判读见 `references/round-0.md` §0。
 
 - **`status` — 只报进度，禁止开跑 (do NOT start a run)。** 读 `docs/looptesting/STATE.md`，汇报
   `round`、`converged_streak`、`status`、最后 / 下一动作、阻塞项；再读 `docs/looptesting/ISSUES.md`，
   按 P0–P3 给出未决 / 已验证条目数。若 `docs/looptesting/` 不存在，就说明本项目尚未跑过，并提示
   `/loop-testing` 可以启动它。
+  **本项目有运行中的循环时，stop-gate 会拦停这次只读会话**：哨兵 `.active` 还在、机器 `status:`
+  仍非终态，而 **hook 看不到 `$ARGUMENTS`**，无从区分只读查询与跑循环，于是它会让你「继续轮循环」
+  ——那正是本模式禁止的事。被拦时：**不要为了满足它而开跑**，**也不要删 `.active`** 或关掉 hook
+  （那会拆掉一个真实运行中的循环的护栏）。照实应答：重述本次进度汇报、说明这是 `status` 只读查询
+  且未启动任何循环，然后再次停止。连续 **3 次**（stop-gate 的 `MAX_BLOCKS`）无进展后，它的死锁阀
+  会自行放行并打印原因。
 
 - **`report` — 只打印最终报告，禁止开跑 (do NOT start a run)。** 若
-  `docs/looptesting/FINAL_REPORT.md` 存在，打印并总结它（最终状态、覆盖摘要、问题↔提交对照、
-  未决 / 待确认项、盲区）。若它不存在但有运行中的 run，说明这一点并改为给出 `status` 的汇总。
+  `docs/looptesting/FINAL_REPORT.md` 存在，**先读 `STATE.md` 的机器 `status:` 再决定怎么用它**：
+  为终态才按最终报告打印并总结（最终状态、覆盖摘要、问题↔提交对照、未决 / 待确认项、盲区）；
+  **仍是 `RUNNING` 则它是退出序被打断留下的半成品**——明确说明这一点，改按 `status` 汇总当前进度，
+  不得把它当最终结论呈现（该现场的处置规则见 `references/round-0.md` §0 第 2 条）。若它不存在但有
+  运行中的 run，说明这一点并改为给出 `status` 的汇总。本模式同样受上面 `status` 条的 stop-gate 约束。
 
 - **其他任意参数 — 启动 / 续跑的可选范围提示。** 只收窄本次运行，省略时默认行为不变。两类可叠加：
   - **focus**（自由文本，如 `只测 X` / `focus on the CLI`）：第 0 轮盘点照做，但场景设计与轮循环

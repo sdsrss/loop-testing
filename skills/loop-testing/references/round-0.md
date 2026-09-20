@@ -6,6 +6,17 @@
 
 若 `docs/looptesting/STATE.md` 已存在 → 这是**中断续跑**：通读 `docs/looptesting/` 下全部文件（STATE / PLAN / FEATURE_MATRIX / ISSUES / SUGGESTIONS / runs/ / decisions/），核验其与当前工作区一致，从 `STATE.md` 的「下一动作」继续。**禁止重置轮数、禁止清空总账、禁止重跑已有有效证据的步骤**。
 **对账修复进度（git 为准）**：崩溃可能落在「修复已 commit、台账/STATE 未更新」的窗口——续跑时比对 qa 分支 `git log` 与 `ISSUES.md`：台账滞后的问题若已有对应修复 commit，**不得重新修复**，径直把台账推进到 `FIXED_UNVERIFIED` 并走复验流程。
+
+**崩溃邻近的四种现场（按文件判读，勿凭推断）**——崩溃能落在退出序或轮循环的任意一步。下面四种在文件系统上看得出来，且各有唯一正确动作；先逐条判完再谈「下一动作」：
+
+1. **`STATE.md` 的机器 `status:` 已是终态**（`CONVERGED` / `INCOMPLETE` / `BLOCKED`）：**不开新一轮**，改按 SKILL.md 的 `report` 模式输出（有 `FINAL_REPORT.md` 就打印并总结，没有就给 `status` 汇总），并说明本项目已结束于该终态；要重跑得先**归档**（或删除）`docs/looptesting/`，或由用户显式要求新一轮。理由：无人值守**驱动读到终态即 exit 0**，技能必须与它一致——从一个已交付的报告之后继续长轮数与总账，会让那份报告里的轮次、覆盖与结论全部失真。
+
+2. **`FINAL_REPORT.md` 已存在而机器 `status:` 仍是 `RUNNING`**：退出序（`references/exit-and-report.md` §4）被打断在**第 1 步与第 2 步之间**。**按完整性判，不要一刀切**：报告**十节齐备**（§5 的 1–10 节）且 `STATE.md` 的 `converged_streak` 已达 2（或 §3 的保险停止条件成立）→ 从退出序**第 2 步接着做**（先写终态 `status:`，再跑 `sandbox-clean.sh`）；两者任一不成立 → 它是半成品，**删除 `FINAL_REPORT.md`** 后按「下一动作」继续跑。半个最终报告留在原地，`report` 查询与驱动都会把它读成一个假终局。
+
+3. **存在编号大于 `STATE.md` 中 `round:` 的 `runs/round-N.md`**：那一轮在轮末结算之前被打断。**重做该轮**：已立案的问题不回收（**总账只追加**，既有证据仍然有效），但该轮的场景要重新执行、轮日志重写，且**该轮不得计入 `converged_streak`**——一份没有轮末结算的轮日志证明不了这一轮收敛。
+
+4. **`docs/looptesting/.active` 缺失**：续跑**不经过** §7（沙箱早已建好），哨兵不会被重新武装。**确认它存在是续跑的第一个动作，缺失就立即重建（`: > docs/looptesting/.active`）**再继续。缺了它，Claude Code 的 **stop-gate 静默失效**，「未收敛禁止停止」这道机制层护栏在整个续跑期间都不存在，而现场看起来与正常续跑毫无差别。
+
 不存在 STATE.md 则从下面第 1 步开始。
 
 ## 1. 读项目规范
