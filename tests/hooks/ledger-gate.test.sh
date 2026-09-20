@@ -491,16 +491,60 @@ json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIE
 run_ledger "$WS20" "$json"; rc=$?
 if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: bracket-glob in-place must not crash, got $rc" >&2; fi
-# What IS pinned: the lexer reports the target as unresolved rather than reading
-# it as a path that is not the ledger.
-if command -v python3 >/dev/null 2>&1; then
-  u=$(printf '%s' "echo x >> docs/looptesting/ISSUES.m[d]" | LG_ARMED=0 python3 -c '
-import sys,re,shlex,posixpath
-cmd=sys.stdin.read()
-lx=shlex.shlex(cmd, posix=True, punctuation_chars="();<>|&;"); lx.whitespace_split=True; lx.commenters=""
-print("[" in "".join(list(lx)))
-')
-  assert_eq "True" "$u" "bracket glob is visible to the lexer as an unresolved target"
-fi
+# The two shapes are pinned at their documented outcome — allowed — rather than
+# at "0 or 2". No test isolates the `[` in `unres` itself: a bracket that hides
+# the path hides it from the regex leg too, and a bracket anywhere else does not
+# change the decision, so the flag has no externally observable effect. It is
+# there so the lexer reports the target as unknown instead of silently reading it
+# as some unrelated file, and the header states the residual.
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"' >> docs/looptesting/ISSUES.m[d]"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "documented residual: bracket glob hides the path from both legs"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUE[S].md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "documented residual: bracket glob in an in-place target"
+
+# ── Review round 6. A writer whose stdin comes from a REDIRECT has no pipeline,
+#    so it lands in a group of one — and "every member is a filter or the writer"
+#    is vacuously true of a lone writer. That granted the row-dropping claim to a
+#    command that drops nothing. A filter chain needs an actual filter upstream
+#    AND the writer taking its input from the pipe. ──
+json='{"tool_name":"Bash","tool_input":{"command":"tee docs/looptesting/ISSUES.md <<< '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"'"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "here-string into tee: content is in the command -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"tee -a docs/looptesting/ISSUES.md <<< '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"'"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "here-string into tee -a -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sponge docs/looptesting/ISSUES.md <<< '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"'"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "here-string into sponge -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"tee docs/looptesting/ISSUES.md <<< '"'"'### ISSUE-003 | P1 | VERIFIED | x'"'"'"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "here-string into tee, footprinted ID -> allow"
+# A lone writer fed by a plain file redirect: the content is not in the command,
+# so no version of this gate can judge it. Pinned as the documented residual.
+json='{"tool_name":"Bash","tool_input":{"command":"tee -a docs/looptesting/ISSUES.md < /tmp/row.txt"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "documented residual: content arrives from a file, not the command"
+# …and a real filter chain keeps its claim.
+json='{"tool_name":"Bash","tool_input":{"command":"grep -v '"'"'VERIFIED'"'"' docs/looptesting/ISSUES.md | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "filter chain into tee -> still allow"
+json='{"tool_name":"Bash","tool_input":{"command":"cat docs/looptesting/ISSUES.md | grep -v VERIFIED | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "filter chain into sponge -> still allow"
+
+# A newline is a command separator, not whitespace. Merging lines into one
+# segment made a legitimate multi-line call read as one command whose text
+# carried a bare VERIFIED from a neighbouring read, and denied it.
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/VERIFIED/OPEN/'"'"' docs/looptesting/ISSUES.md\ngrep -c VERIFIED docs/looptesting/ISSUES.md\n"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "multi-line: downgrade then a read -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"grep -c VERIFIED docs/looptesting/ISSUES.md\nsed -i '"'"'/ISSUE-002/s/VERIFIED/OPEN/'"'"' docs/looptesting/ISSUES.md\n"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "multi-line: a read then a downgrade -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"grep -v VERIFIED docs/looptesting/ISSUES.md > /tmp/x\nmv /tmp/x docs/looptesting/ISSUES.md\n"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "multi-line: filter to a temp file then move it back -> allow"
+# Control: a multi-line call that really does append a forged row is still denied.
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"' >> docs/looptesting/ISSUES.md\nls -la\n"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "multi-line: append a forged row then ls -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"ls -la\nsed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md\n"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "multi-line: ls then an in-place forgery -> deny"
+# A newline inside a quoted string stays part of that token, not a separator.
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-002 | P1 | OPEN | x\n### ISSUE-002 | P1 | VERIFIED | y'"'"' >> docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "newline inside a quoted argument is content, not a separator -> deny"
+
+# perl/sed transliteration is a match position too (same class as ruby sub).
+json='{"tool_name":"Bash","tool_input":{"command":"perl -i -pe '"'"'tr/VERIFIED/verified/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "perl tr/// downgrade -> allow"
 
 report "ledger-gate.test.sh"

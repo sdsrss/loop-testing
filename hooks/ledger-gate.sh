@@ -42,8 +42,20 @@
 #     the path in one unbroken span. Without python3 that leg is all there is.
 #   * an in-place script supplied by `-f scriptfile`, whose text is not in the
 #     command;
+#   * content that never appears in the command at all — `tee ledger < row.txt`,
+#     `cp forged.md ledger`. This gate reads command text and nothing else, so
+#     there is no version of it that judges these;
 #   * a fake replay line written to a round log first — the original design
 #     residual, unchanged.
+#
+# STATE OF ONE FAMILY, stated as of now rather than as a closure claim. "Get the
+# written text somewhere the write group cannot see it" has been re-cut four
+# times (pipeline grouping, brace lists and subshells, here-strings, newlines).
+# The current position is not that the family is exhausted — it is that the two
+# defaults are set so a new sibling fails safe rather than open: text that cannot
+# be placed does NOT earn the downgrade exit, and the row-dropping exemption is
+# granted only to a real filter chain feeding a writer through a pipe. A sibling
+# that slips past both is a bug to fix, not a shape this comment covers.
 #
 # Fails OPEN on any parse problem or missing tooling — a gate must never brick a
 # session. Escape hatch (humans, not models): LOOP_TESTING_DISABLE_LEDGER_GATE=1.
@@ -164,18 +176,31 @@ try:
         if f=="--in-place" or f.startswith("--in-place="): return True
         if f.startswith("--"): return False
         return bool(re.match(r"^-[A-Za-z0-9]*i", f))
-    lx=shlex.shlex(cmd, posix=True, punctuation_chars="();<>|&;")
+    lx=shlex.shlex(cmd, posix=True, punctuation_chars="();<>|&;\n")
     lx.whitespace_split=True
     lx.commenters=""                       # a sed s#a#b# script is not a comment
+    # A newline SEPARATES commands; it is not whitespace between words. Treating
+    # it as whitespace merged every line of a multi-line call into one segment,
+    # so a bare VERIFIED from a neighbouring read became the text of a downgrade
+    # on another line and the call was denied. Inside quotes it stays content.
+    lx.whitespace=lx.whitespace.replace("\n","")
     toks=list(lx)
-    PUNCT=set("();<>|&;")
+    PUNCT=set("();<>|&;\n")
     segs=[]; seps=[]; cur=[]; i=0; n=len(toks)
     while i<n:
         t=toks[i]
         if t and all(c in PUNCT for c in t):
             if ">" in t:
                 cur.append(("redir", toks[i+1] if i+1<n else None)); i+=2; continue
-            if "<" in t:                    # input redirection is a READ
+            if "<" in t:
+                # A here-string carries its CONTENT in the next token, so that
+                # token is text being written, not a filename to skip. A heredoc
+                # names a delimiter (its body follows as ordinary tokens) and a
+                # plain `<` names a file: neither is content. All three mark the
+                # segment as taking stdin from a redirect rather than a pipe.
+                if t.endswith("<<<"):
+                    if i+1<n: cur.append(("word", toks[i+1]))
+                cur.append(("stdin", t))
                 i+=2; continue
             segs.append(cur); seps.append(t); cur=[]; i+=1; continue
         cur.append(("word",t)); i+=1
@@ -217,7 +242,8 @@ try:
         # contribute.
         FILTER=("grep","egrep","fgrep","rg","ag","ack","head","tail","sort",
                 "uniq","cut","wc","cat","nl","tac","rev","column","comm","join")
-        info.append((w,ip,[] if verb in FILTER else ops,verb,verb in FILTER))
+        stdin_redir=any(k=="stdin" for k,_ in seg)
+        info.append((w,ip,[] if verb in FILTER else ops,verb,verb in FILTER,stdin_redir))
     # Text of a write = the operands of its whole PIPELINE, not of its own segment:
     # in `sed s/…/VERIFIED/ ledger | sponge ledger` the substitution sits one
     # segment upstream of the verb that writes. Only pipes join; `;` and `&&` do
@@ -230,12 +256,16 @@ try:
                 W=1
                 IP=IP or max(info[m][1] for m in grp)
                 for m in grp: text.extend(info[m][2])
-                # Is every member of this pipeline either a filter or the writer
-                # itself? Then the group can only ever DROP rows, which is a
-                # positive reason to allow rather than an absence of evidence.
-                # Anything else in the group — a command, or an empty segment
-                # left by a subshell or a list — forfeits the claim.
-                if all(info[m][4] or (info[m][0] and info[m][3] in ("tee","sponge"))
+                # The row-dropping claim needs three things, not one. Every member
+                # must be a filter or the writer; there must be a real filter
+                # UPSTREAM of the writer; and the writer must take its input from
+                # the pipe. A lone writer satisfied the first test vacuously —
+                # `tee ledger <<< row` has no pipeline at all and drops nothing,
+                # yet it was granted the claim and its row landed.
+                upstream_filter=any(info[m][4] and not info[m][0] for m in grp)
+                piped_writer=not any(info[m][0] and info[m][5] for m in grp)
+                if upstream_filter and piped_writer and all(
+                       info[m][4] or (info[m][0] and info[m][3] in ("tee","sponge"))
                        for m in grp): FO=1
             grp=[]
     print("LG_FILTERONLY=%d" % FO)
@@ -388,10 +418,10 @@ introduces_verified() {
   # not words. Leaving them out left the substitution unrecognised, and the
   # address rule below then swallowed its replacement as a match position.
   x=$(printf '%s' "$1" | sed -E \
-    -e "s${d}(^|[^A-Za-z_])[sy]/([^/]*)/([^/]*)/${d} \\3 ${d}g" \
-    -e "s${d}(^|[^A-Za-z_])[sy]#([^#]*)#([^#]*)#${d} \\3 ${d}g" \
-    -e "s${d}(^|[^A-Za-z_])[sy],([^,]*),([^,]*),${d} \\3 ${d}g" \
-    -e "s${d}(^|[^A-Za-z_])[sy]\\|([^|]*)\\|([^|]*)\\|${d} \\3 ${d}g" \
+    -e "s${d}(^|[^A-Za-z_])(tr|[sy])/([^/]*)/([^/]*)/${d} \\4 ${d}g" \
+    -e "s${d}(^|[^A-Za-z_])(tr|[sy])#([^#]*)#([^#]*)#${d} \\4 ${d}g" \
+    -e "s${d}(^|[^A-Za-z_])(tr|[sy]),([^,]*),([^,]*),${d} \\4 ${d}g" \
+    -e "s${d}(^|[^A-Za-z_])(tr|[sy])\\|([^|]*)\\|([^|]*)\\|${d} \\4 ${d}g" \
     -e "s${d}/[^/]*VERIFIED[^/]*/([dp!},]|['\"]|\$)${d} ${d}g" \
     -e "s${d}#[^#]*VERIFIED[^#]*#([dp!},]|['\"]|\$)${d} ${d}g" \
     2>/dev/null) || x="$1"
