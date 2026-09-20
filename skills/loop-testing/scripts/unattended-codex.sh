@@ -25,17 +25,24 @@
 # Usage:
 #   unattended-codex.sh --project <dir> [--max-sessions 15] [--max-minutes 90]
 #                       [--session-minutes 40] [--codex-bin codex]
-#                       [--skill-dir ~/.codex/skills/loop-testing] [--no-protect]
+#                       [--skill-dir ${CODEX_HOME:-~/.codex}/skills/loop-testing]
+#                       [--no-protect]
 #                       [--no-watchdog]
 #
-# Shutdown: SIGINT (Ctrl-C), SIGTERM or SIGHUP to the driver — bare pid or
-# process group — stops the driver AND the running session at once, then
-# restores the skill dir and releases the lock. The session is launched in the
-# background and awaited with `wait`, which a trapped signal interrupts
-# immediately; the handler then signals the session's own process group, which
-# `timeout` (GNU and uutils, via setpgid) keeps separate from the driver's — so
-# a signal to the driver's group alone used to free the lock and leave a
-# danger-full-access session running (audit D-01).
+# Shutdown: SIGINT (Ctrl-C), SIGTERM, SIGHUP or SIGQUIT to the driver — bare pid
+# or process group — stops the driver AND the running session, waits for it to
+# be gone, and only then restores the skill dir and releases the lock. The
+# session is launched in the background and awaited with `wait`, which a trapped
+# signal interrupts immediately; the handler then signals the session's own
+# process group, which `timeout` (GNU and uutils, via setpgid) keeps separate
+# from the driver's — so a signal to the driver's group alone used to free the
+# lock and leave a danger-full-access session running (audit D-01). The skill
+# dir stays write-protected until that session is actually down.
+#
+# Why the wait is bounded at 20 s (derived — please do not "tune" it), what
+# happens at the bound, and the known limits (SIGKILL to the driver, a setsid
+# grandchild, `timeout -k` not being a group reaper on uutils): see the same
+# block in unattended-loop.sh, which this file mirrors line for line.
 #
 # Exit codes (mirror unattended-loop.sh):
 #   0  STATE reached a terminal status (CONVERGED / INCOMPLETE / BLOCKED).
@@ -45,7 +52,9 @@
 #   5  NO_PROGRESS: two consecutive sessions with no change in the composite
 #      progress fingerprint (round | issues | converged_streak | runs count+bytes |
 #      round-0 bootstrap bytes).
-#   129 / 130 / 143  stopped by SIGHUP / SIGINT / SIGTERM (session stopped too).
+#   129 / 130 / 131 / 143  stopped by SIGHUP / SIGINT / SIGQUIT / SIGTERM; the
+#      session was stopped first. The lock is released unless the session itself
+#      outlived SIGKILL, which the message on stderr names.
 set -u
 
 PROJECT=""
@@ -163,7 +172,7 @@ cleanup() {
   # has been consumed would silently re-grant write to files the user froze.
   # The flag is set only AFTER the restore completes, so an interrupted pass still
   # retries rather than being skipped.
-  if [ "$CLEANED" = "1" ]; then release_lock; return 0; fi
+  if [ "$CLEANED" = "1" ]; then release_lock_or_hold; return 0; fi
   if [ "$DID_PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
     chmod -R u+w "$SKILL_DIR" 2>/dev/null
     # Blanket restore first (guaranteed half: a failure there can only leave the
@@ -178,30 +187,89 @@ cleanup() {
   fi
   CLEANED=1
   [ -n "$RO_SNAPSHOT" ] && rm -f "$RO_SNAPSHOT" 2>/dev/null
-  release_lock
+  release_lock_or_hold
 }
 # A bash trap handler RETURNS into the interrupted flow, so `trap cleanup INT
 # TERM` un-protected the skill dir and dropped the lock while the loop kept
 # launching full-access sessions. Clean up, then terminate with the conventional
 # 128+n status. cleanup is idempotent, so the EXIT trap after these is a no-op.
 #
-# The session is stopped FIRST (audit D-01; kept identical to unattended-loop.sh).
-# `timeout` puts itself and `codex exec` in a process group of their own (pgid ==
-# its pid), so a signal to the driver or its group never reached the session.
-# The pid is known because the session is launched with `&` and awaited with
-# `wait` (interruptible by a trapped signal, unlike a foreground child). Without
-# a watchdog the agent is a direct child in the driver's own group; the plain-pid
-# kill covers that.
-CHILD=""
+# The session is stopped FIRST, and stop_child does not return until it is gone
+# (audit D-01; kept identical to unattended-loop.sh, including the derivation of
+# the 20 s bound and the decision rule at it). `timeout` puts itself and `codex
+# exec` in a process group of their own (pgid == its pid), so a signal to the
+# driver or its group never reached the session. The pid is known because the
+# session is launched with `&` and awaited with `wait` (interruptible by a
+# trapped signal, unlike a foreground child). Signalling only ASKS; the wait is
+# what makes the lock's absence mean the session's absence.
+STOP_GRACE="${LOOP_TESTING_STOP_GRACE:-20}"
+case "$STOP_GRACE" in ''|*[!0-9]*) STOP_GRACE=20 ;; esac
+STOP_KILL_GRACE=2
+CHILD=""              # pid of the running session (the watchdog leads its group)
+CHILD_SURVIVED=""     # set only when that pid outlives SIGKILL
+poll_sleep() { sleep 0.2 2>/dev/null || sleep 1; }
 stop_child() {
   [ -n "$CHILD" ] || return 0
-  kill -0 "$CHILD" 2>/dev/null || return 0
-  kill -TERM -- -"$CHILD" 2>/dev/null || kill -TERM "$CHILD" 2>/dev/null
+  local c pg grp deadline left
+  c="$CHILD"; CHILD=""     # idempotent: the EXIT trap must not signal twice
+  # Address the session's process group only when the child actually LEADS one
+  # (it does whenever a watchdog wraps it) — otherwise `-<pid>` could name some
+  # unrelated group. Identity first, never a bare name.
+  pg="$(ps -o pgid= -p "$c" 2>/dev/null | tr -d ' ')"
+  if [ "$pg" = "$c" ]; then grp=1; else grp=0; fi
+  if [ "$grp" = 1 ]; then kill -TERM -- -"$c" 2>/dev/null; else kill -TERM "$c" 2>/dev/null; fi
+  deadline=$(( $(date +%s) + STOP_GRACE ))
+  while kill -0 "$c" 2>/dev/null; do
+    [ "$(date +%s)" -ge "$deadline" ] && break
+    poll_sleep
+  done
+  if kill -0 "$c" 2>/dev/null; then
+    if [ "$grp" = 1 ]; then kill -KILL -- -"$c" 2>/dev/null; else kill -KILL "$c" 2>/dev/null; fi
+    deadline=$(( $(date +%s) + STOP_KILL_GRACE ))
+    while kill -0 "$c" 2>/dev/null; do
+      [ "$(date +%s)" -ge "$deadline" ] && break
+      poll_sleep
+    done
+  fi
+  if kill -0 "$c" 2>/dev/null; then
+    CHILD_SURVIVED="$c"
+    return 1
+  fi
+  # Decide on the session pid alone: a straggler left in the group is a
+  # grandchild, which cannot advance STATE.md or hold the worktree as the
+  # session — name it, do not hold the project hostage to it.
+  if [ "$grp" = 1 ]; then
+    left="$(pgrep -g "$c" 2>/dev/null | tr '\n' ' ')"
+    [ -n "$left" ] && log "shutdown: session $c stopped; still in its process group (grandchildren, not the session): $left"
+  fi
+  return 0
 }
-trap cleanup EXIT
+LOCK_HOLD_WARNED=0
+release_lock_or_hold() {
+  if [ -n "$CHILD_SURVIVED" ]; then
+    if [ "$LOCK_HOLD_WARNED" = 0 ]; then
+      LOCK_HOLD_WARNED=1
+      # acquire_lock steals a lock whose holder pid is dead — and this driver's
+      # pid is about to be. Hand the lock to the process that IS still running,
+      # so the next driver's existing fail-closed check reads a live holder and
+      # refuses instead of starting a second full-access session on the same
+      # STATE.md.
+      [ "$LOCK_OWNED" = 1 ] && echo "$CHILD_SURVIVED" > "$LOCK_DIR/pid" 2>/dev/null
+      echo "unattended-codex: session pid $CHILD_SURVIVED outlived SIGTERM and SIGKILL — KEEPING the driver lock $LOCK_DIR (now naming that pid) so no second driver starts on this project. Stop that process, then remove the lock dir." >&2
+      log "shutdown: session $CHILD_SURVIVED survived SIGKILL; lock kept and holder rewritten to $CHILD_SURVIVED"
+    fi
+    return 0
+  fi
+  release_lock
+}
+# EXIT routes through the same stop-then-restore-then-release sequence: a
+# terminating path outside INT/TERM/HUP/QUIT must not free the lock and orphan
+# the session.
+trap 'stop_child; cleanup' EXIT
 trap 'stop_child; cleanup; exit 130' INT
 trap 'stop_child; cleanup; exit 143' TERM
 trap 'stop_child; cleanup; exit 129' HUP
+trap 'stop_child; cleanup; exit 131' QUIT
 acquire_lock
 if [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
   # Arm the restore BEFORE the chmod, not after: the INT/TERM handlers now exit,
@@ -323,15 +391,17 @@ while true; do
   # traps). `exec` makes $! the watchdog's own pid, hence its pgid, so stop_child
   # can address the session's whole group; `timeout` stays in its default
   # (non --foreground) mode so `-k 15` still reaches the agent's grandchildren.
-  # `<&0` + `trap - INT`: an async list would otherwise get /dev/null stdin and
-  # SIGINT ignored — the foreground subshell it replaces passed both through.
+  # `<&0` + `trap - INT QUIT`: an async list would otherwise get /dev/null stdin
+  # and SIGINT AND SIGQUIT ignored — the foreground subshell it replaces passed
+  # all three through. The redirections stay on the exec'd command rather than
+  # the subshell, so a failing `cd "$PROJECT"` still says so.
   if [ -n "$TIMEOUT_BIN" ]; then
-    ( trap - INT; cd "$PROJECT" && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
-      "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" ) \
-      <&0 >/dev/null 2>&1 &
+    ( trap - INT QUIT; cd "$PROJECT" && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
+      "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" >/dev/null 2>&1 ) \
+      <&0 &
   else
-    ( trap - INT; cd "$PROJECT" && exec "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" ) \
-      <&0 >/dev/null 2>&1 &
+    ( trap - INT QUIT; cd "$PROJECT" && exec "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" >/dev/null 2>&1 ) \
+      <&0 &
   fi
   CHILD=$!
   wait "$CHILD"

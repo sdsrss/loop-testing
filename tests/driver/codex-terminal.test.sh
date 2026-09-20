@@ -44,7 +44,7 @@ else FAIL=$((FAIL+1)); echo "  FAIL: skill-dir left read-only after normal exit"
 # un-protecting the skill dir and dropping the lock while full-access sessions
 # keep launching. End-to-end behavior is covered by codex-limits.test.sh T and
 # shutdown.test.sh.
-if grep -qE "^trap +cleanup +EXIT" "$CODEX_DRIVER" \
+if grep -qE "^trap 'stop_child; cleanup' EXIT" "$CODEX_DRIVER" \
    && grep -qE "^trap +'stop_child; cleanup; exit [0-9]+' +INT" "$CODEX_DRIVER" \
    && grep -qE "^trap +'stop_child; cleanup; exit [0-9]+' +TERM" "$CODEX_DRIVER" \
    && grep -qE "^trap +'stop_child; cleanup; exit [0-9]+' +HUP" "$CODEX_DRIVER"; then

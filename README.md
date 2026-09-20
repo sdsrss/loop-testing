@@ -380,12 +380,23 @@ accidental-double-launch guard, not a hard mutex. If a run was SIGKILL'd and its
 unreadable, later runs refuse (fail-closed) with a message — after confirming no driver is
 live, `rm -rf docs/looptesting/.driver.lock`.
 
-**Stopping an unattended run early:** Ctrl-C, `kill -TERM <driver-pid>`, or a hang-up
-(closed terminal / dropped SSH session) stops the driver **and the session it is running**
-at once; the driver exits 130 / 143 / 129 respectively. The session runs in its own process
-group (`timeout` creates one), so the driver signals that group itself before releasing
-`.driver.lock` — earlier versions let a signal to the driver or its process group kill the
-driver and free the lock while the session, running with full permissions, carried on.
+**Stopping an unattended run early:** Ctrl-C, `kill -TERM <driver-pid>`, a `SIGQUIT`, or a
+hang-up (closed terminal / dropped SSH session) stops the driver **and the session it is
+running**; the driver exits 130 / 143 / 131 / 129 respectively. The session runs in its own
+process group (`timeout` creates one), so the driver signals that group and then **waits for
+the session to be gone before releasing `.driver.lock`**. Signalling alone is not enough: the
+watchdog forwards the `SIGTERM` and only escalates fifteen seconds later, so a driver that
+signalled and exited would leave the lock free while a full-permission session was still
+shutting down — and a second driver could start right there. The wait is bounded at 20
+seconds, which is that fifteen-second guarantee plus margin; at the bound the driver sends one
+`SIGKILL` to the session's group. If the session is then gone the lock is released, and a
+straggling grandchild (a dev server the agent left behind) is named in `driver.log` rather
+than holding the project up. In the pathological case where the session itself outlives
+`SIGKILL`, the driver **keeps** the lock and rewrites it to name that process: a stale lock is
+visible and refuses the next run, while a released one would silently permit a second
+full-permission session on the same `STATE.md`. `SIGKILL` to the driver skips all of this —
+the session keeps running and the lock is left naming a dead holder, which the next driver
+steals — so use one of the signals above instead.
 Also note: without `timeout`/`gtimeout` on PATH the drivers refuse to start (the wall-clock
 watchdog would be silently absent); pass `--no-watchdog` to explicitly accept unbounded
 sessions.

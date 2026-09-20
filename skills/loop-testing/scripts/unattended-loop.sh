@@ -17,14 +17,39 @@
 #                      [--plugin-dir <path>] [--max-turns 300] [--claude-bin claude]
 #                      [--session-minutes 50] [--no-watchdog]
 #
-# Shutdown: SIGINT (Ctrl-C), SIGTERM or SIGHUP to the driver — bare pid or
-# process group — stops the driver AND the running session at once. The session
-# is launched in the background and awaited with `wait`, which a trapped signal
+# Shutdown: SIGINT (Ctrl-C), SIGTERM, SIGHUP or SIGQUIT to the driver — bare pid
+# or process group — stops the driver AND the running session, and the driver
+# does not release .driver.lock until the session is gone. The session is
+# launched in the background and awaited with `wait`, which a trapped signal
 # interrupts immediately; the handler then signals the session's own process
-# group before releasing the lock. That group is distinct from the driver's:
-# `timeout` (GNU and uutils) calls setpgid(0,0), so `kill -TERM -- -<driver-pgid>`
-# alone killed the driver, freed .driver.lock, and left a bypassPermissions
-# session running for a later driver to race (audit D-01).
+# group and WAITS for it. That group is distinct from the driver's: `timeout`
+# (GNU and uutils) calls setpgid(0,0), so `kill -TERM -- -<driver-pgid>` alone
+# killed the driver, freed the lock, and left a bypassPermissions session
+# running for a later driver to race (audit D-01).
+#
+# Why the wait is bounded at 20 s (derived — please do not "tune" it): the
+# session runs under `timeout -k 15`, which already guarantees SIGKILL 15 s
+# after the SIGTERM the handler sends. Past ~16 s the watchdog has failed or
+# something has left the group, so the bound is that guarantee plus margin for
+# a loaded machine. At the bound the handler sends one SIGKILL to the session's
+# group, re-polls for 2 s, and then decides on the SESSION pid alone:
+#   - session gone  -> release the lock; any straggler is a grandchild that
+#     ignored SIGTERM or escaped via setsid. It cannot advance STATE.md as the
+#     session, so it is named in driver.log rather than blocking the project.
+#   - session alive (kernel-uninterruptible) -> KEEP the lock, rewrite its pid
+#     file to name the surviving session, and exit non-zero. A loud stale lock
+#     refuses the next driver by design; a released one would silently permit a
+#     second full-permission session on the same STATE.md.
+#
+# Known limits (all pre-existing, none closed here):
+#   - SIGKILL to the DRIVER skips every handler: the session keeps running and
+#     the lock stays behind naming a dead holder, which the next driver steals.
+#     Use one of the signals above instead.
+#   - A grandchild that calls setsid() leaves the session's process group and is
+#     reachable by neither `timeout -k` nor the handler.
+#   - `timeout -k` is not a group reaper on every build: measured here, uutils
+#     0.8.0 signals only its direct child, so a TERM-ignoring grandchild in the
+#     same group survives it (GNU's timeout does signal the group).
 #
 # Exit codes:
 #   0  STATE reached a terminal status (CONVERGED / INCOMPLETE / BLOCKED) — the
@@ -35,7 +60,9 @@
 #   5  NO_PROGRESS: two consecutive sessions with no change in the composite
 #      progress fingerprint (round | issues | converged_streak | runs count+bytes |
 #      round-0 bootstrap bytes).
-#   129 / 130 / 143  stopped by SIGHUP / SIGINT / SIGTERM (session stopped too).
+#   129 / 130 / 131 / 143  stopped by SIGHUP / SIGINT / SIGQUIT / SIGTERM; the
+#      session was stopped first. The lock is released unless the session itself
+#      outlived SIGKILL, which the message on stderr names.
 set -u
 
 PROJECT=""
@@ -188,25 +215,88 @@ acquire_lock() {
 # release_lock is idempotent (LOCK_OWNED=0), so the EXIT trap firing after these
 # is a no-op.
 #
-# The session is stopped FIRST (audit D-01). It runs under `timeout`, which puts
-# itself and the agent in a process group of its own (pgid == its pid), so a
-# signal aimed at the driver — or at the driver's whole group — never reached
-# it: the driver died, the lock was freed, and the session ran on. The child
-# pid is known because the session is launched with `&` and awaited with
-# `wait` (which a trapped signal interrupts at once, unlike a foreground
-# child), so the handler can signal the session's group by that pid. Without a
-# watchdog binary the agent is a direct background child in the driver's own
-# group and has no group of its own; the plain-pid kill covers that case.
-CHILD=""
+# The session is stopped FIRST, and stop_child does not return until it is gone
+# (audit D-01). It runs under `timeout`, which puts itself and the agent in a
+# process group of its own (pgid == its pid), so a signal aimed at the driver —
+# or at the driver's whole group — never reached it: the driver died, the lock
+# was freed, and the session ran on. The child pid is known because the session
+# is launched with `&` and awaited with `wait` (which a trapped signal
+# interrupts at once, unlike a foreground child), so the handler can signal the
+# session's group by that pid. Signalling only ASKS; the wait is what makes the
+# lock's absence mean the session's absence. See the bound's derivation in the
+# file header.
+# LOOP_TESTING_STOP_GRACE overrides the derived 20 s bound. It exists so the
+# tests can exercise the SIGKILL escalation in seconds instead of waiting out
+# the real bound; a non-numeric value falls back to the default rather than
+# disabling the wait.
+STOP_GRACE="${LOOP_TESTING_STOP_GRACE:-20}"
+case "$STOP_GRACE" in ''|*[!0-9]*) STOP_GRACE=20 ;; esac
+STOP_KILL_GRACE=2
+CHILD=""              # pid of the running session (the watchdog leads its group)
+CHILD_SURVIVED=""     # set only when that pid outlives SIGKILL
+poll_sleep() { sleep 0.2 2>/dev/null || sleep 1; }
 stop_child() {
   [ -n "$CHILD" ] || return 0
-  kill -0 "$CHILD" 2>/dev/null || return 0
-  kill -TERM -- -"$CHILD" 2>/dev/null || kill -TERM "$CHILD" 2>/dev/null
+  local c pg grp deadline left
+  c="$CHILD"; CHILD=""     # idempotent: the EXIT trap must not signal twice
+  # Address the session's process group only when the child actually LEADS one
+  # (it does whenever a watchdog wraps it). Without a watchdog the agent is a
+  # direct child in the driver's own group, and `-<pid>` could name some
+  # unrelated group — identity first, never a bare name.
+  pg="$(ps -o pgid= -p "$c" 2>/dev/null | tr -d ' ')"
+  if [ "$pg" = "$c" ]; then grp=1; else grp=0; fi
+  if [ "$grp" = 1 ]; then kill -TERM -- -"$c" 2>/dev/null; else kill -TERM "$c" 2>/dev/null; fi
+  deadline=$(( $(date +%s) + STOP_GRACE ))
+  while kill -0 "$c" 2>/dev/null; do
+    [ "$(date +%s)" -ge "$deadline" ] && break
+    poll_sleep
+  done
+  if kill -0 "$c" 2>/dev/null; then
+    if [ "$grp" = 1 ]; then kill -KILL -- -"$c" 2>/dev/null; else kill -KILL "$c" 2>/dev/null; fi
+    deadline=$(( $(date +%s) + STOP_KILL_GRACE ))
+    while kill -0 "$c" 2>/dev/null; do
+      [ "$(date +%s)" -ge "$deadline" ] && break
+      poll_sleep
+    done
+  fi
+  if kill -0 "$c" 2>/dev/null; then
+    CHILD_SURVIVED="$c"
+    return 1
+  fi
+  # The session is down. Decide on the session pid alone: a straggler left in
+  # the group is a grandchild, which cannot advance STATE.md or hold the
+  # worktree as the session — name it, do not hold the project hostage to it.
+  if [ "$grp" = 1 ]; then
+    left="$(pgrep -g "$c" 2>/dev/null | tr '\n' ' ')"
+    [ -n "$left" ] && log_line "shutdown: session $c stopped; still in its process group (grandchildren, not the session): $left"
+  fi
+  return 0
 }
-trap release_lock EXIT
-trap 'stop_child; release_lock; exit 130' INT
-trap 'stop_child; release_lock; exit 143' TERM
-trap 'stop_child; release_lock; exit 129' HUP
+LOCK_HOLD_WARNED=0
+release_lock_or_hold() {
+  if [ -n "$CHILD_SURVIVED" ]; then
+    if [ "$LOCK_HOLD_WARNED" = 0 ]; then
+      LOCK_HOLD_WARNED=1
+      # acquire_lock steals a lock whose holder pid is dead — and this driver's
+      # pid is about to be. Hand the lock to the process that IS still running,
+      # so the next driver's existing fail-closed check reads a live holder and
+      # refuses, instead of stealing the lock and starting a second session on
+      # the same STATE.md.
+      [ "$LOCK_OWNED" = 1 ] && echo "$CHILD_SURVIVED" > "$LOCK_DIR/pid" 2>/dev/null
+      echo "unattended-loop: session pid $CHILD_SURVIVED outlived SIGTERM and SIGKILL — KEEPING the driver lock $LOCK_DIR (now naming that pid) so no second driver starts on this project. Stop that process, then remove the lock dir." >&2
+      log_line "shutdown: session $CHILD_SURVIVED survived SIGKILL; lock kept and holder rewritten to $CHILD_SURVIVED"
+    fi
+    return 0
+  fi
+  release_lock
+}
+# EXIT routes through the same stop-then-release sequence: a terminating path
+# outside INT/TERM/HUP/QUIT must not free the lock and orphan the session.
+trap 'stop_child; release_lock_or_hold' EXIT
+trap 'stop_child; release_lock_or_hold; exit 130' INT
+trap 'stop_child; release_lock_or_hold; exit 143' TERM
+trap 'stop_child; release_lock_or_hold; exit 129' HUP
+trap 'stop_child; release_lock_or_hold; exit 131' QUIT
 acquire_lock
 
 START_EPOCH=$(date +%s)
@@ -289,22 +379,27 @@ while true; do
                 -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID)
   # Background + `wait`, never a foreground subshell: see the shutdown note above
   # the traps. `exec` makes $! the watchdog's own pid (and therefore its pgid),
-  # so stop_child can address the session's whole process group. `timeout` is
-  # kept in the default (non --foreground) mode on purpose: its own group is what
-  # lets `-k 15` reach the agent's grandchildren (dev servers, test runners).
-  # An async list in a non-interactive shell gets stdin from /dev/null and
-  # SIGINT ignored; `<&0` and `trap - INT` hand the session the same stdin and
-  # signal dispositions the old foreground subshell gave it.
+  # so stop_child can address the session's whole process group. `timeout` stays
+  # in its default (non --foreground) mode because that group is what makes the
+  # session addressable at all — NOT because `-k` reaps it: measured here, uutils
+  # 0.8.0 signals only its direct child, so a TERM-ignoring grandchild in the
+  # same group survives `-k` (GNU's timeout does signal the group). stop_child's
+  # own SIGKILL is what empties the group.
+  # An async list in a non-interactive shell gets stdin from /dev/null and SIGINT
+  # AND SIGQUIT ignored; `<&0` and `trap - INT QUIT` hand the session the same
+  # stdin and dispositions the old foreground subshell gave it. The output
+  # redirections stay on the exec'd command rather than the subshell, so a
+  # failing `cd "$PROJECT"` still says so.
   if [ -n "$TIMEOUT_BIN" ]; then
-    ( trap - INT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
+    ( trap - INT QUIT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" ) \
-      <&0 >/dev/null 2>&1 &
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>&1 ) \
+      <&0 &
   else
-    ( trap - INT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec \
+    ( trap - INT QUIT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" ) \
-      <&0 >/dev/null 2>&1 &
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>&1 ) \
+      <&0 &
   fi
   CHILD=$!
   wait "$CHILD"

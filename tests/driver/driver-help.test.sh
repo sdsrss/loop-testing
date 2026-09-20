@@ -29,7 +29,7 @@ for d in "$DRIVER" "$CODEX"; do
   #    signal exit codes, after the exit-code-5 explanation), so nothing is
   #    truncated mid-sentence.
   last="$(printf '%s\n' "$out" | tail -1)"
-  assert_eq '#   129 / 130 / 143  stopped by SIGHUP / SIGINT / SIGTERM (session stopped too).' "$last" "$name --help ends at the full header"
+  assert_eq '#      outlived SIGKILL, which the message on stderr names.' "$last" "$name --help ends at the full header"
 
   # 3. The multi-line exit-code-5 body is present (would be cut by an under-range).
   assert_file_contains <(printf '%s\n' "$out") 'progress fingerprint' \
