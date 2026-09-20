@@ -38,17 +38,20 @@ if [ -w "$FAKE/SKILL.md" ]; then
   PASS=$((PASS+1)); echo "  ok: protect restores skill-dir writability on normal exit"
 else FAIL=$((FAIL+1)); echo "  FAIL: skill-dir left read-only after normal exit" >&2; fi
 
-# E. the restore trap is wired for signal interrupts (INT/TERM/HUP), not just EXIT
-# (C18), AND the signal handlers stop the running session FIRST (audit D-01) and
-# then terminate: a bash trap handler otherwise returns into the loop,
-# un-protecting the skill dir and dropping the lock while full-access sessions
-# keep launching. End-to-end behavior is covered by codex-limits.test.sh T and
-# shutdown.test.sh.
-if grep -qE "^trap 'stop_child; cleanup' EXIT" "$CODEX_DRIVER" \
-   && grep -qE "^trap +'stop_child; cleanup; exit [0-9]+' +INT" "$CODEX_DRIVER" \
-   && grep -qE "^trap +'stop_child; cleanup; exit [0-9]+' +TERM" "$CODEX_DRIVER" \
-   && grep -qE "^trap +'stop_child; cleanup; exit [0-9]+' +HUP" "$CODEX_DRIVER"; then
-  PASS=$((PASS+1)); echo "  ok: cleanup trap covers EXIT and stops the session then terminates on INT/TERM/HUP"
-else FAIL=$((FAIL+1)); echo "  FAIL: protect trap not wired for INT/TERM/HUP with stop_child first (or handler does not exit)" >&2; fi
+# E. the restore trap is wired for signal interrupts (INT/TERM/HUP/QUIT), not just
+# EXIT (C18), AND every one of them runs the single handler that stops the session
+# FIRST (audit D-01) before cleanup restores the skill dir and releases the lock:
+# a bash trap handler otherwise returns into the loop, un-protecting the skill dir
+# and dropping the lock while full-access sessions keep launching. One handler for
+# all of them is also what makes a SECOND signal safe — see shutdown.test.sh.
+# End-to-end behavior is covered by codex-limits.test.sh T and shutdown.test.sh.
+if grep -qE "^trap 'shutdown_handler' EXIT" "$CODEX_DRIVER" \
+   && grep -qE "^trap 'shutdown_handler [0-9]+' INT" "$CODEX_DRIVER" \
+   && grep -qE "^trap 'shutdown_handler [0-9]+' TERM" "$CODEX_DRIVER" \
+   && grep -qE "^trap 'shutdown_handler [0-9]+' HUP" "$CODEX_DRIVER" \
+   && grep -qE '^ +stop_child$' "$CODEX_DRIVER" \
+   && grep -qE '^ +cleanup$' "$CODEX_DRIVER"; then
+  PASS=$((PASS+1)); echo "  ok: every stop signal runs the one handler, which stops the session before cleanup restores and releases"
+else FAIL=$((FAIL+1)); echo "  FAIL: the stop signals must all run shutdown_handler, which stops the session before cleanup" >&2; fi
 
 report "codex-terminal.test.sh"

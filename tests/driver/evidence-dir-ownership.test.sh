@@ -88,9 +88,19 @@ for kind in claude codex; do
   ( cd "$proj3b" && bash "$CLEAN" --purge ) > "$ws3b/purge.out" 2>&1
   assert_eq 0 "$?" "$kind: purge over a dir holding a stranger exits 0"
   assert_exists "$proj3b/docs/looptesting/my-notes.md" "$kind: a file the sandbox never wrote survives purge"
-  assert_absent "$proj3b/docs/looptesting/STATE.md" "$kind: the sandbox's own files are still removed"
-  assert_absent "$proj3b/docs/looptesting/.sandbox" "$kind: the marker dir is still removed"
+  assert_absent "$proj3b/docs/looptesting/ISSUES.md" "$kind: the sandbox's own files are still removed"
+  assert_absent "$proj3b/docs/looptesting/runs" "$kind: the sandbox's own directories are still removed"
   assert_file_contains "$ws3b/purge.out" "my-notes.md" "$kind: purge names the file it kept"
+  # Cross-branch interaction: keeping the directory must keep the two files this
+  # script needs to run again — the ownership marker (the only record that can
+  # identify the sandbox's worktree and refs) and STATE.md (the terminal-status
+  # precondition). Deleting either here would send the NEXT --purge into the
+  # fail-closed exit 3 with residue still on disk and no tool route to finish.
+  assert_exists "$proj3b/docs/looptesting/.sandbox/ownership.env" "$kind: the ownership marker is kept with the strangers"
+  assert_exists "$proj3b/docs/looptesting/STATE.md" "$kind: STATE.md is kept with the strangers"
+  ( cd "$proj3b" && bash "$CLEAN" --purge ) > "$ws3b/purge2.out" 2>&1
+  assert_eq 0 "$?" "$kind: a SECOND purge still has a marker to work from (exit 0, not the fail-closed 3)"
+  assert_exists "$proj3b/docs/looptesting/my-notes.md" "$kind: the second purge still keeps the user's file"
 
   # --- 3. the driver never overwrites an existing breadcrumb ---------------------
   ws3=$(mk_ws); WS_ALL="$WS_ALL $ws3"; proj3="$ws3/proj"

@@ -12,12 +12,20 @@
 #                    CONVERGED / INCOMPLETE / BLOCKED): additionally delete the
 #                    evidence dir docs/looptesting/, the owned baseline tag, and
 #                    the owned qa branch. The evidence dir is KEPT, and named, in
-#                    four cases: the marker records that the sandbox only re-used
+#                    five cases: the marker records that the sandbox only re-used
 #                    a directory the user already had; the marker predates that
 #                    field being measured; the field says the question was never
-#                    answered (an upgraded sandbox lands here); or a worktree this
+#                    answered (an upgraded sandbox lands here); a worktree this
 #                    run could not claim is still registered and the marker is the
-#                    only record of it. The tag and branch are identified by
+#                    only record of it; or the directory holds files this sandbox
+#                    did not write, which are never deleted. In that last case the
+#                    ownership marker and STATE.md are kept WITH them, so a later
+#                    --purge can still identify this sandbox's refs and act —
+#                    deleting the marker while leaving residue would strand you
+#                    with leftovers the tool can no longer name or remove. Inside
+#                    the evidence dir only this sandbox's own files are deleted,
+#                    by name; runs/, decisions/ and .sandbox/ go whole, so nothing
+#                    you want kept may live in those three. The tag and branch are identified by
 #                    the recorded baseline, not by name: the tag goes only if it
 #                    is a lightweight tag still AT that commit, the branch only
 #                    if it descends from it — anything else of the same name is
@@ -55,7 +63,7 @@ DISCARD_FIXES=0
 # Print the header block as the help text (same mechanism as install-codex.sh):
 # one source of truth, so usage and exit codes cannot drift from the comment that
 # documents them.
-usage() { sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # --help is handled in its own pass, BEFORE the parse loop, so it wins over
 # --purge on the same line and can never reach the destructive path.
@@ -592,7 +600,7 @@ if [ "$PURGE" = 1 ]; then
         # plus .pids and the .active sentinel; the skill writes FINAL_REPORT.md
         # at exit; hooks/stop-gate.sh writes .gate-count; the unattended drivers
         # write driver.log and .driver.lock.
-        for f in STATE.md ISSUES.md PLAN.md FEATURE_MATRIX.md SUGGESTIONS.md \
+        for f in ISSUES.md PLAN.md FEATURE_MATRIX.md SUGGESTIONS.md \
                  FINAL_REPORT.md driver.log .active .pids .gate-count; do
           rm -f "$LT_DIR/$f" 2>/dev/null
         done
@@ -600,11 +608,33 @@ if [ "$PURGE" = 1 ]; then
         # tool's by construction — the agent names its own evidence files, so
         # there is no manifest to check them against — and that is the line.
         # Anything you want kept must not live inside those three.
-        rm -rf "$LT_DIR/runs" "$LT_DIR/decisions" "$LT_DIR/.sandbox" "$LT_DIR/.driver.lock" 2>/dev/null
-        if rmdir "$LT_DIR" 2>/dev/null; then
-          echo_info "purge: removed evidence dir $LT_DIR (marker included)"
+        rm -rf "$LT_DIR/runs" "$LT_DIR/decisions" "$LT_DIR/.driver.lock" 2>/dev/null
+        # The marker and STATE.md are decided LAST, and only ever go together
+        # with the directory. They are this script's two inputs: the marker is
+        # the only record that can identify the sandbox's worktree and refs, and
+        # STATE.md is the terminal-status precondition --purge refuses without.
+        # Deleting either while leftovers keep the directory alive would send the
+        # next --purge into a fail-closed exit 3 with no tool route to finish —
+        # residue the tool could no longer name OR remove. So when anything is
+        # kept, they are kept with it, and this branch stays re-runnable.
+        # Globs, not `ls | grep`: a leftover may be named anything at all, and a
+        # newline in a filename must not be able to split one entry into two.
+        lt_leftovers=""
+        for lt_p in "$LT_DIR"/* "$LT_DIR"/.[!.]* "$LT_DIR"/..?*; do
+          [ -e "$lt_p" ] || continue          # an unmatched glob expands to itself
+          case "${lt_p##*/}" in .sandbox|STATE.md) continue ;; esac
+          lt_leftovers="${lt_leftovers:+$lt_leftovers, }${lt_p##*/}"
+        done
+        if [ -z "$lt_leftovers" ]; then
+          rm -f "$LT_DIR/STATE.md" 2>/dev/null
+          rm -rf "$LT_DIR/.sandbox" 2>/dev/null
+          if rmdir "$LT_DIR" 2>/dev/null; then
+            echo_info "purge: removed evidence dir $LT_DIR (marker included)"
+          else
+            echo_info "purge: removed this sandbox's own files from $LT_DIR, but the directory itself could not be removed — inspect it by hand"
+          fi
         else
-          echo_info "purge: removed this sandbox's own files from $LT_DIR but KEPT the directory — it still holds files this sandbox did not write: $(ls -A "$LT_DIR" 2>/dev/null | tr '\n' ' ')"
+          echo_info "purge: removed this sandbox's own files from $LT_DIR but KEPT the directory — it still holds files this sandbox did not write: $lt_leftovers. Its ownership marker and STATE.md are kept with them so a later --purge can still identify what is the sandbox's; remove the directory by hand once you have taken what you want."
         fi ;;
       *)
         echo_info "purge: refusing to remove suspicious evidence path: $LT_DIR" ;;
