@@ -83,4 +83,47 @@ out=$(CODEX_HOME="$SB7/codex" bash "$INSTALLER" 2>&1)
 assert_contains "$out" "slash command: /loop-testing" "H-02: reinstall over our own prompt refreshes it"
 assert_eq "$(cat "$SB7/codex/prompts/loop-testing.md")" "$(cat "$REPO_ROOT/prompts/loop-testing.md")" "H-02: refreshed prompt equals the shipped file"
 
+# ── A SYMLINK at the prompt path is never ours. GNU cp refuses to write through a
+#    dangling symlink; BSD cp (macOS, a supported Codex platform) follows it and
+#    creates the target — a write outside the resolved target, which this
+#    installer's header promises never happens. Same for a live symlink: `cp`
+#    would overwrite whatever it points at. ──
+
+# 10. Dangling symlink: nothing is created at the far end, the link is untouched.
+SB8=$(make_sandbox); trap 'rm -rf "$SB" "$SB2" "$SB3" "$SB4" "$SB5" "$SB6" "$SB7" "$SB8"' EXIT
+mkdir -p "$SB8/codex/prompts" "$SB8/outside"
+ln -s "$SB8/outside/victim.md" "$SB8/codex/prompts/loop-testing.md"
+out=$(CODEX_HOME="$SB8/codex" bash "$INSTALLER" 2>&1); rc=$?
+assert_eq "$rc" "0" "symlink: install still exits 0"
+assert_path "$SB8/codex/skills/loop-testing/SKILL.md" "symlink: skill still installed"
+assert_no_path "$SB8/outside/victim.md" "symlink: nothing written through the dangling link"
+assert_contains "$out" "not installed by loop-testing" "symlink: install names the link it left alone"
+if [ -L "$SB8/codex/prompts/loop-testing.md" ]; then pass "symlink: the link itself is untouched"
+else fail "symlink: the link was replaced"; fi
+
+# 11. Live symlink pointing at a foreign file: the target is not overwritten, and
+#     uninstall removes neither the link nor what it points at.
+SB9=$(make_sandbox); trap 'rm -rf "$SB" "$SB2" "$SB3" "$SB4" "$SB5" "$SB6" "$SB7" "$SB8" "$SB9"' EXIT
+mkdir -p "$SB9/codex/prompts" "$SB9/outside"
+printf 'THEIR FILE\n' > "$SB9/outside/real.md"
+ln -s "$SB9/outside/real.md" "$SB9/codex/prompts/loop-testing.md"
+CODEX_HOME="$SB9/codex" bash "$INSTALLER" >/dev/null 2>&1
+assert_eq "$(cat "$SB9/outside/real.md")" "THEIR FILE" "symlink: linked-to file not overwritten"
+CODEX_HOME="$SB9/codex" bash "$INSTALLER" --uninstall >/dev/null 2>&1
+assert_path "$SB9/outside/real.md" "symlink: linked-to file survives uninstall"
+if [ -L "$SB9/codex/prompts/loop-testing.md" ]; then pass "symlink: link survives uninstall"
+else fail "symlink: uninstall removed a link it did not create"; fi
+
+# 12. A symlink whose target holds OUR exact bytes is still not ours: we never
+#     created a link there, and removing it would be claiming it by path.
+SB10=$(make_sandbox); trap 'rm -rf "$SB" "$SB2" "$SB3" "$SB4" "$SB5" "$SB6" "$SB7" "$SB8" "$SB9" "$SB10"' EXIT
+mkdir -p "$SB10/codex/prompts" "$SB10/outside"
+cp "$REPO_ROOT/prompts/loop-testing.md" "$SB10/outside/ours.md"
+ln -s "$SB10/outside/ours.md" "$SB10/codex/prompts/loop-testing.md"
+CODEX_HOME="$SB10/codex" bash "$INSTALLER" >/dev/null 2>&1
+CODEX_HOME="$SB10/codex" bash "$INSTALLER" --uninstall >/dev/null 2>&1
+assert_path "$SB10/outside/ours.md" "symlink: content-identical target survives uninstall"
+if [ -L "$SB10/codex/prompts/loop-testing.md" ]; then pass "symlink: content-identical link survives uninstall"
+else fail "symlink: uninstall removed a link it did not create"; fi
+
 finish

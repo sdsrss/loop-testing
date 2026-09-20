@@ -117,7 +117,12 @@ file_cksum() { cksum < "$1" 2>/dev/null | cut -d' ' -f1,2 | tr ' ' '-'; }
 # is theirs, and this installer never `cp`s over it or `rm`s it.
 prompt_is_ours() {
   local marker="$1" sum rec
-  [ -n "$PROMPT_DEST" ] && [ -f "$PROMPT_DEST" ] || return 1
+  # A symlink is never ours: we only ever write a regular file there. Removing it
+  # would be claiming a path we did not create, and `cp` through it writes to
+  # wherever it points — outside the resolved target, which this installer
+  # promises never to touch. (GNU cp refuses a dangling link; BSD cp, i.e. macOS,
+  # follows it and creates the far end.)
+  [ -n "$PROMPT_DEST" ] && [ ! -L "$PROMPT_DEST" ] && [ -f "$PROMPT_DEST" ] || return 1
   sum="$(file_cksum "$PROMPT_DEST")"
   [ -n "$sum" ] || return 1
   if [ -n "$marker" ] && [ -f "$marker" ]; then
@@ -189,7 +194,10 @@ do_install() {
   # prompt record) into .bak: absent -> install; ours -> refresh; foreign -> keep.
   local prompt_action="skip"
   if [ -n "$PROMPTS_DIR" ] && [ -f "$PROMPT_SRC" ]; then
-    if [ ! -e "$PROMPT_DEST" ]; then prompt_action="install"
+    # -L before -e: a DANGLING symlink answers false to -e, so the plain
+    # existence check would call the path empty and copy straight through it.
+    if [ -L "$PROMPT_DEST" ]; then prompt_action="foreign"
+    elif [ ! -e "$PROMPT_DEST" ]; then prompt_action="install"
     elif prompt_is_ours "$DEST/$MARKER"; then prompt_action="install"
     else prompt_action="foreign"; fi
   fi
@@ -307,7 +315,9 @@ do_uninstall() {
   fi
   # Decide the prompt's fate while the marker (and its prompt record) still exists.
   local prompt_ours=0
-  if [ -n "$PROMPT_DEST" ] && [ -f "$PROMPT_DEST" ] && [ "$(basename "$PROMPT_DEST")" = "$SKILL_NAME.md" ]; then
+  if [ -n "$PROMPT_DEST" ] && [ -L "$PROMPT_DEST" ]; then
+    prompt_ours=2
+  elif [ -n "$PROMPT_DEST" ] && [ -f "$PROMPT_DEST" ] && [ "$(basename "$PROMPT_DEST")" = "$SKILL_NAME.md" ]; then
     if prompt_is_ours "$DEST/$MARKER"; then prompt_ours=1; else prompt_ours=2; fi
   fi
   safe_remove "$DEST"
