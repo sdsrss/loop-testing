@@ -451,7 +451,7 @@ if [ "$PURGE" = 1 ]; then
     tag_type="$(git -C "$TOP" cat-file -t "refs/tags/$P_TAG" 2>/dev/null)"
     tag_at="$(git -C "$TOP" rev-parse -q --verify "refs/tags/$P_TAG^{commit}" 2>/dev/null)"
     if [ "$tag_type" != commit ]; then
-      echo_info "purge: kept tag $P_TAG (it is an ${tag_type:-unreadable} object, and this sandbox only ever writes a lightweight tag — so this one is not ours; remove it by hand if you want it gone)"
+      echo_info "purge: kept tag $P_TAG (its object type is ${tag_type:-unreadable}, and this sandbox only ever writes a lightweight tag — so this one is not ours; remove it by hand if you want it gone)"
     elif [ "$base_ok" = 1 ] && [ -n "$tag_at" ] && [ "$tag_at" = "$P_BASE" ]; then
       git -C "$TOP" tag -d "$P_TAG" >/dev/null 2>&1 && echo_info "purge: deleted baseline tag $P_TAG"
     elif [ "$base_ok" = 1 ]; then

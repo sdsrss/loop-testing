@@ -180,12 +180,24 @@ case "$OUT9c" in *"already gone"*) FAIL=$((FAIL+1)); echo "  FAIL: clean lost th
 # --- J0. the two scripts' marker readers are literally the same line ----------
 # Both headers claim the readers are byte-identical. A claim a comment makes
 # about its own code is worth exactly as much as the check that holds it true:
-# an alignment space was enough to make the sentence false while everything
-# still passed. This compares the definitions, not the intent.
+# six spaces of alignment padding were enough to make the sentence false while
+# every behavioural test still passed.
+#
+# WHAT THIS DOES NOT COVER, by construction: it asserts the two scripts AGREE, so
+# an identical wrong edit to both passes here. That half is covered behaviourally
+# and per-script — cases E/F/G pin CRLF handling, case I pins the trailing space,
+# and case J pins the shared validity rule — so a reader that agrees with itself
+# but reads markers wrongly still turns this file red. Every matching definition
+# is compared, not just the first, so a second stray copy cannot hide behind the
+# first.
 for _fn in mval marker_key; do
-  _a="$(grep -h "^$_fn() {" "$SETUP" | head -1)"
-  _b="$(grep -h "^$_fn() {" "$CLEAN" | head -1)"
-  if [ -n "$_a" ] && [ "$_a" = "$_b" ]; then PASS=$((PASS+1)); else
+  _a="$(grep -h "^$_fn() {" "$SETUP")"
+  _b="$(grep -h "^$_fn() {" "$CLEAN")"
+  if [ -z "$_a" ] || [ -z "$_b" ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $_fn() not found in both scripts (setup:${_a:+y}${_a:-n} clean:${_b:+y}${_b:-n})" >&2
+  elif [ "$(printf '%s\n' "$_a" | wc -l)" != "1" ] || [ "$(printf '%s\n' "$_b" | wc -l)" != "1" ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $_fn() is defined more than once — one marker reader per script, or they cannot be compared" >&2
+  elif [ "$_a" = "$_b" ]; then PASS=$((PASS+1)); else
     FAIL=$((FAIL+1)); echo "  FAIL: $_fn() differs between the two scripts (the headers claim byte-identical)" >&2
     echo "        setup: [$_a]" >&2; echo "        clean: [$_b]" >&2; fi
 done

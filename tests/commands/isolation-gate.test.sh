@@ -54,16 +54,69 @@ has "$ROUND0" "git worktree list" "the gate still verifies the sibling checkout"
 has "$ROUND0" "git branch --show-current" "the gate still verifies the main tree's branch"
 has "$ROUND0" ".active" "the gate still verifies the resume sentinel"
 
-# ── doc <-> script coherence: a code the gate names must be one the script emits
-if grep -qE '^# .*· 9 the$|^# .*· 9 ' "$SETUP" || grep -q '· 9 the' "$SETUP"; then
-  pass "sandbox-setup.sh documents exit 9 in its header"
+# ── doc <-> script coherence, by RUNNING the script ──────────────────────────
+# These were two greps over the source. They were a tautology: disabling the
+# exit-9 block entirely left this suite fully green, still printing "actually
+# exits 9 somewhere", because the string was still in the file. Direction (a),
+# the doc says it, was verified; direction (b), the script does it, was not.
+#
+# Scope split, so neither half is orphaned: the eight assertions below prove the
+# gate's PREMISE — that a 9 really happens and that the four state checks really
+# cannot see it. tests/sandbox/setup-marker-integrity.test.sh owns the fuller
+# behavioural surface of exit 9 (corrupt, truncated and blank-valued markers; no
+# .active armed; no worktree created; the marker left unrewritten).
+if ! command -v git >/dev/null 2>&1; then
+  fail "git is required for the behavioural half of this suite"
 else
-  fail "sandbox-setup.sh header does not document exit 9, but the gate names it"
-fi
-if grep -qE '" 9$|" 9;' "$SETUP"; then
-  pass "sandbox-setup.sh actually exits 9 somewhere"
-else
-  fail "sandbox-setup.sh never exits 9, but its header and the gate both name it"
+  FIX=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-gate.XXXXXX")
+  trap 'rm -rf "$FIX"' EXIT
+  (
+    cd "$FIX" && mkdir proj && cd proj && git init -q \
+      && git config user.email t@t && git config user.name t \
+      && echo x > README.md && git add README.md && git commit -qm init
+  ) >/dev/null 2>&1
+  REPO="$FIX/proj"
+  MARKER="$REPO/docs/looptesting/.sandbox/ownership.env"
+  ( cd "$REPO" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+  BR_BEFORE="$(cd "$REPO" && git symbolic-ref --short -q HEAD 2>/dev/null)"
+
+  if [ -f "$MARKER" ]; then pass "fixture: a live sandbox exists"; else fail "fixture: setup did not produce a marker"; fi
+
+  # Corrupt the marker the way a truncated write or a hand-edit does.
+  sed -i.bak 's/^SANDBOX_VERSION=.*/SANDBOX_VERSION=/' "$MARKER" 2>/dev/null; rm -f "$MARKER.bak"
+
+  ( cd "$REPO" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+  RC=$?
+  if [ "$RC" -eq 9 ]; then
+    pass "sandbox-setup.sh really returns 9 over an unreadable marker"
+  else
+    fail "sandbox-setup.sh returned $RC, not the documented 9, over an unreadable marker"
+  fi
+
+  # The premise of clause 1: after that 9, every state check in clause 2 passes.
+  # If any of these four ever stops passing, the doc's justification is stale and
+  # this test should be revisited rather than the clause quietly kept.
+  [ -f "$MARKER" ] \
+    && pass "after a 9 the marker is still present (state check 1 would pass)" \
+    || fail "after a 9 the marker is gone — the gate's premise no longer holds"
+  wt_n="$(cd "$REPO" && git worktree list --porcelain 2>/dev/null | grep -c '^worktree ')"
+  [ "$wt_n" -ge 2 ] \
+    && pass "after a 9 the old sibling checkout is still registered (state check 2 would pass)" \
+    || fail "after a 9 only $wt_n worktree(s) registered — the gate's premise no longer holds"
+  [ "$(cd "$REPO" && git symbolic-ref --short -q HEAD 2>/dev/null)" = "$BR_BEFORE" ] \
+    && pass "after a 9 the main tree is on its original branch (state check 3 would pass)" \
+    || fail "after a 9 the main tree moved off $BR_BEFORE — the gate's premise no longer holds"
+  [ -f "$REPO/docs/looptesting/.active" ] \
+    && pass "after a 9 the resume sentinel is still present (state check 4 would pass)" \
+    || fail "after a 9 .active is gone — the gate's premise no longer holds"
+
+  # The gate points the reader at --help for the code table; that has to be true
+  # of the running script, not of a comment in it.
+  if bash "$SETUP" --help 2>/dev/null | tr '[:space:]' ' ' | tr -s ' ' | grep -q '9 the ownership marker is present but unreadable'; then
+    pass "--help really prints the exit-9 entry the gate sends the reader to"
+  else
+    fail "--help does not print an exit-9 entry, but the gate tells the reader to look there"
+  fi
 fi
 
 # ── the gate must not tell the reader that the state checks are sufficient ───
