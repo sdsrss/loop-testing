@@ -580,8 +580,32 @@ if [ "$PURGE" = 1 ]; then
   else
     case "$LT_DIR" in
       */docs/looptesting)
-        rm -rf "$LT_DIR"
-        echo_info "purge: removed evidence dir $LT_DIR (marker included)" ;;
+        # Delete by NAME, never "everything under the directory this run
+        # created". Since the drivers record a headless run's evidence dir as
+        # the tool's own, this branch would otherwise `rm -rf` a directory the
+        # user had dropped files into between runs — and an untracked file is
+        # gone for good. Owning the DIRECTORY is not owning everything later
+        # put inside it.
+        #
+        # Each name below is written by this tool: sandbox-setup.sh seeds
+        # STATE.md / PLAN.md / FEATURE_MATRIX.md / ISSUES.md / SUGGESTIONS.md
+        # plus .pids and the .active sentinel; the skill writes FINAL_REPORT.md
+        # at exit; hooks/stop-gate.sh writes .gate-count; the unattended drivers
+        # write driver.log and .driver.lock.
+        for f in STATE.md ISSUES.md PLAN.md FEATURE_MATRIX.md SUGGESTIONS.md \
+                 FINAL_REPORT.md driver.log .active .pids .gate-count; do
+          rm -f "$LT_DIR/$f" 2>/dev/null
+        done
+        # runs/, decisions/ and .sandbox/ go whole: their CONTENTS are the
+        # tool's by construction — the agent names its own evidence files, so
+        # there is no manifest to check them against — and that is the line.
+        # Anything you want kept must not live inside those three.
+        rm -rf "$LT_DIR/runs" "$LT_DIR/decisions" "$LT_DIR/.sandbox" "$LT_DIR/.driver.lock" 2>/dev/null
+        if rmdir "$LT_DIR" 2>/dev/null; then
+          echo_info "purge: removed evidence dir $LT_DIR (marker included)"
+        else
+          echo_info "purge: removed this sandbox's own files from $LT_DIR but KEPT the directory — it still holds files this sandbox did not write: $(ls -A "$LT_DIR" 2>/dev/null | tr '\n' ' ')"
+        fi ;;
       *)
         echo_info "purge: refusing to remove suspicious evidence path: $LT_DIR" ;;
     esac

@@ -76,6 +76,22 @@ for kind in claude codex; do
   assert_eq 0 "$?" "$kind: purge over the user's dir exits 0"
   assert_exists "$proj2/docs/looptesting/adr-1.md" "$kind: the user's file survives purge"
 
+  # --- 3b. a file the user put in the dir the DRIVER created survives purge -----
+  # Owning the DIRECTORY is not owning everything later put inside it. Making a
+  # headless run's evidence dir purgeable at all (case 1) turns this branch into
+  # `rm -rf` over exactly that case, and an untracked file is gone for good.
+  ws3b=$(mk_ws); WS_ALL="$WS_ALL $ws3b"; proj3b="$ws3b/proj"
+  stub3b=$(write_setup_stub "$ws3b")
+  run_driver "$kind" "$proj3b" "$stub3b" >/dev/null 2>&1
+  assert_eq 0 "$?" "$kind: headless run converges before the user adds a file"
+  echo "notes I archived here after the run" > "$proj3b/docs/looptesting/my-notes.md"
+  ( cd "$proj3b" && bash "$CLEAN" --purge ) > "$ws3b/purge.out" 2>&1
+  assert_eq 0 "$?" "$kind: purge over a dir holding a stranger exits 0"
+  assert_exists "$proj3b/docs/looptesting/my-notes.md" "$kind: a file the sandbox never wrote survives purge"
+  assert_absent "$proj3b/docs/looptesting/STATE.md" "$kind: the sandbox's own files are still removed"
+  assert_absent "$proj3b/docs/looptesting/.sandbox" "$kind: the marker dir is still removed"
+  assert_file_contains "$ws3b/purge.out" "my-notes.md" "$kind: purge names the file it kept"
+
   # --- 3. the driver never overwrites an existing breadcrumb ---------------------
   ws3=$(mk_ws); WS_ALL="$WS_ALL $ws3"; proj3="$ws3/proj"
   stub3=$(write_setup_stub "$ws3")
@@ -86,5 +102,25 @@ for kind in claude codex; do
   assert_file_contains "$proj3/docs/looptesting/.sandbox/created-dirs.env" "MADE_LOOPTESTING_DIR=0" \
     "$kind: an earlier lifecycle's breadcrumb is left as written"
 done
+
+# --- the full sequence a file was lost in -------------------------------------
+# A run aborts before it ever reaches sandbox-setup.sh (the driver has already
+# created docs/looptesting and written its breadcrumb), the user drops a file in
+# that directory, a later run completes normally, and the user purges. The
+# breadcrumb correctly says the DIRECTORY is the tool's; the file in it is not.
+ws5=$(mk_ws); WS_ALL="$WS_ALL $ws5"; proj5="$ws5/proj"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$ws5/dead-stub.sh"   # dies before setup
+chmod +x "$ws5/dead-stub.sh"
+bash "$DRIVER" --project "$proj5" --claude-bin "$ws5/dead-stub.sh" --max-sessions 2 >/dev/null 2>&1
+assert_file_contains "$proj5/docs/looptesting/.sandbox/created-dirs.env" "MADE_LOOPTESTING_DIR=1" \
+  "the aborted run still recorded that the driver created the dir"
+echo "a file the user added between runs" > "$proj5/docs/looptesting/my-notes.md"
+stub5=$(write_setup_stub "$ws5")
+bash "$DRIVER" --project "$proj5" --claude-bin "$stub5" --max-sessions 2 >/dev/null 2>&1
+assert_eq 0 "$?" "the completing run converges"
+( cd "$proj5" && bash "$CLEAN" --purge ) > "$ws5/purge.out" 2>&1
+assert_eq 0 "$?" "purge after the abort-then-complete sequence exits 0"
+assert_exists "$proj5/docs/looptesting/my-notes.md" "the file added between the two runs survives the purge"
+assert_absent "$proj5/docs/looptesting/driver.log" "the driver's own log is still removed"
 
 report "evidence-dir-ownership.test.sh"
