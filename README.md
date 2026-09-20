@@ -262,7 +262,7 @@ A finished run (after `sandbox-clean.sh`) **deliberately keeps** these artifacts
 | `qa/loop-testing` branch | target repo | **holds the fix commits — they exist nowhere else** |
 | `qa-baseline` tag | target repo | marks the pre-run baseline for diffing |
 | `latest-tag` — in `${CLAUDE_PLUGIN_DATA}` when installed as a plugin (`~/.claude/plugins/data/loop-testing@…/`), else `~/.cache/loop-testing/` | plugin data dir / user cache dir | 24h update-check throttle (Claude Code hook); safe to delete any time. Under the plugin data dir `claude plugin uninstall` removes it for you (`--keep-data` opts out); the `~/.cache` fallback is used by Codex and `--plugin-dir` dev loads and is removed by hand |
-| `${CODEX_HOME:-~/.codex}/skills/loop-testing` (+ a `.bak` after reinstalls), `${CODEX_HOME:-~/.codex}/prompts/loop-testing.md`, or the `--target DIR` you installed into | Codex home | the installed skill; removed by `install/install-codex.sh --uninstall` (pass the same `--target`) |
+| `${CODEX_HOME:-~/.codex}/skills/loop-testing` (+ a `.bak` after reinstalls), `${CODEX_HOME:-~/.codex}/prompts/loop-testing.md`, or the `--target DIR` you installed into | Codex home | the installed skill; removed by `install/install-codex.sh --uninstall` (pass the same `--target`). Only files this installer wrote are removed: the prompt is claimed by a checksum recorded at install time, so one you wrote yourself, or one you edited afterwards, is kept and named on both install and uninstall — and any symlink at that path is treated as yours and left alone |
 
 **Harvest first, then purge** — the fix commits live only on the qa branch:
 
@@ -314,7 +314,13 @@ ownership marker exists *and is readable* and `STATE.md` is terminal
 (`CONVERGED / INCOMPLETE / BLOCKED`), and it never deletes a checked-out branch. A
 marker that is present but truncated or corrupted is treated as *less* knowable than a
 missing one: purge names the file and deletes nothing rather than concluding it owned
-nothing. A purge that ran but had to leave a worktree standing exits `4`
+nothing. `sandbox-setup.sh` refuses the same marker the same way, with exit `9`: the run
+did nothing at all, and because the marker file, the old worktree, your original branch
+and `.active` are all still in place, nothing you can look at afterwards distinguishes
+that from a successful resume — the exit code is the only signal. To clear it, repair the
+lines the script names, or harvest the qa branch and then `rm` that marker to start a
+fresh sandbox; removing it deletes no branch, tag, worktree or evidence. A purge that ran
+but had to leave a worktree standing exits `4`
 (`purge incomplete`) — resolve that worktree, then purge again. It also never deletes a ref it only *adopted*
 — after a `clean` → re-`setup` cycle the qa branch and baseline tag are re-used rather
 than created, so the marker records them as adopted, purge names them instead of removing

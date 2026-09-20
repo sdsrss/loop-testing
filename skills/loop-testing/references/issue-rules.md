@@ -57,7 +57,7 @@ OPEN → FIXING → FIXED_UNVERIFIED → VERIFIED
    NEEDS_CONFIRMATION / BLOCKED / WONT_FIX / CANNOT_REPRODUCE
 ```
 
-- `VERIFIED` **只能由原样重放复现步骤产生**（重放命令与输出同轮记录于 `runs/round-N.md`）；未重放不得标 VERIFIED。**机制次序（`ledger-gate.sh` 强制，勿颠倒）**：重放命令与输出必须**先**写入 `runs/round-N.md`，PreToolUse 的 `ledger-gate` 才放行把 `ISSUES.md` 该条状态改为 `VERIFIED`；先改状态、后补重放会被拦截（fail-closed）。
+- `VERIFIED` **只能由原样重放复现步骤产生**（重放命令与输出同轮记录于 `runs/round-N.md`）；未重放不得标 VERIFIED。**次序（勿颠倒）**：重放命令与输出必须**先**写入 `runs/round-N.md`，再把 `ISSUES.md` 该条状态改为 `VERIFIED`。这条次序由纪律保证，`ledger-gate.sh` 只是**提高作弊成本的软门**：它 fail-**open**（解析不了就放行），只查该 ID 是否在 `runs/` 出现过，且无法看穿把写入间接化的命令（解释器内部的重定向、运行时拼出的路径、包装动词）。门放行 ≠ 重放做过；这条规则对你的约束不因门的能力而放松。
 - `NEEDS_CONFIRMATION` / `BLOCKED` / `WONT_FIX` / `CANNOT_REPRODUCE` **必须有完整证据与明确下一步**，不能当作方便停止的「问题停车场」。
 - `CANNOT_REPRODUCE` 必须附尝试记录，不许编故事。
 

@@ -229,7 +229,7 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 | `qa/loop-testing` 分支 | 目标仓库 | **承载全部修复 commit——只存在于该分支** |
 | `qa-baseline` tag | 目标仓库 | 标记跑前基线,便于 diff |
 | `latest-tag` — 以插件安装时在 `${CLAUDE_PLUGIN_DATA}`(`~/.claude/plugins/data/loop-testing@…/`),否则在 `~/.cache/loop-testing/` | 插件数据目录 / 用户缓存目录 | 更新检查 24h 节流(Claude Code hook),随时可删。放在插件数据目录时 `claude plugin uninstall` 会一并清掉(`--keep-data` 可保留);`~/.cache` 兜底路径供 Codex 与 `--plugin-dir` 开发加载使用,需手动删 |
-| `${CODEX_HOME:-~/.codex}/skills/loop-testing`(重装后另有 `.bak`)、`${CODEX_HOME:-~/.codex}/prompts/loop-testing.md`,或你安装时指定的 `--target DIR` | Codex 主目录 | 已安装技能;`install/install-codex.sh --uninstall` 移除(需带同样的 `--target`) |
+| `${CODEX_HOME:-~/.codex}/skills/loop-testing`(重装后另有 `.bak`)、`${CODEX_HOME:-~/.codex}/prompts/loop-testing.md`,或你安装时指定的 `--target DIR` | Codex 主目录 | 已安装技能;`install/install-codex.sh --uninstall` 移除(需带同样的 `--target`)。只删这个安装器自己写过的文件:prompt 按安装时记录的校验和认领,所以你自己写的、或装完又改过的那一份,安装与卸载都会保留并点名;该路径上的符号链接一律按「你的」处理,不碰 |
 
 **先收割,再清扫**——修复 commit 只在 qa 分支上:
 
@@ -276,7 +276,11 @@ bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
 `--purge` 是**用户**动作,agent 绝不自行执行。缺 ownership marker、marker **读不出来**、
 或 `STATE.md` 非终态(`CONVERGED / INCOMPLETE / BLOCKED`)时拒绝(exit 3);绝不删除当前检出的分支。
 marker 存在但被截断 / 损坏时,视为比"缺失"更不可知:purge 会指出该文件并且什么都不删,
-而不是推断出"本次什么都没创建"。purge 跑完但不得不留下一个 worktree 时退出码为 `4`
+而不是推断出"本次什么都没创建"。`sandbox-setup.sh` 对同一份 marker 以 exit `9` 同样拒绝:
+本次运行什么都没做,而 marker 文件、旧 worktree、你原来的分支、`.active` 全都还在,
+事后看现场根本分不出它和一次成功续跑的区别——退出码是唯一的信号。解除办法:按脚本点名的
+行修好它,或先收割 qa 分支再 `rm` 掉那份 marker 重开沙箱;删它不会删掉任何分支、标记、
+worktree 或证据。purge 跑完但不得不留下一个 worktree 时退出码为 `4`
 (`purge incomplete`)——先处理那个 worktree,再重跑 purge。也绝不删除
 只是"采纳"的 ref——经 `clean` → 重新 `setup` 后,qa 分支与基线标记属于复用而非本次创建,
 marker 记为 adopted,purge 只报不删,`--discard-fixes` 对它们不生效。证据目录同理,以下五种情况
