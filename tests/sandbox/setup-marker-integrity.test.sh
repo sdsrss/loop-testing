@@ -177,6 +177,19 @@ assert_absent "$WT9" "clean removed the space-suffixed worktree"
 case "$OUT9c" in *"already gone"*) FAIL=$((FAIL+1)); echo "  FAIL: clean lost the path to whitespace stripping and called it gone — got: $OUT9c" >&2 ;;
   *) PASS=$((PASS+1)) ;; esac
 
+# --- J0. the two scripts' marker readers are literally the same line ----------
+# Both headers claim the readers are byte-identical. A claim a comment makes
+# about its own code is worth exactly as much as the check that holds it true:
+# an alignment space was enough to make the sentence false while everything
+# still passed. This compares the definitions, not the intent.
+for _fn in mval marker_key; do
+  _a="$(grep -h "^$_fn() {" "$SETUP" | head -1)"
+  _b="$(grep -h "^$_fn() {" "$CLEAN" | head -1)"
+  if [ -n "$_a" ] && [ "$_a" = "$_b" ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: $_fn() differs between the two scripts (the headers claim byte-identical)" >&2
+    echo "        setup: [$_a]" >&2; echo "        clean: [$_b]" >&2; fi
+done
+
 # --- J. one validity rule, two scripts ----------------------------------------
 # setup's comment claims it applies "the same validity rule as clean". A marker
 # whose TOP is present but blank is the case that told them apart: clean's reader

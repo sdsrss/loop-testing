@@ -268,7 +268,7 @@ MARKER_PRESENT_AT_START=0
 # ownership-by-text failure this whole area exists to remove. Parameter
 # expansion, not `sed 's/\r$//'`: BSD sed does not interpret `\r` and would eat a
 # trailing literal `r` instead.
-mval()       { local v; v="$(grep -aE "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"; printf '%s' "${v%$'\r'}"; }
+mval() { local v; v="$(grep -aE "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"; printf '%s' "${v%$'\r'}"; }
 marker_key() { local v; v="$(grep -aE "^$1=[^[:space:]]" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"; printf '%s' "${v%$'\r'}"; }
 
 # Present is not the same as readable (audit S-01). sandbox-clean validates the
