@@ -297,6 +297,70 @@ test('provider selection: dry-run reflects openrouter-only vs openai-only defaul
   });
 });
 
+test('provider routing: namespaced ids on the stock OpenAI endpoint are called out, not silently 404ed (M-06)', async () => {
+  await withWorkspace(async (dir) => {
+    const input = await writeInput(dir);
+
+    // Only OPENAI_API_KEY is set, so the provider falls back to openai — while
+    // the DEFAULT model ids are OpenRouter-namespaced. api.openai.com has no
+    // such ids, so every request 404s and the run exits 2, yet the dry-run
+    // report used to resolve cleanly and say nothing.
+    const stock = await runMoa(['--input', input, '--dry-run'], { OPENAI_API_KEY: 'sk-oa' }, dir);
+    assert.equal(stock.code, 0, stock.stderr);
+    assert.match(stock.stdout, /would 404/);
+    assert.match(stock.stdout, /openai\/gpt-5\.6-sol/);
+    assert.match(stock.stdout, /OPENROUTER_API_KEY/, 'the warning must name the way out');
+
+    // The three supported configurations must stay quiet, or the warning is
+    // noise on a working setup — which is how a warning gets ignored.
+    const gateway = await runMoa(
+      ['--input', input, '--dry-run'],
+      { OPENAI_API_KEY: 'sk-oa', OPENAI_BASE_URL: 'http://127.0.0.1:9/v1' }, dir,
+    );
+    assert.equal(gateway.code, 0, gateway.stderr);
+    assert.doesNotMatch(gateway.stdout, /would 404/, 'a custom gateway may accept namespaced ids');
+
+    const router = await runMoa(['--input', input, '--dry-run'], { OPENROUTER_API_KEY: 'sk-or' }, dir);
+    assert.equal(router.code, 0, router.stderr);
+    assert.doesNotMatch(router.stdout, /would 404/, 'namespaced ids are correct on OpenRouter');
+
+    const plain = await runMoa(
+      ['--input', input, '--dry-run'],
+      {
+        OPENAI_API_KEY: 'sk-oa',
+        LOOP_TESTING_MOA_MODELS: 'gpt-4o-mini',
+        LOOP_TESTING_MOA_AGGREGATOR: 'gpt-4o',
+      }, dir,
+    );
+    assert.equal(plain.code, 0, plain.stderr);
+    assert.doesNotMatch(plain.stdout, /would 404/, 'plain OpenAI ids on the stock endpoint are fine');
+  });
+});
+
+test('provider routing: the M-06 warning also reaches a real run, which is the one that spends money', async () => {
+  // A headless loop never calls --dry-run. The tunnel is refused at CONNECT, so
+  // nothing leaves the machine and the run takes the documented exit-2 degrade;
+  // what is asserted is that it said WHY before spending anything.
+  const proxy = await startConnectProxy({ status: '502 Bad Gateway' });
+  try {
+    await withWorkspace(async (dir) => {
+      const input = await writeInput(dir);
+      const r = await runMoa(
+        ['--input', input, '--output', join(dir, 'DEC.md')],
+        {
+          OPENAI_API_KEY: 'sk-oa',
+          HTTPS_PROXY: `http://127.0.0.1:${proxy.port}`,
+          LOOP_TESTING_MOA_TIMEOUT_MS: '4000',
+        }, dir,
+      );
+      assert.equal(r.code, 2, `expected the all-references-failed degrade, got ${r.code}: ${r.stderr}`);
+      assert.match(r.stderr, /warn: .*would 404/, 'the routing mismatch must be named before the calls');
+    });
+  } finally {
+    await proxy.close();
+  }
+});
+
 test('provider selection: real OpenRouter wire path via OPENROUTER_BASE_URL', async () => {
   await withWorkspace(async (dir) => {
     const stub = await startServer(chatHandler({ aggModel: 'agg-model' }));

@@ -265,6 +265,38 @@ function resolveModelProvider(entry, env) {
   return { provider, baseUrl, key, keyEnv: pc.keyEnv, hasKey: Boolean(key) };
 }
 
+// A namespaced `vendor/model` id is OpenRouter's convention. The defaults use
+// it, and the provider falls back to openai whenever OPENROUTER_API_KEY is
+// absent — so an OPENAI_API_KEY-only environment resolves to a config where
+// EVERY request 404s and the run exits 2, while --dry-run reported it fully
+// resolved with a key present (M-06).
+//
+// Warned, never refused: a custom OPENAI_BASE_URL (LiteLLM and other
+// OpenAI-compatible gateways) does accept namespaced ids, so only the stock
+// endpoint is called out. Refusing here would repeat the M-03 first attempt,
+// which turned a documented exit-2 degrade into exit 1 and stalled the loop.
+function modelRoutingWarning(entry, r) {
+  if (r.provider !== 'openai') return null;
+  if (r.baseUrl !== PROVIDERS.openai.defaultBaseUrl) return null;
+  if (!String(entry.model).includes('/')) return null;
+  return `"${entry.model}" is a namespaced vendor/model id but resolves to provider openai at `
+    + `${PROVIDERS.openai.defaultBaseUrl}, which has no model by that name — this request would 404. `
+    + 'Set OPENROUTER_API_KEY to use the OpenRouter defaults, point OPENAI_BASE_URL at a gateway that '
+    + 'accepts namespaced ids, or name plain OpenAI models via LOOP_TESTING_MOA_MODELS / '
+    + 'LOOP_TESTING_MOA_AGGREGATOR.';
+}
+
+function modelRoutingWarnings(cfg, env) {
+  const out = [];
+  for (const entry of [...cfg.reference_models, cfg.aggregator]) {
+    const w = modelRoutingWarning(entry, resolveModelProvider(entry, env));
+    // Deduped by message: the aggregator is often one of the reference models,
+    // and saying it twice reads as two problems.
+    if (w && !out.includes(w)) out.push(w);
+  }
+  return out;
+}
+
 // ===========================================================================
 // Proxy selection.  Node's global fetch would ignore these; we honor them
 // explicitly. For an https origin prefer HTTPS_PROXY; for http prefer HTTP_PROXY;
@@ -871,6 +903,13 @@ function dryRunReport(cfg, env) {
   lines.push('keys:');
   lines.push(`  OPENAI_API_KEY: ${env.OPENAI_API_KEY && env.OPENAI_API_KEY.trim() ? 'set' : 'missing'}`);
   lines.push(`  OPENROUTER_API_KEY: ${env.OPENROUTER_API_KEY && env.OPENROUTER_API_KEY.trim() ? 'set' : 'missing'}`);
+  // Last, because a terminal shows the tail: a report that resolves cleanly and
+  // then 404s on every call is the failure this section exists to pre-empt.
+  const warnings = modelRoutingWarnings(cfg, env);
+  if (warnings.length) {
+    lines.push('warnings:');
+    for (const w of warnings) lines.push(`  - ${w}`);
+  }
   return lines.join('\n');
 }
 
@@ -929,6 +968,13 @@ async function main() {
   if (args['dry-run']) {
     process.stdout.write(redact(dryRunReport(cfg, env)) + '\n');
     return 0;
+  }
+
+  // The same routing mismatch the dry-run report names, on the path that
+  // actually spends money: a headless loop never calls --dry-run, so without
+  // this every request 404s and the run exits 2 with nothing said about why.
+  for (const w of modelRoutingWarnings(cfg, env)) {
+    process.stderr.write(`warn: ${redact(w)}\n`);
   }
 
   if (!args.input) {
