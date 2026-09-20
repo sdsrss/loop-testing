@@ -78,6 +78,12 @@ converged_streak: $streak
 status: $status
 max_rounds: 12
 EOS
+# D-05 fixtures: STUB_STDERR is emitted verbatim on stderr, STUB_STDERR_LINES
+# repeats a numbered line that many times (tail-cap cases).
+[ -n "${STUB_STDERR:-}" ] && printf '%s\n' "$STUB_STDERR" >&2
+if [ -n "${STUB_STDERR_LINES:-}" ]; then
+  i=1; while [ "$i" -le "$STUB_STDERR_LINES" ]; do printf 'stderr line %s.\n' "$i" >&2; i=$((i+1)); done
+fi
 echo "stub: round=$new_round streak=$streak status=$status"
 exit "${STUB_EXIT:-0}"
 STUB
@@ -94,4 +100,5 @@ sessions_in_log() {
 assert_rc()  { if [ "$1" -eq "$2" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — expected rc $2 got $1" >&2; fi; }
 assert_eq()  { if [ "$1" = "$2" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — expected [$1] got [$2]" >&2; fi; }
 assert_file_contains() { if grep -qaF -- "$2" "$1" 2>/dev/null; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — $1 lacks [$2]" >&2; fi; }
+assert_file_lacks() { if grep -qaF -- "$2" "$1" 2>/dev/null; then FAIL=$((FAIL+1)); echo "  FAIL: $3 — $1 still contains [$2]" >&2; else PASS=$((PASS+1)); fi; }
 report() { echo "$1: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]; }

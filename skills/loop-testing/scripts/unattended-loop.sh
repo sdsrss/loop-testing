@@ -242,6 +242,7 @@ STOP_DEADLINE=0       # global so a SECOND signal can collapse it (see shutdown_
 STOPPING=0            # a shutdown is in progress (re-entrancy, not idempotency)
 STOP_DONE=0           # a shutdown has completed (idempotency, not re-entrancy)
 CHILD=""              # pid of the running session (the watchdog leads its group)
+SESSION_ERR=""        # this session's stderr capture file, "" when off (audit D-05)
 CHILD_START=""        # its start time — a pid alone is not an identity
 CHILD_SURVIVED=""     # set only when that pid outlives SIGKILL
 POLL_STEP=auto
@@ -368,6 +369,11 @@ shutdown_handler() { # [exit-code]
   STOPPING=1
   stop_child
   release_lock_or_hold
+  # The capture file is this run's, and every exit path reaches here (EXIT routes
+  # through the same handler). There is no `.part` sibling to clean: the redirect
+  # writes the file directly, which is what makes the opt-out a plain /dev/null.
+  [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR"
+  SESSION_ERR=""
   STOP_DONE=1
   STOPPING=0
   # EXIT passes no code: exiting from the EXIT trap would re-enter it.
@@ -395,6 +401,92 @@ no_progress=0
 prev_sig="$(progress_sig)"
 
 log_line() { printf '%s\n' "$1" >> "$DRIVER_LOG"; }
+
+# --- session stderr capture (audit D-05, second attempt) ---------------------
+# The agent's stdout is its transcript and STAYS on /dev/null: capturing it would
+# grow the evidence directory without bound. Its stderr is where an expired key,
+# a rate limit, an unknown flag and a bad working directory say what happened —
+# all of which reached this log as `exit=N` and the no-progress verdict, with
+# nothing to tell them apart. D-02 survived to the audit for exactly that reason.
+#
+# A PLAIN FILE, and deliberately so. The first attempt (pulled in 98095b7) bounded
+# the capture at the writer — `2> >(tail -c … > "$SINK.part"; mv -f …)` — which
+# made the opt-out fatal: the sink is then /dev/null, a normal user cannot create
+# /dev/null.part, the writer exits, and the session's stderr pipe has no reader,
+# so every session died of SIGPIPE at round 0. Under root the rename REPLACED the
+# /dev/null device node with a regular file holding the unredacted tail. A plain
+# `2>"$file"` has no writer to lose, no path derived from the sink, and its
+# O_TRUNC is the per-session truncator: each session starts the file empty, so one
+# run holds at most one session's stderr and never accumulates.
+#
+# Residual, stated rather than closed: within a single session the file is
+# unbounded. Bounding it live needs a second process or a poll loop around
+# `wait`, and `wait` is what makes the D-01 signal handling work — diagnostics do
+# not get to touch that. The file is removed when the driver exits, and only the
+# tail below ever reaches driver.log.
+SESSION_ERR_LINES=20
+SESSION_ERR_BYTES=4000
+session_err_open() {
+  [ "${LOOP_TESTING_DISABLE_SESSION_STDERR:-0}" != "1" ] || { SESSION_ERR=""; return 0; }
+  SESSION_ERR="$(mktemp "${TMPDIR:-/tmp}/loop-testing-session-err.XXXXXX" 2>/dev/null)" || SESSION_ERR=""
+  # Absolutise. mktemp honours a RELATIVE $TMPDIR, and this path is opened by the
+  # subshell AFTER `cd "$PROJECT"`, where a relative one names a different place
+  # or nothing at all. The driver's own cwd never changes, so $PWD is the anchor.
+  case "$SESSION_ERR" in ''|/*) ;; *) SESSION_ERR="$PWD/$SESSION_ERR" ;; esac
+  # An unwritable $TMPDIR (read-only host, 0500 dir) costs the capture and
+  # nothing else: SESSION_ERR is "" and the session redirects to /dev/null
+  # exactly as it did before this feature existed.
+  return 0
+}
+session_err_redact() {
+  # Order matters: specific shapes first, so a partially masked value cannot
+  # re-match. Case is spelled out rather than using a `I` flag — BSD sed has no
+  # such flag, and both drivers must run on macOS.
+  local q="'" dq='"'
+  sed -E \
+    -e 's/(sk-[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+/\1***REDACTED***/g' \
+    -e 's/(gh[pousr]_)[A-Za-z0-9]{8,}/\1***REDACTED***/g' \
+    -e 's/(xox[baprs]-)[A-Za-z0-9-]{8,}/\1***REDACTED***/g' \
+    -e 's/AKIA[0-9A-Z]{16}/AKIA***REDACTED***/g' \
+    `# userinfo in a URL: https://ci-bot:glpat-…@host` \
+    -e "s#(://[^/[:space:]:@]+:)[^@[:space:]/]+@#\\1***REDACTED***@#g" \
+    `# any whitespace after the scheme word, not a literal space (a TAB got through)` \
+    -e 's#([Bb]earer[[:space:]]+)[A-Za-z0-9._~+/-]{8,}=*#\1***REDACTED***#g' \
+    `# Authorization: take the REST OF THE LINE past an optional scheme word.` \
+    `# Taking the next token instead redacted "Basic" and published the base64.` \
+    -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*([A-Za-z]+[[:space:]]+)?).*/\1***REDACTED***/' \
+    `# name=value whose NAME says secret/token/password/key. Three bounds, each` \
+    `# one a defect the pulled round shipped: the word must START at a` \
+    `# non-alphanumeric boundary (it matched 'key' inside 'monKEY'), it must END` \
+    `# at one (inside 'KEYboard'), and the value must be 10+ characters (it took` \
+    `# ANY value, so 'token: expected ;' became 'token: ***REDACTED***' — the` \
+    `# feature deleting the diagnostics it exists to deliver). Glued compounds` \
+    `# that really are key names (apikey, authkey, accesskey…) are listed rather` \
+    `# than inferred; the cost is a glued SUFFIX like keyId=, which is an` \
+    `# identifier far more often than a credential, and which the 32-char rule` \
+    `# below still catches when the value is opaque.` \
+    -e "s#(^|[^A-Za-z0-9])([Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|([Aa][Pp][Ii]|[Aa][Uu][Tt][Hh]|[Aa][Cc][Cc][Ee][Ss][Ss]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee])?[Kk][Ee][Yy])(([_.-][A-Za-z0-9_.-]*)?[$dq$q]?[[:space:]]*[:=][[:space:]]*[$dq$q]?)[A-Za-z0-9._~+/=-]{10,}#\\1\\2\\4***REDACTED***#g" \
+    `# last resort: an unlabelled opaque run. 32, not 24: at 24 it ate ordinary` \
+    `# path segments and branch names out of the diagnostics this exists to keep.` \
+    -e 's#[A-Za-z0-9_+=-]{32,}#***REDACTED***#g' 2>/dev/null
+}
+session_err_log() { # <session-number>
+  [ -n "$SESSION_ERR" ] || return 0
+  # No wait, no poll: `wait` has already returned, so the session's own writes are
+  # complete and in the file. A background grandchild still holding fd 2 keeps
+  # appending, and is simply not waited for — the first attempt's 2s-per-session
+  # wait for a pipe EOF cost the most on exactly the sessions most likely to have
+  # failed.
+  [ -s "$SESSION_ERR" ] || return 0
+  log_line "session $1 stderr (last $SESSION_ERR_LINES lines, redacted — best effort, not a guarantee):"
+  # Bounded twice: bytes first, so one runaway line cannot be read whole.
+  tail -c "$SESSION_ERR_BYTES" "$SESSION_ERR" 2>/dev/null | tail -n "$SESSION_ERR_LINES" 2>/dev/null \
+    | session_err_redact \
+    | while IFS= read -r eline || [ -n "$eline" ]; do log_line "  | $eline"; done
+  return 0
+}
+session_err_open
+
 summary_exit() { # code, verdict
   # round via round_of (normalized), not the raw field — parity with unattended-codex.sh
   # and with the per-session log lines below, which already use round_of.
@@ -474,15 +566,21 @@ while true; do
   # stdin and dispositions the old foreground subshell gave it. The output
   # redirections stay on the exec'd command rather than the subshell, so a
   # failing `cd "$PROJECT"` still says so.
+  # Capture off (or unavailable) resolves to /dev/null — the device node itself,
+  # opened O_TRUNC, which is a no-op on it. Nothing derives a second path from
+  # this value, which is what makes the opt-out incapable of costing the session
+  # its stderr reader (audit D-05, 98095b7 CRITICAL).
+  ERR_TARGET=/dev/null
+  [ -n "$SESSION_ERR" ] && ERR_TARGET="$SESSION_ERR"
   if [ -n "$TIMEOUT_BIN" ]; then
     ( trap - INT QUIT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>&1 ) \
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>"$ERR_TARGET" ) \
       <&0 &
   else
     ( trap - INT QUIT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>&1 ) \
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>"$ERR_TARGET" ) \
       <&0 &
   fi
   CHILD=$!
@@ -496,6 +594,7 @@ while true; do
   cur_status="$(state_field status)"; [ -n "$cur_status" ] || cur_status="?"
   cur_sig="$(progress_sig)"
   log_line "session $session: exit=$rc round=$cur_round issues=$cur_issues status=$cur_status sig=$cur_sig"
+  session_err_log "$session"
 
   # C9: a session that didn't even create STATE.md made no progress and resuming
   # can't help — fail fast instead of waiting out the 2-session no-progress window.
