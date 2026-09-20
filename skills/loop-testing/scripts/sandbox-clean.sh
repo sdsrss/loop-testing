@@ -228,7 +228,17 @@ wt_ownership() {
   # command must never be mistaken for an ownership verdict — so there are none.
   nl='
 '
-  list="$(git -C "$TOP" worktree list --porcelain 2>/dev/null)$nl"
+  # The one external command left on this path, and it can fail like any other:
+  # an unreadable or locked .git/worktrees, a corrupted admin entry, a fork that
+  # cannot allocate. Its empty output used to flow straight into the match below
+  # and come out as `absent` — a live worktree reported "already gone", purge
+  # closing with exit 0 over a sandbox still standing (audit S-04). A failed
+  # command is not a verdict: `unknown` is, and every caller already treats it as
+  # "cannot tell, so touch nothing".
+  if ! list="$(git -C "$TOP" worktree list --porcelain 2>/dev/null)"; then
+    printf 'unknown'; return
+  fi
+  list="$list$nl"
   case "$nl$list" in
     *"${nl}worktree $p${nl}"*) : ;;
     *) printf 'absent'; return ;;
@@ -329,8 +339,16 @@ fi
 WT_KEPT=0   # set when the worktree was deliberately left standing
 if [ -n "$CREATED_WORKTREE" ]; then
   # Guard against ever removing the repo itself, / or $HOME.
+  # `${HOME:-}`, not `$HOME`: this script runs under `set -u`, and a bare
+  # reference is a fatal unbound-variable error wherever HOME is not exported —
+  # cron, a systemd unit without `User=`, `env -i`, a container entrypoint. That
+  # killed the teardown at this line, BEFORE the worktree was removed and before
+  # `.active` was disarmed, so a guard against deleting $HOME cost the whole
+  # cleanup exactly when $HOME did not exist (audit S-05). An undefined HOME
+  # contributes an empty pattern, which cannot match the non-empty path the
+  # `[ -n "$CREATED_WORKTREE" ]` above already guarantees.
   case "$CREATED_WORKTREE" in
-    ""|"/"|"$HOME"|"$TOP")
+    ""|"/"|"${HOME:-}"|"$TOP")
       echo_info "refusing to remove suspicious worktree path: $CREATED_WORKTREE" ;;
     *)
       WT_STATE="$(wt_ownership "$CREATED_WORKTREE" "$WORKTREE_STAMP" "$SANDBOX_BRANCH")"
