@@ -20,4 +20,4 @@ na: 0
 cases_this_round: 0
 ```
 
-> `cases_this_round` 为本轮实际执行的用例数；收敛轮要求不得明显低于此前轮次（防「少测凑零新增」）。
+> `cases_this_round` 为本轮实际执行的用例数。**此处是本轮的工作副本**：收敛判据读的是各轮 `runs/round-N.md` 里的同名字段（`references/exit-and-report.md` §1 判据 7 —— 本轮不得低于此前各轮最大值的 80%）。轮末必须把这个数字与本轮 `runs/round-N.md` 对齐，冲突时以轮日志为准。
