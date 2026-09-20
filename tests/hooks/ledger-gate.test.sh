@@ -335,18 +335,24 @@ run_nopy "$WS20" "$json"; assert_rc $? 0 "no python3: downgrade still allowed (r
 json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-002 | P1 | VERIFIED | x\" >> docs/looptesting/ISSUES.md.bak"}}'
 run_nopy "$WS20" "$json"; assert_rc $? 0 "no python3: ISSUES.md.bak is not the ledger (regex leg)"
 
-# 37. Fail-open: shell the lexer REJECTS must be allowed, not judged on a guess.
-#     The shell would not run these either, so a deny would be an accusation
-#     aimed at a typo. (Without python3 there is no lexer and the regex leg
-#     decides — case 36 covers that path.)
+# 37. Shell the lexer REJECTS goes to the regex leg, not to an automatic allow —
+#     see the round-4 block below for why (bash runs most of these). It must
+#     still never crash, and a non-forgery shape must not draw a deny.
 for c in \
   "echo \\\"unbalanced quote >> docs/looptesting/ISSUES.md" \
-  "sed -i 's/a/VERIFIED/ docs/looptesting/ISSUES.md" \
-  "sed -i 's/FIXED_UNVERIFIED/VERIFIED/ docs/looptesting/ISSUES.md" \
   "echo VERIFIED >> docs/looptesting/ISSUES.md \\\\" \
 ; do
   run_ledger "$WS20" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}"
-  assert_rc $? 0 "unlexable shell -> allow, never accuse: $c"
+  assert_rc $? 0 "unlexable, no forgery to see -> allow: $c"
+done
+# A forgery shape with an unterminated quote is denied by the regex leg. bash
+# exits non-zero on it too, so the model has to fix the command either way.
+for c in \
+  "sed -i 's/a/VERIFIED/ docs/looptesting/ISSUES.md" \
+  "sed -i 's/FIXED_UNVERIFIED/VERIFIED/ docs/looptesting/ISSUES.md" \
+; do
+  run_ledger "$WS20" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}"
+  assert_rc $? 2 "unlexable in-place forgery -> regex leg denies: $c"
 done
 # Lexable but with the VERB computed at runtime: unresolved, so the regex leg is
 # consulted and may still deny. Either answer is defensible; neither may crash.
@@ -392,5 +398,59 @@ json='{"tool_name":"Bash","tool_input":{"command":"echo a\u0000b"}}'
 err=$( cd "$WS24" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" 2>&1 >/dev/null ); rc=$?
 assert_rc $rc 0 "JSON-escaped NUL -> fail open"
 assert_eq "" "$err" "JSON-escaped NUL -> no warning on stderr"
+
+# ── Review round 4. Unlexable does NOT mean unrunnable: clearing `commenters` is
+#    what lets a hash-delimited sed script through, and it also means an
+#    apostrophe in a trailing comment or a heredoc body reads as an unbalanced
+#    quote. bash runs all of these and they really do write VERIFIED, so a lex
+#    failure falls back to the regex leg instead of allowing outright. ──
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"' >> docs/looptesting/ISSUES.md # it'"'"'s fine"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "unlexable: append with an apostrophe in a trailing comment -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md # doesn'"'"'t matter"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "unlexable: in-place flip with an apostrophe in a trailing comment -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"cat >> docs/looptesting/ISSUES.md <<EOF\n### ISSUE-002 | P1 | VERIFIED | doesn'"'"'t repro\nEOF\n"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "unlexable: heredoc body with an apostrophe -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"printf '"'"'%s\\n'"'"' $'"'"'### ISSUE-002 | P1 | VERIFIED | don\\'"'"'t'"'"' >> docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "unlexable: \$'...' with an escaped quote -> deny"
+# …and the reads that carry the same apostrophes stay allowed, because the regex
+# leg is target-bound: a read is not a write however it is punctuated.
+json='{"tool_name":"Bash","tool_input":{"command":"grep -v '"'"'VERIFIED'"'"' docs/looptesting/ISSUES.md # doesn'"'"'t matter"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "unlexable read: grep with an apostrophe in a comment -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"cat >> docs/looptesting/runs/round-1.md <<EOF\nreplayed ISSUE-002: it doesn'"'"'t crash now, VERIFIED\nEOF\n"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "unlexable: heredoc appending a replay line to a ROUND LOG -> allow"
+
+# `tee` is in-place too. The truncate-vs-read race resolves in the writer's
+# favour at any ledger size sed can buffer in one read, i.e. every real ledger.
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "tee: mass flip through a pipeline, no ID -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/VERIFIED/OPEN/'"'"' docs/looptesting/ISSUES.md | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "tee: downgrade through a pipeline -> allow"
+
+# Pipeline text must not pick up a FILTER's pattern. Dropping verified rows with
+# grep -v is the ordinary way to do it, and it was drawing the accusation.
+json='{"tool_name":"Bash","tool_input":{"command":"grep -v '"'"'VERIFIED'"'"' docs/looptesting/ISSUES.md | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "grep -v VERIFIED | sponge -> allow (filter pattern is not written text)"
+json='{"tool_name":"Bash","tool_input":{"command":"cat docs/looptesting/ISSUES.md | grep -v VERIFIED | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "cat | grep -v VERIFIED | sponge -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"grep -v '"'"'VERIFIED'"'"' docs/looptesting/ISSUES.md | tee docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "grep -v VERIFIED | tee -> allow"
+# Control: a non-filter verb in the pipeline still supplies the forgery text.
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | grep -v nothing | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sed forgery upstream of a filter -> still denied"
+
+# ruby downgrades read as match positions too (`sub(/VERIFIED/, "OPEN")`).
+json='{"tool_name":"Bash","tool_input":{"command":"ruby -i -pe '"'"'sub(/VERIFIED/,\"OPEN\")'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "ruby sub(/VERIFIED/,\"OPEN\") downgrade -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"ruby -i -pe '"'"'gsub(/FIXED_UNVERIFIED/, \"VERIFIED\")'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "ruby gsub introducing VERIFIED -> still denied"
+
+# The replay lookup matched a footprint by SUBSTRING, so a truncated ID rode on a
+# longer one: ISSUE-01 passed on ISSUE-012's replay record.
+WS25=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL" "$WS20" "$WS21" "$WS22" "$WS23" "$NOPY" "$WS24" "$WS25"' EXIT
+echo "replayed ISSUE-012: repro -> pass" > "$WS25/docs/looptesting/runs/round-1.md"
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-01 | P1 | VERIFIED | x\" >> docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS25" "$json"; assert_rc $? 2 "ID prefix must not ride on a longer ID's replay record"
+json='{"tool_name":"Bash","tool_input":{"command":"echo \"### ISSUE-012 | P1 | VERIFIED | x\" >> docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS25" "$json"; assert_rc $? 0 "control: the ID that really has the replay record -> allow"
 
 report "ledger-gate.test.sh"

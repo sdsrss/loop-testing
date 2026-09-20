@@ -32,11 +32,10 @@
 #     knowledge (`mv`, `cp`, `dd`, `install`, `truncate`);
 #   * a path computed at runtime — a variable, a command substitution, a glob —
 #     which is reported as unresolved and never guessed at;
-#   * a command past the length cap falls back to the regex leg below, which is
-#     weaker (its in-place arm still wants the flag and the path in one unbroken
-#     span). Without python3 that leg is all there is. A command the lexer
-#     REJECTS is different: the shell would not run it either, so it is allowed
-#     outright rather than judged on a guess.
+#   * a command past the length cap, or one the lexer REJECTS (a command the
+#     shell frequently still runs — see the fallback leg), falls back to the
+#     regex leg below, which is weaker: its in-place arm still wants the flag and
+#     the path in one unbroken span. Without python3 that leg is all there is.
 #   * an in-place script supplied by `-f scriptfile`, whose text is not in the
 #     command;
 #   * a fake replay line written to a round log first — the original design
@@ -192,17 +191,27 @@ try:
             elif unres(r): UN=1
         if verb in ("tee","sponge"):
             for o in ops:
-                # sponge soaks stdin and REPLACES the file, so it reaches every
-                # existing row exactly as `sed -i` does — the no-ID rule has to
-                # cover it. `tee` is not marked in-place: it truncates before the
-                # pipeline reads, which is the whole reason sponge exists.
-                if norm(o): w=1; ip=ip or (verb=="sponge")
+                # Both replace the whole file from stdin, so both reach every
+                # existing row exactly as `sed -i` does and the no-ID rule has to
+                # cover them. tee races its own pipeline (it truncates while the
+                # upstream reads), but at any size the reader buffers in one go —
+                # every real ledger — the race resolves for the writer and the
+                # flip lands. Measured, not assumed.
+                if norm(o): w=1; ip=1
                 elif unres(o): UN=1
         if verb in ("sed","gsed","perl","ruby") and any(isip(f) for f in flags):
             for o in ops:
                 if norm(o): w=1; ip=1
                 elif unres(o): UN=1
-        info.append((w,ip,ops))
+        # A pure FILTER never turns its own arguments into file content: a grep
+        # pattern, a sort key, a head count are all selectors. Widening the text
+        # of a write to its pipeline would otherwise read `grep -v VERIFIED` as
+        # the forgery it is removing — the ordinary way to drop verified rows,
+        # drawing the accusation this design exists to avoid. Unknown verbs DO
+        # contribute.
+        FILTER=("grep","egrep","fgrep","rg","ag","ack","head","tail","sort",
+                "uniq","cut","wc","cat","nl","tac","rev","column","comm","join")
+        info.append((w,ip,[] if verb in FILTER else ops))
     # Text of a write = the operands of its whole PIPELINE, not of its own segment:
     # in `sed s/…/VERIFIED/ ledger | sponge ledger` the substitution sits one
     # segment upstream of the verb that writes. Only pipes join; `;` and `&&` do
@@ -222,9 +231,9 @@ try:
     print("LG_TEXT=%s" % shlex.quote("\n".join(text)))
     print("LG_OK=1")
 except Exception:
-    # Unlexable (an unbalanced quote, a dangling escape): this is not a command
-    # the shell would run either. Say so, and let the caller ALLOW rather than
-    # hand a guess to the regex leg and accuse on it.
+    # Unlexable (an unbalanced quote, a dangling escape). The shell very often
+    # runs these anyway — an apostrophe inside a comment or a heredoc body is
+    # ordinary English — so the caller falls back to the regex leg.
     print("LG_LEXFAIL=1")
 ' 2>/dev/null) || LEXED=""
       fi
@@ -241,9 +250,15 @@ except Exception:
       fi
       # ---- fallback leg: no python3, lexer refused, capped, or an unresolved
       # target. Weaker (its in-place arm still wants the flag and the path in one
-      # unbroken span) but target-bound, so it never denies a plain read. ----
-      if [ "$TARGETS_LEDGER" -eq 0 ] && [ "$LG_LEXFAIL" != "1" ] \
-         && { [ "$LG_OK" != "1" ] || [ "$LG_CAPPED" = "1" ] || [ "$LG_UNRESOLVED" = "1" ]; }; then
+      # unbroken span) but target-bound, so it never denies a plain read.
+      # A command the lexer rejects is FREQUENTLY still a command the shell runs:
+      # clearing `commenters` is what lets a hash-delimited sed script through,
+      # and it also makes an apostrophe in a trailing comment or a heredoc body
+      # read as an unbalanced quote. `… >> ISSUES.md # it's fine` and a heredoc
+      # whose body says "doesn't repro" both throw here and both really append.
+      # So a lex failure comes here rather than being allowed outright. ----
+      if [ "$TARGETS_LEDGER" -eq 0 ] \
+         && { [ "$LG_OK" != "1" ] || [ "$LG_LEXFAIL" = "1" ] || [ "$LG_CAPPED" = "1" ] || [ "$LG_UNRESOLVED" = "1" ]; }; then
         if [ "$ARMED" = "1" ]; then LP='(docs/looptesting/)?ISSUES\.md'; else LP='docs/looptesting/ISSUES\.md'; fi
         WB='(^|[^[:alnum:]_])'
         # Whole-token match: ISSUES.md.bak is a different file (`\b` is avoided —
@@ -359,8 +374,8 @@ introduces_verified() {
     -e "s${d}(^|[^A-Za-z_])[sy]#([^#]*)#([^#]*)#${d} \\3 ${d}g" \
     -e "s${d}(^|[^A-Za-z_])[sy],([^,]*),([^,]*),${d} \\3 ${d}g" \
     -e "s${d}(^|[^A-Za-z_])[sy]\\|([^|]*)\\|([^|]*)\\|${d} \\3 ${d}g" \
-    -e "s${d}/[^/]*VERIFIED[^/]*/([dp!}'\"]|\$)${d} ${d}g" \
-    -e "s${d}#[^#]*VERIFIED[^#]*#([dp!}'\"]|\$)${d} ${d}g" \
+    -e "s${d}/[^/]*VERIFIED[^/]*/([dp!},]|['\"]|\$)${d} ${d}g" \
+    -e "s${d}#[^#]*VERIFIED[^#]*#([dp!},]|['\"]|\$)${d} ${d}g" \
     2>/dev/null) || x="$1"
   printf '%s\n' "$x" | grep -qawE 'VERIFIED'
 }
@@ -376,9 +391,11 @@ fi
 [ -n "$IDS" ] || exit 0   # nothing marked VERIFIED, or ID unresolvable -> allow
 
 # Deny if a to-be-VERIFIED ID has zero footprint across all round logs.
+# The ID must appear as a WHOLE id: a substring match let a truncated one ride on
+# a longer sibling, so ISSUE-01 passed on ISSUE-012's replay record.
 missing=""
 for id in $IDS; do
-  if ! grep -rqaF "$id" "$RUNS_DIR" 2>/dev/null; then
+  if ! grep -rqaE "(^|[^A-Za-z0-9_-])${id}([^0-9]|\$)" "$RUNS_DIR" 2>/dev/null; then
     missing="$missing $id"
   fi
 done
