@@ -185,16 +185,36 @@ other. Known credential shapes are masked first: `sk-…`, `ghp_…`, `xox…`, 
 `Bearer …`, the whole value after `Authorization:`, the userinfo in a
 `https://user:pass@host` URL, the value of any `name=value` or `"name": "value"` whose name
 contains secret/token/password/key, and unlabelled opaque runs of 32 characters or more.
-**That masking is best effort, not a guarantee**: it matches shapes, so a secret in a form
-it does not know reaches the file. Two bounds on the `name=value` rule are worth knowing
-because they are deliberate holes: the name has to be a whole word (`monkey:` and
-`keyboard:` are not key names, and neither is a glued suffix like `keyId=`), and the value
-has to be at least 10 characters (`token: expected ';'` is a parser error, not a
-credential). `driver.log` is in the evidence directory you are invited to read and attach,
-so if that trade is not one you want, set `LOOP_TESTING_DISABLE_SESSION_STDERR=1` and the
-session's stderr goes back to `/dev/null`. Within a single session the capture file is not
-size-bounded; it lives in `$TMPDIR`, is truncated at the start of every session and removed
-when the driver exits, and only the tail above ever reaches `driver.log`.
+lowerCamelCase field names are covered by a rule of their own (`accessToken=`,
+`clientSecret=`, `dbPassword=`), as is a quoted `"authorization": "Basic …"` inside a JSON
+body.
+
+**That masking is best effort, not a guarantee**, and the holes below are deliberate rather
+than unknown — every one of them is a place where masking more would delete the diagnostics
+this feature exists to deliver, and they were measured, not guessed:
+
+- **A value under 10 characters after a credential-shaped name is not masked**, because
+  `token: expected ';'` is a parser error. The same floor means `token: unexpected end of
+  input` loses the word `unexpected`.
+- **`keyId=`, `AccessToken=` and `slacktoken=` are not recognised as credential names** —
+  a glued suffix, an UpperCamelCase name and a lowercase glued name respectively. The
+  32-character fallback still catches them when the value is opaque enough.
+- **A lowerCamelCase method name is**, so `Tokenizer.readToken: <long value>` is masked.
+  Hyphenated CSS spec names (`ident-token:`, `delim-token:`) are masked for the same reason.
+- **An unlabelled 40-character AWS secret key is not masked.** Its slashes split it below
+  the fallback's threshold, and adding `/` to that threshold turns every absolute path in
+  every `ENOENT` and stack frame into one redacted run.
+- **A single line longer than 4000 bytes is dropped, not excerpted**, and the log says so.
+  Excerpting it published 18 characters of a credential whose label the cut had removed.
+
+`driver.log` is in the evidence directory you are invited to read and attach, so if that
+trade is not one you want, set `LOOP_TESTING_DISABLE_SESSION_STDERR=1` and the session's
+stderr goes back to `/dev/null`. Each session gets its own capture file in `$TMPDIR`, removed
+as soon as its tail has been logged; within one session that file is not size-bounded. It is
+also **not** redacted — masking happens on the way into `driver.log` — which matters in one
+case: if a session outlives `SIGKILL` during shutdown, the driver keeps that file instead of
+deleting it, and names it on stderr, because it is the only record of what the surviving
+full-permission session was doing.
 
 **Permission model — read before the first headless run.** Both drivers launch the agent
 with every permission prompt disabled: `claude -p … --permission-mode bypassPermissions`

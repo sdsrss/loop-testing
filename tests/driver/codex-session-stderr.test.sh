@@ -97,23 +97,79 @@ assert_file_contains "$WS8/$LOG" "session 1: exit=0" "an unwritable TMPDIR costs
 #    rules — not the value floor — are what each line proves.
 WS9=$(mk_proj); CLEAN="$CLEAN $WS9"
 stub=$(write_stub "$WS9"); write_state "$WS9" RUNNING 0
-FP=$(printf 'monkey: eating_all_the_bananas\nkeyboard: /dev/input/by-id/usb-kbd-event\ntoken: expected %s;%s at line 42\n' "'" "'")
+FP=$(printf 'monkey: eating_all_the_bananas\nkeyboard: /dev/input/by-id/usb-kbd-event\ntoken: expected %s;%s at line 42\nsecretary: Jane Smith Esquire III\n' "'" "'")
 STUB_STDERR="$FP" STUB_EXIT=1 \
   bash "$CODEX_DRIVER" --project "$WS9" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
 assert_file_contains "$WS9/$LOG" "monkey: eating_all_the_bananas"  "'monkey' + a long value is not a key in this copy (start boundary)"
 assert_file_contains "$WS9/$LOG" "/dev/input/by-id/usb-kbd-event"  "'keyboard' + a long value is not a key in this copy (end boundary)"
 assert_file_contains "$WS9/$LOG" "token: expected ';'"             "a parser error after 'token:' survives in this copy too"
+assert_file_contains "$WS9/$LOG" "secretary: Jane Smith Esquire III" "'secretary' is not a secret in this copy (end boundary alone)"
 
 # J. and the true positives it must still mask.
 WS10=$(mk_proj); CLEAN="$CLEAN $WS10"
 stub=$(write_stub "$WS10"); write_state "$WS10" RUNNING 0
-TP=$(printf 'call failed X-Api-Key: deadbeefdeadbeefdeadbeef\nheader Authorization: Basic dXNlcjpwYXNzd29yZA==\nenv AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIbPxRfiCYEXAMPLEKEY rejected\nconfig apikey=zyxwvu9876543210 refused\n')
+TP=$(printf 'call failed X-Api-Key: deadbeefdeadbeefdeadbeef\nheader Authorization: Basic dXNlcjpwYXNzd29yZA==\nenv AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY rejected\nconfig apikey=zyxwvu9876543210 refused\nbody {\"accessToken\": \"aaaaaaaaaa1111111111\"} denied\nenv dbPassword=cccccccccc3333333333 denied\n')
 STUB_STDERR="$TP" STUB_EXIT=1 \
   bash "$CODEX_DRIVER" --project "$WS10" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
 assert_file_lacks    "$WS10/$LOG" "deadbeefdeadbeefdeadbeef"        "X-Api-Key's value is masked in this copy"
 assert_file_lacks    "$WS10/$LOG" "dXNlcjpwYXNzd29yZA=="            "Authorization: takes the rest of the line in this copy"
-assert_file_lacks    "$WS10/$LOG" "wJalrXUtnFEMIbPxRfiCYEXAMPLEKEY" "AWS_SECRET_ACCESS_KEY's value is masked in this copy"
+assert_file_lacks    "$WS10/$LOG" "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" "AWS_SECRET_ACCESS_KEY's value is masked in this copy"
 assert_file_contains "$WS10/$LOG" "rejected"                        "and the verdict after it survives"
 assert_file_lacks    "$WS10/$LOG" "zyxwvu9876543210"                "a glued 'apikey=' is still masked in this copy (listed prefix)"
+assert_file_lacks    "$WS10/$LOG" "aaaaaaaaaa1111111111"            "camelCase accessToken is masked in this copy too"
+assert_file_lacks    "$WS10/$LOG" "cccccccccc3333333333"            "camelCase dbPassword is masked in this copy too"
+assert_file_contains "$WS10/$LOG" "denied"                          "and the verdicts after those survive"
+
+# K. one file per session, as a property. Reusing one file and relying on the
+#    redirect's O_TRUNC leaves every other case in this suite green — O_TRUNC
+#    resets SIZE, not the OFFSET of an already-open file description, so a
+#    grandchild holding fd 2 from session 1 writes into session 2's file at its
+#    stale offset and pushes session 2's own error out of the tail window.
+WS11=$(mk_proj); CLEAN="$CLEAN $WS11"
+stub=$(write_stub "$WS11"); write_state "$WS11" RUNNING 0
+STUB_GRANDCHILD=1 \
+  bash "$CODEX_DRIVER" --project "$WS11" --codex-bin "$stub" --no-protect --max-sessions 2 >/dev/null 2>&1
+assert_file_contains "$WS11/$LOG" "THE REAL ERROR OF SESSION 2 WAS AN EXPIRED KEY" \
+  "session 2's own stderr survives a session-1 grandchild holding fd 2"
+assert_file_lacks    "$WS11/$LOG" "LATE WRITE FROM SESSION ONE GRANDCHILD" \
+  "and session 1's late write is not filed under session 2"
+[ -f "$WS11/gc-done" ] && PASS=$((PASS+1)) \
+  || { FAIL=$((FAIL+1)); echo "  FAIL: the grandchild never wrote — case K proved nothing (self-probe)" >&2; }
+
+# L. the byte cap amputates labels: a credential straddling 4000 bytes loses its
+#    `"api_key":"` before any rule sees it. The partial first line is dropped.
+WS12=$(mk_proj); CLEAN="$CLEAN $WS12"
+stub=$(write_stub "$WS12"); write_state "$WS12" RUNNING 0
+STUB_STDERR_LONGLINE=1 STUB_EXIT=1 \
+  bash "$CODEX_DRIVER" --project "$WS12" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
+assert_file_lacks    "$WS12/$LOG" "6543210ABCDEFGHIJK" "a credential straddling the byte cap is not published as a fragment"
+assert_file_contains "$WS12/$LOG" "nothing shown"      "and the log says why it is empty"
+
+# M. lexer/parser vocabulary, in this copy too — lowercase glued names and
+#    UpperCamelCase class names must both survive the camelCase rule.
+WS13=$(mk_proj); CLEAN="$CLEAN $WS13"
+stub=$(write_stub "$WS13"); write_state "$WS13" RUNNING 0
+LX=$(printf 'nexttoken: IDENTIFIER_FOO\nSyntaxToken: unexpected_end_of_input\nHTMLToken: unexpected end of input\n')
+STUB_STDERR="$LX" STUB_EXIT=1 \
+  bash "$CODEX_DRIVER" --project "$WS13" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
+assert_file_contains "$WS13/$LOG" "nexttoken: IDENTIFIER_FOO"            "a lexer's lowercase 'nexttoken' survives in this copy"
+assert_file_contains "$WS13/$LOG" "SyntaxToken: unexpected_end_of_input" "an UpperCamelCase class name survives in this copy"
+assert_file_contains "$WS13/$LOG" "HTMLToken: unexpected end of input"   "and so does HTMLToken"
+
+# N. the quoted JSON authorization header — review's CRITICAL — in this copy.
+WS14=$(mk_proj); CLEAN="$CLEAN $WS14"
+stub=$(write_stub "$WS14"); write_state "$WS14" RUNNING 0
+STUB_STDERR='{"status":429,"headers":{"authorization":"Basic Y2ktYm90OnN1cGVyc2VjcmV0"},"retry_after":30}' STUB_EXIT=1 \
+  bash "$CODEX_DRIVER" --project "$WS14" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
+assert_file_lacks    "$WS14/$LOG" "Y2ktYm90OnN1cGVyc2VjcmV0" "a quoted JSON authorization header is masked in this copy"
+assert_file_contains "$WS14/$LOG" "retry_after"              "and the rest of the JSON survives"
+
+# O. the URL-userinfo rule, which this copy had no case for at all.
+WS15=$(mk_proj); CLEAN="$CLEAN $WS15"
+stub=$(write_stub "$WS15"); write_state "$WS15" RUNNING 0
+STUB_STDERR='fetch https://ci-bot:glpat-SECRETVALUE123@git.example.com/r failed' STUB_EXIT=1 \
+  bash "$CODEX_DRIVER" --project "$WS15" --codex-bin "$stub" --no-protect --max-sessions 1 >/dev/null 2>&1
+assert_file_lacks    "$WS15/$LOG" "glpat-SECRETVALUE123" "URL userinfo is masked in this copy too"
+assert_file_contains "$WS15/$LOG" "git.example.com"      "and the host it was failing against survives"
 
 report "codex-session-stderr.test.sh"

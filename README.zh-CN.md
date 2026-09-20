@@ -162,13 +162,28 @@ stderr 的最后 20 行(4000 字节)会以 `session N stderr:` 追加进 `driver
 加一句无进展,彼此无法区分。写入前先脱敏已知的凭据形态:`sk-…`、`ghp_…`、`xox…`、`AKIA…`、
 `Bearer …`、`Authorization:` 之后的整个值、`https://user:pass@host` 形式 URL 里的 userinfo、
 名字里含 secret/token/password/key 的 `name=value` 或 `"name": "value"` 的值,以及 32 字符以上
-无标签的不透明串。**该脱敏是尽力而为,不是保证**:它按形态匹配,不认识的形态会原样落盘。
-`name=value` 那条规则上有两个**有意留下的口子**,值得知道:名字必须是完整的词(`monkey:`、
-`keyboard:` 不是密钥名,`keyId=` 这种粘连后缀也不是),值至少 10 个字符(`token: expected ';'`
-是语法错误,不是凭据)。`driver.log` 就在那个建议你阅读并附给他人的证据目录里,如果你不接受这个
-取舍,设 `LOOP_TESTING_DISABLE_SESSION_STDERR=1`,会话 stderr 回到 `/dev/null`。单个会话内部
-这个捕获文件不限大小;它位于 `$TMPDIR`,每会话开始时清空、驱动退出时删除,只有上面那段尾巴会进
-`driver.log`。
+无标签的不透明串。小驼峰字段名另有一条专门规则(`accessToken=`、`clientSecret=`、
+`dbPassword=`),JSON 体里带引号的 `"authorization": "Basic …"` 同样覆盖。
+
+**该脱敏是尽力而为,不是保证**。下面这些口子是**有意留下的**,不是没想到——每一个都是「再多遮一点
+就会删掉本特性存在意义」的地方,且都是实测出来的:
+
+- **凭据式名字后面不足 10 个字符的值不遮**,因为 `token: expected ';'` 是语法错误。同一条下限
+  也意味着 `token: unexpected end of input` 会丢掉 `unexpected` 这个词。
+- **`keyId=`、`AccessToken=`、`slacktoken=` 不被当作密钥名**(粘连后缀、大驼峰、小写粘连)。
+  值足够不透明时仍由 32 字符兜底规则接住。
+- **小驼峰的方法名会被当作密钥名**,所以 `Tokenizer.readToken: <长值>` 会被遮;带连字符的 CSS
+  规范名(`ident-token:`、`delim-token:`)同理。
+- **无标签的 40 字符 AWS secret key 不遮**。它的斜杠把它切到兜底阈值以下,而把 `/` 并入阈值会让
+  每一条 `ENOENT` 和调用栈里的绝对路径都变成一整段 `***REDACTED***`。
+- **超过 4000 字节的单行整行丢弃,不做节选**,日志里会说明原因。节选它曾经把一个标签被切掉的凭据
+  泄漏了 18 个字符。
+
+`driver.log` 就在那个建议你阅读并附给他人的证据目录里,如果你不接受这个取舍,设
+`LOOP_TESTING_DISABLE_SESSION_STDERR=1`,会话 stderr 回到 `/dev/null`。每个会话有自己的捕获文件
+(位于 `$TMPDIR`),尾巴写进日志后立即删除;单个会话内部该文件不限大小。它**没有**脱敏——脱敏发生在
+写入 `driver.log` 的路上——这一点只在一种情况下重要:若某个会话在关停时连 `SIGKILL` 都没死,驱动会
+保留该文件而不是删掉它,并在 stderr 上报出路径,因为那是这个仍在运行的全权限会话唯一的记录。
 
 **权限模型——首次无头运行前必读。** 两个驱动都以**关闭全部权限确认**的方式启动 agent:
 `claude -p … --permission-mode bypassPermissions` 与 `codex exec -s danger-full-access`。

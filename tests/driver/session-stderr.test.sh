@@ -16,10 +16,16 @@
 # (Docker's default) the rename replaced the /dev/null device node with a
 # regular file holding the unredacted tail.
 #
-# So the capture is now a PLAIN FILE REDIRECT, `2>"$file"`, whose O_TRUNC is
-# itself the per-session truncator. There is no writer process, no .part, no
-# rename and nothing to wait for — cases D2 and D3 below exist to keep it that
-# way, and they are the two halves of that CRITICAL.
+# So the capture is now a PLAIN FILE REDIRECT, `2>"$file"`, into a FRESH file per
+# session. There is no writer process, no .part, no rename and nothing to wait
+# for — cases D2 and D3 are the two halves of that CRITICAL. The per-session file
+# is case K: reusing one file and leaning on the redirect's O_TRUNC passed every
+# other case here, because O_TRUNC resets SIZE and not the OFFSET of an
+# already-open fd.
+#
+# Cases I and J are the redaction corpus. Read the note on case I before adding
+# to it: two separate versions of these assertions have been green against the
+# very rule they named.
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
@@ -142,7 +148,7 @@ assert_file_contains "$WS9/$LOG" "session 1: exit=0" "an unwritable TMPDIR costs
 #    tested the floor. Every value below is 10+ characters for that reason.
 WS10=$(mk_proj); CLEAN="$CLEAN $WS10"
 stub=$(write_stub "$WS10"); write_state "$WS10" RUNNING 0
-FP=$(printf 'monkey: eating_all_the_bananas\nmonkeypatch: applied_to_module_alpha\nkeyboard: /dev/input/by-id/usb-kbd-event\ntoken: expected %s;%s at line 42\nmodule not found: ./src/keys.js\n' "'" "'")
+FP=$(printf 'monkey: eating_all_the_bananas\nmonkeypatch: applied_to_module_alpha\nkeyboard: /dev/input/by-id/usb-kbd-event\ntoken: expected %s;%s at line 42\nmodule not found: ./src/keys.js\nsecretary: Jane Smith Esquire III\n' "'" "'")
 STUB_STDERR="$FP" STUB_EXIT=1 \
   bash "$DRIVER" --project "$WS10" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
 # START boundary: 'key' preceded by a letter is not a key name.
@@ -154,13 +160,37 @@ assert_file_contains "$WS10/$LOG" "/dev/input/by-id/usb-kbd-event"   "'keyboard'
 # Value floor: the label IS a real one here, and the value is a parser message.
 assert_file_contains "$WS10/$LOG" "token: expected ';'"              "a parser error after 'token:' survives (value floor)"
 assert_file_contains "$WS10/$LOG" "./src/keys.js"                    "a path containing 'keys' is not a credential"
+# 'secret' has no start boundary (that is what closes the camelCase leaks), so
+# the END boundary is the only thing between 'secretary:' and a redaction.
+assert_file_contains "$WS10/$LOG" "secretary: Jane Smith Esquire III"  "'secretary' is not a secret (end boundary carries it alone)"
+
+# I2. LEXER AND PARSER VOCABULARY — the collision class that matters, and the one
+#     two rounds of these assertions missed by testing English instead. This
+#     feature exists to carry a failing agent's diagnostics, and a failing agent
+#     prints parser errors. Both halves of the case test are pinned here:
+#     lowercase glued names (a hand-written lexer's locals) must not match the
+#     camelCase rule, and UpperCamelCase names (real shipped class names —
+#     SyntaxToken, LexToken, HTMLToken, CommentToken) must not match it either.
+#     An [A-Za-z] prefix on that rule redacts all four of the latter; that was
+#     the reviewer's own recommendation and it failed on its own list.
+WS13=$(mk_proj); CLEAN="$CLEAN $WS13"
+stub=$(write_stub "$WS13"); write_state "$WS13" RUNNING 0
+LX=$(printf 'betoken: something_long_here\nnexttoken: IDENTIFIER_FOO\npeektoken: RBRACE_EXPECTED\nSyntaxToken: unexpected_end_of_input\nLexToken: NUMBER_LITERAL_42\nHTMLToken: unexpected end of input\n')
+STUB_STDERR="$LX" STUB_EXIT=1 \
+  bash "$DRIVER" --project "$WS13" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
+assert_file_contains "$WS13/$LOG" "betoken: something_long_here"    "'betoken' is English, not a token name"
+assert_file_contains "$WS13/$LOG" "nexttoken: IDENTIFIER_FOO"       "a lexer's lowercase 'nexttoken' is not a credential"
+assert_file_contains "$WS13/$LOG" "peektoken: RBRACE_EXPECTED"      "nor is 'peektoken'"
+assert_file_contains "$WS13/$LOG" "SyntaxToken: unexpected_end_of_input" "an UpperCamelCase class name is not a credential (lowercase-first rule)"
+assert_file_contains "$WS13/$LOG" "LexToken: NUMBER_LITERAL_42"     "nor is LexToken, whose value even carries digits"
+assert_file_contains "$WS13/$LOG" "HTMLToken: unexpected end of input" "nor HTMLToken, a real shipped class name"
 
 # J. redaction true positives, in the shapes a failing endpoint actually prints.
 #    Each line keeps a word of diagnostic around the secret, so the assertions
 #    below cannot pass by the whole line having been dropped.
 WS11=$(mk_proj); CLEAN="$CLEAN $WS11"
 stub=$(write_stub "$WS11"); write_state "$WS11" RUNNING 0
-TP=$(printf 'call failed X-Api-Key: deadbeefdeadbeefdeadbeef\nheader Authorization: Basic dXNlcjpwYXNzd29yZA==\nfetch https://ci-bot:glpat-SECRETVALUE123@git.example.com/r failed\nenv AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIbPxRfiCYEXAMPLEKEY rejected\nconfig apikey=zyxwvu9876543210 refused\n')
+TP=$(printf 'call failed X-Api-Key: deadbeefdeadbeefdeadbeef\nheader Authorization: Basic dXNlcjpwYXNzd29yZA==\nfetch https://ci-bot:glpat-SECRETVALUE123@git.example.com/r failed\nenv AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY rejected\nconfig apikey=zyxwvu9876543210 refused\nbody {"accessToken": "aaaaaaaaaa1111111111"} denied\nbody {"clientSecret": "bbbbbbbbbb2222222222"} denied\nenv dbPassword=cccccccccc3333333333 denied\n')
 STUB_STDERR="$TP" STUB_EXIT=1 \
   bash "$DRIVER" --project "$WS11" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
 assert_file_lacks    "$WS11/$LOG" "deadbeefdeadbeefdeadbeef"        "X-Api-Key's value is masked (boundary is '-', not a letter)"
@@ -168,11 +198,72 @@ assert_file_contains "$WS11/$LOG" "call failed"                     "and the lin
 assert_file_lacks    "$WS11/$LOG" "dXNlcjpwYXNzd29yZA=="            "Authorization: takes the rest of the line, not just the scheme word"
 assert_file_lacks    "$WS11/$LOG" "glpat-SECRETVALUE123"            "URL userinfo is masked"
 assert_file_contains "$WS11/$LOG" "git.example.com"                 "and the host it was failing against survives"
-assert_file_lacks    "$WS11/$LOG" "wJalrXUtnFEMIbPxRfiCYEXAMPLEKEY" "AWS_SECRET_ACCESS_KEY's value is masked"
+assert_file_lacks    "$WS11/$LOG" "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" "AWS_SECRET_ACCESS_KEY's value is masked"
 assert_file_contains "$WS11/$LOG" "rejected"                        "and the verdict after it survives"
 # The glued compounds are listed, not inferred: 'apikey' has no separator before
 # 'key', so the start-boundary rule would drop it without the explicit prefix.
 assert_file_lacks    "$WS11/$LOG" "zyxwvu9876543210"                "a glued 'apikey=' is still masked (listed prefix)"
 assert_file_contains "$WS11/$LOG" "refused"                         "and the verdict after that one survives too"
+# camelCase Token/Secret/Password. Review found twelve of these leaking because
+# the start boundary required a separator before the word and only 'key' had a
+# glued-name list. These three stand for the class; the rule that covers them
+# covers slackToken and npmToken too, which no list would have.
+assert_file_lacks    "$WS11/$LOG" "aaaaaaaaaa1111111111"            "camelCase accessToken is masked (no start boundary on token)"
+assert_file_lacks    "$WS11/$LOG" "bbbbbbbbbb2222222222"            "camelCase clientSecret is masked"
+assert_file_lacks    "$WS11/$LOG" "cccccccccc3333333333"            "camelCase dbPassword is masked"
+assert_file_contains "$WS11/$LOG" "denied"                          "and the verdicts after those survive"
+
+# J2. THE QUOTED Authorization HEADER — review's CRITICAL. Every JSON, Python-dict
+#     and Ruby-hash rendering puts a quote between the name and the colon, which
+#     the bare rule's literal ':' cannot match, and the base64 of a short
+#     credential pair is under the 32-character fallback. `base64 -d` on the
+#     value below gives ci-bot:supersecret. The Bearer form was always caught by
+#     its own rule, which is what made this easy to miss.
+#     The second assertion is the other half: stopping at the closing quote
+#     rather than running to end of line, so the rest of the JSON survives.
+WS14=$(mk_proj); CLEAN="$CLEAN $WS14"
+stub=$(write_stub "$WS14"); write_state "$WS14" RUNNING 0
+STUB_STDERR='{"status":429,"headers":{"authorization":"Basic Y2ktYm90OnN1cGVyc2VjcmV0"},"retry_after":30}' STUB_EXIT=1 \
+  bash "$DRIVER" --project "$WS14" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
+assert_file_lacks    "$WS14/$LOG" "Y2ktYm90OnN1cGVyc2VjcmV0" "a quoted JSON authorization header is masked (review CRITICAL)"
+assert_file_contains "$WS14/$LOG" "retry_after"              "and the rest of the JSON after it survives"
+
+# K. ONE FILE PER SESSION, tested as a property rather than as a flag. Reusing a
+#    single file and letting the redirect's O_TRUNC reset it passes every other
+#    case in this suite — reverting to a shared file left all 30 green, which is
+#    how this defect reached review. O_TRUNC resets the file's SIZE, not the
+#    OFFSET of an already-open file description: a grandchild that inherited fd 2
+#    from session 1 keeps writing at its old offset, so its output is filed under
+#    session 2 and, once that offset passes the 4000-byte window, session 2's own
+#    error is pushed out of the log altogether. That is the D-05 symptom produced
+#    by the D-05 fix, so it is asserted from both sides.
+WS12=$(mk_proj); CLEAN="$CLEAN $WS12"
+stub=$(write_stub "$WS12"); write_state "$WS12" RUNNING 0
+STUB_GRANDCHILD=1 \
+  bash "$DRIVER" --project "$WS12" --claude-bin "$stub" --max-sessions 2 >/dev/null 2>&1
+assert_file_contains "$WS12/$LOG" "THE REAL ERROR OF SESSION 2 WAS AN EXPIRED KEY" \
+  "session 2's own stderr survives a session-1 grandchild holding fd 2"
+assert_file_lacks    "$WS12/$LOG" "LATE WRITE FROM SESSION ONE GRANDCHILD" \
+  "and session 1's late write is not filed under session 2"
+# Self-probe. Both assertions above pass if the grandchild never wrote at all, so
+# without this the case can become a permanent no-op the day the timing shifts.
+[ -f "$WS12/gc-done" ] && PASS=$((PASS+1)) \
+  || { FAIL=$((FAIL+1)); echo "  FAIL: the grandchild never wrote — case K proved nothing (self-probe)" >&2; }
+
+# L. THE BYTE CAP AMPUTATES LABELS. `tail -c` cuts on a byte boundary BEFORE
+#    redaction runs, so a credential straddling 4000 bytes loses its `"api_key":"`
+#    label and reaches the rules as a bare alphanumeric run — under the 32-char
+#    fallback, with nothing to identify it. Review reproduced 18 of a 31-character
+#    secret reaching driver.log verbatim, with the filler after it masked so the
+#    line read as redacted. No rule fixes this; the partial first line is dropped
+#    instead. One 4091-byte line is the whole trigger.
+WS15=$(mk_proj); CLEAN="$CLEAN $WS15"
+stub=$(write_stub "$WS15"); write_state "$WS15" RUNNING 0
+STUB_STDERR_LONGLINE=1 STUB_EXIT=1 \
+  bash "$DRIVER" --project "$WS15" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
+# chars 14..31 of the canary — what the amputated cut published last time.
+assert_file_lacks    "$WS15/$LOG" "6543210ABCDEFGHIJK" "a credential straddling the byte cap is not published as a fragment"
+assert_file_lacks    "$WS15/$LOG" "LEAKCANARY"         "nor is any other part of it"
+assert_file_contains "$WS15/$LOG" "nothing shown"      "and the log says why it is empty rather than looking broken"
 
 report "session-stderr.test.sh"

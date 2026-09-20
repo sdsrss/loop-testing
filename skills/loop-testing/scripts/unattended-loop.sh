@@ -369,10 +369,25 @@ shutdown_handler() { # [exit-code]
   STOPPING=1
   stop_child
   release_lock_or_hold
-  # The capture file is this run's, and every exit path reaches here (EXIT routes
-  # through the same handler). There is no `.part` sibling to clean: the redirect
-  # writes the file directly, which is what makes the opt-out a plain /dev/null.
-  [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR"
+  # Whatever the CURRENT session left: the loop removes each session's file once
+  # it has been logged, so at most one is outstanding here. There is no `.part`
+  # sibling to clean — the redirect writes the file directly, which is what makes
+  # the opt-out a plain /dev/null. Inlined rather than calling session_err_close:
+  # the traps are installed above that definition, and a handler must not depend
+  # on a function that may not exist yet when a signal arrives early.
+  #
+  # AFTER release_lock_or_hold, and conditional on what it decided. On the
+  # CHILD_SURVIVED path that function deliberately KEEPS the lock and tells the
+  # user to go stop a full-permission session that outlived SIGKILL — and this
+  # capture is the only description of what that session was doing. Deleting it
+  # there deletes the evidence at the moment it is asked for, so it is kept and
+  # named instead. (Its bytes are not redacted: redaction happens on the way into
+  # driver.log, not into this file.)
+  if [ -n "$CHILD_SURVIVED" ] && [ -n "$SESSION_ERR" ]; then
+    echo "unattended-loop: keeping that session's stderr capture at $SESSION_ERR — it is the only record of what pid $CHILD_SURVIVED was doing, and it is NOT redacted. Delete it once you are done." >&2
+  elif [ -n "$SESSION_ERR" ]; then
+    rm -f "$SESSION_ERR"
+  fi
   SESSION_ERR=""
   STOP_DONE=1
   STOPPING=0
@@ -415,27 +430,52 @@ log_line() { printf '%s\n' "$1" >> "$DRIVER_LOG"; }
 # /dev/null.part, the writer exits, and the session's stderr pipe has no reader,
 # so every session died of SIGPIPE at round 0. Under root the rename REPLACED the
 # /dev/null device node with a regular file holding the unredacted tail. A plain
-# `2>"$file"` has no writer to lose, no path derived from the sink, and its
-# O_TRUNC is the per-session truncator: each session starts the file empty, so one
-# run holds at most one session's stderr and never accumulates.
+# `2>"$file"` has no writer to lose and no path derived from the sink.
 #
-# Residual, stated rather than closed: within a single session the file is
-# unbounded. Bounding it live needs a second process or a poll loop around
-# `wait`, and `wait` is what makes the D-01 signal handling work — diagnostics do
-# not get to touch that. The file is removed when the driver exits, and only the
-# tail below ever reaches driver.log.
+# A FRESH FILE PER SESSION, also deliberately. Reusing one file and letting the
+# redirect's O_TRUNC reset it looks equivalent and is not: O_TRUNC resets the
+# file's SIZE, never the OFFSET of an already-open file description. An agent that
+# leaves a background grandchild holding fd 2 — which this driver is built to
+# allow, see CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS below — keeps that offset into
+# the next session's file, so its late writes are filed under the next session
+# and, once the offset passes the tail window, push that session's own error out
+# of the log entirely. Reviewed and reproduced: session 2's expired-key message
+# was absent from driver.log, which is the D-05 symptom produced by the D-05 fix.
+# Per session, a grandchild keeps writing into its own session's (already
+# unlinked) file and cannot reach anyone else's.
+#
+# Residuals, stated rather than closed:
+#   - within a single session the file is unbounded. Bounding it live needs a
+#     second process or a poll loop around `wait`, and `wait` is what makes the
+#     D-01 signal handling work — diagnostics do not get to touch that.
+#   - N sessions with surviving grandchildren hold N unlinked, still-growing
+#     inodes instead of one. That is invisible disk in exchange for the silent
+#     data loss above: a capacity bug traded for a correctness one, knowingly.
 SESSION_ERR_LINES=20
 SESSION_ERR_BYTES=4000
 session_err_open() {
   [ "${LOOP_TESTING_DISABLE_SESSION_STDERR:-0}" != "1" ] || { SESSION_ERR=""; return 0; }
+  # ONE statement, on purpose. Bash runs traps between commands in the main
+  # shell, so a signal arriving during mktemp is queued until the assignment
+  # completes and shutdown_handler always sees the path it has to remove.
+  # Splitting creation from assignment — a helper that creates then echoes, a
+  # name parked in a scratch file — reopens that window.
   SESSION_ERR="$(mktemp "${TMPDIR:-/tmp}/loop-testing-session-err.XXXXXX" 2>/dev/null)" || SESSION_ERR=""
   # Absolutise. mktemp honours a RELATIVE $TMPDIR, and this path is opened by the
   # subshell AFTER `cd "$PROJECT"`, where a relative one names a different place
   # or nothing at all. The driver's own cwd never changes, so $PWD is the anchor.
   case "$SESSION_ERR" in ''|/*) ;; *) SESSION_ERR="$PWD/$SESSION_ERR" ;; esac
-  # An unwritable $TMPDIR (read-only host, 0500 dir) costs the capture and
-  # nothing else: SESSION_ERR is "" and the session redirects to /dev/null
-  # exactly as it did before this feature existed.
+  # An unwritable $TMPDIR (read-only host, 0500 dir, or a directory that went away
+  # mid-run) costs the capture and nothing else: SESSION_ERR is "" and the session
+  # redirects to /dev/null exactly as it did before this feature existed. Opening
+  # once per RUN instead got this wrong in the other direction — when the
+  # directory vanished, every later session failed its redirect and never
+  # launched the agent at all, reported as a bare exit=1.
+  return 0
+}
+session_err_close() {
+  [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR"
+  SESSION_ERR=""
   return 0
 }
 session_err_redact() {
@@ -452,9 +492,36 @@ session_err_redact() {
     -e "s#(://[^/[:space:]:@]+:)[^@[:space:]/]+@#\\1***REDACTED***@#g" \
     `# any whitespace after the scheme word, not a literal space (a TAB got through)` \
     -e 's#([Bb]earer[[:space:]]+)[A-Za-z0-9._~+/-]{8,}=*#\1***REDACTED***#g' \
+    `# Authorization, QUOTED form, before the bare one. Every JSON, Python-dict` \
+    `# and Ruby-hash rendering puts a quote between the name and the colon, which` \
+    `# the bare rule's literal ':' cannot match — review got 'ci-bot:supersecret'` \
+    `# back out of {"headers":{"authorization":"Basic …"}}, and the base64 of a` \
+    `# short credential pair is under the 32-char fallback. Stops at the closing` \
+    `# quote rather than running to end of line, so the rest of the JSON (status` \
+    `# codes, retry-after, the message itself) survives.` \
+    -e "s#([$dq$q][Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][$dq$q][[:space:]]*[:=][[:space:]]*[$dq$q])([A-Za-z]+[[:space:]]+)?[^$dq$q]*#\\1\\2***REDACTED***#g" \
     `# Authorization: take the REST OF THE LINE past an optional scheme word.` \
     `# Taking the next token instead redacted "Basic" and published the base64.` \
-    -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*([A-Za-z]+[[:space:]]+)?).*/\1***REDACTED***/' \
+    `# Rest-of-line is deliberate for the bare header form — the value IS the` \
+    `# rest — and costs any diagnostic printed after it on the same line.` \
+    -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*[:=][[:space:]]*([A-Za-z]+[[:space:]]+)?).*/\1***REDACTED***/' \
+    `# lowerCamelCase names, FIRST because it is the narrower rule: accessToken,` \
+    `# clientSecret, dbPassword. Review found twelve of these leaking past the` \
+    `# rule below — it wants a separator before the secret word and camelCase has` \
+    `# none. Structural rather than a list, so slackToken and npmToken match` \
+    `# without being named.` \
+    `# The case test is doing two jobs, both measured. The capital on Token/Secret` \
+    `# /Password separates 'accessToken=' from a lexer's 'nexttoken:', 'betoken:'` \
+    `# and 'peektoken:'. The LOWERCASE first letter separates it from a parser` \
+    `# CLASS name — SyntaxToken, LexToken, HTMLToken, CommentToken are all real` \
+    `# shipped types, and an [A-Za-z] prefix here redacted every one of their` \
+    `# diagnostics. Credential identifiers are lowerCamelCase fields; type names` \
+    `# are UpperCamelCase. That one character is the whole discriminator.` \
+    `# Residuals, measured: a lowerCamelCase METHOD name still matches` \
+    `# ('Tokenizer.readToken: <10+ chars>' is redacted), and in the other` \
+    `# direction an UpperCamelCase credential name (AccessToken=) or a lowercase` \
+    `# glued one (slacktoken=) is not caught here at all.` \
+    -e "s#(^|[^A-Za-z0-9])([a-z][A-Za-z0-9]*)(Token|Secret|Password)([$dq$q]?[[:space:]]*[:=][[:space:]]*[$dq$q]?)[A-Za-z0-9._~+/=-]{10,}#\\1\\2\\3\\4***REDACTED***#g" \
     `# name=value whose NAME says secret/token/password/key. Three bounds, each` \
     `# one a defect the pulled round shipped: the word must START at a` \
     `# non-alphanumeric boundary (it matched 'key' inside 'monKEY'), it must END` \
@@ -462,9 +529,15 @@ session_err_redact() {
     `# ANY value, so 'token: expected ;' became 'token: ***REDACTED***' — the` \
     `# feature deleting the diagnostics it exists to deliver). Glued compounds` \
     `# that really are key names (apikey, authkey, accesskey…) are listed rather` \
-    `# than inferred; the cost is a glued SUFFIX like keyId=, which is an` \
-    `# identifier far more often than a credential, and which the 32-char rule` \
-    `# below still catches when the value is opaque.` \
+    `# than inferred.` \
+    `# Known holes, measured and left open rather than chased: a glued SUFFIX` \
+    `# (keyId=) is an identifier more often than a credential; hyphenated CSS` \
+    `# spec names (ident-token:, delim-token:) satisfy the start boundary and are` \
+    `# redacted; and the 10-character floor sits between 'expected' (8) and` \
+    `# 'unexpected' (10), so 'token: unexpected end of input' loses one word.` \
+    `# Every floor that saves that word also lets an all-letter credential` \
+    `# through, and this file is attached to bug reports — over-redaction costs a` \
+    `# word, under-redaction costs a key.` \
     -e "s#(^|[^A-Za-z0-9])([Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|([Aa][Pp][Ii]|[Aa][Uu][Tt][Hh]|[Aa][Cc][Cc][Ee][Ss][Ss]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee])?[Kk][Ee][Yy])(([_.-][A-Za-z0-9_.-]*)?[$dq$q]?[[:space:]]*[:=][[:space:]]*[$dq$q]?)[A-Za-z0-9._~+/=-]{10,}#\\1\\2\\4***REDACTED***#g" \
     `# last resort: an unlabelled opaque run. 32, not 24: at 24 it ate ordinary` \
     `# path segments and branch names out of the diagnostics this exists to keep.` \
@@ -480,12 +553,35 @@ session_err_log() { # <session-number>
   [ -s "$SESSION_ERR" ] || return 0
   log_line "session $1 stderr (last $SESSION_ERR_LINES lines, redacted — best effort, not a guarantee):"
   # Bounded twice: bytes first, so one runaway line cannot be read whole.
-  tail -c "$SESSION_ERR_BYTES" "$SESSION_ERR" 2>/dev/null | tail -n "$SESSION_ERR_LINES" 2>/dev/null \
-    | session_err_redact \
-    | while IFS= read -r eline || [ -n "$eline" ]; do log_line "  | $eline"; done
+  #
+  # The byte cut lands mid-line, and it runs BEFORE redaction. A 4091-byte
+  # one-line HTTP dump with `"api_key":"…"` straddling 4000 bytes had its LABEL
+  # amputated by `tail -c`, so the rules below saw a bare 18-character run with
+  # nothing to identify it and passed it through verbatim — reproduced in review
+  # on both drivers, 18 of a 31-character secret published into driver.log, with
+  # the filler after it masked so the line read as redacted. No rule can fix
+  # that: the input was mutilated before any rule saw it. So when the cap
+  # actually truncated, the partial first line is dropped. The cost is at most
+  # one line of the OLDEST context; the alternative is publishing an arbitrary
+  # fragment of whatever straddled the boundary.
+  local sz body
+  sz=$(wc -c < "$SESSION_ERR" 2>/dev/null)
+  case "$sz" in ''|*[!0-9]*) sz=0 ;; esac
+  body=$({ if [ "$sz" -gt "$SESSION_ERR_BYTES" ]; then
+             tail -c "$SESSION_ERR_BYTES" "$SESSION_ERR" 2>/dev/null | sed '1d'
+           else
+             cat "$SESSION_ERR" 2>/dev/null
+           fi; } | tail -n "$SESSION_ERR_LINES" 2>/dev/null | session_err_redact)
+  # Dropping the partial line can leave nothing at all — a single line longer
+  # than the cap, which is exactly the HTTP-dump shape that carries credentials.
+  # Say so, rather than printing a bare header that reads like a broken capture.
+  if [ -z "$body" ]; then
+    log_line "  | (nothing shown: the tail was one line longer than $SESSION_ERR_BYTES bytes, and an excerpt of a line that long can publish a credential whose label was cut off)"
+  else
+    printf '%s\n' "$body" | while IFS= read -r eline || [ -n "$eline" ]; do log_line "  | $eline"; done
+  fi
   return 0
 }
-session_err_open
 
 summary_exit() { # code, verdict
   # round via round_of (normalized), not the raw field — parity with unattended-codex.sh
@@ -566,10 +662,14 @@ while true; do
   # stdin and dispositions the old foreground subshell gave it. The output
   # redirections stay on the exec'd command rather than the subshell, so a
   # failing `cd "$PROJECT"` still says so.
+  # Opened HERE, not at the top of the loop and not once per run: above the
+  # terminal-status and limit checks this would create a file on every early-exit
+  # path, and once per run it cannot recover from a $TMPDIR that goes away.
   # Capture off (or unavailable) resolves to /dev/null — the device node itself,
   # opened O_TRUNC, which is a no-op on it. Nothing derives a second path from
   # this value, which is what makes the opt-out incapable of costing the session
   # its stderr reader (audit D-05, 98095b7 CRITICAL).
+  session_err_open
   ERR_TARGET=/dev/null
   [ -n "$SESSION_ERR" ] && ERR_TARGET="$SESSION_ERR"
   if [ -n "$TIMEOUT_BIN" ]; then
@@ -595,6 +695,7 @@ while true; do
   cur_sig="$(progress_sig)"
   log_line "session $session: exit=$rc round=$cur_round issues=$cur_issues status=$cur_status sig=$cur_sig"
   session_err_log "$session"
+  session_err_close
 
   # C9: a session that didn't even create STATE.md made no progress and resuming
   # can't help — fail fast instead of waiting out the 2-session no-progress window.

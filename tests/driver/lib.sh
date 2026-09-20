@@ -84,6 +84,34 @@ EOS
 if [ -n "${STUB_STDERR_LINES:-}" ]; then
   i=1; while [ "$i" -le "$STUB_STDERR_LINES" ]; do printf 'stderr line %s.\n' "$i" >&2; i=$((i+1)); done
 fi
+# STUB_GRANDCHILD: the cross-session fd-2 fixture. Session 1 pushes the shared
+# offset past the tail window and leaves a background process holding fd 2;
+# session 2 prints its own error and lingers long enough for that process to
+# write. Branches on the round it READ, so one env var drives both sessions.
+if [ -n "${STUB_GRANDCHILD:-}" ]; then
+  if [ "$round" -le 0 ]; then
+    i=1; while [ "$i" -le 400 ]; do printf 'padding line %s.\n' "$i" >&2; i=$((i+1)); done
+    # `gc-done` is the self-probe: if the timing ever stops overlapping, both of
+    # the case's assertions pass against a BROKEN driver, and a false PASS is the
+    # failure mode nobody notices. The test asserts this file exists, the same
+    # way tests/portability/bash3.test.sh self-probes its own detector.
+    ( sleep 1; printf 'LATE WRITE FROM SESSION ONE GRANDCHILD\n' >&2; : > gc-done ) &
+  else
+    printf 'THE REAL ERROR OF SESSION 2 WAS AN EXPIRED KEY\n' >&2
+    sleep 2
+  fi
+fi
+# STUB_STDERR_LONGLINE: ONE line longer than the driver's 4000-byte cap, with a
+# labelled credential positioned so that cap's cut lands INSIDE the value — the
+# shape that amputated `"api_key":"` and published the surviving suffix.
+if [ -n "${STUB_STDERR_LONGLINE:-}" ]; then
+  lval='LEAKCANARY9876543210ABCDEFGHIJK'
+  lhead='HTTP 401 request dump {"url":"https://api.example.com/v1/messages","api_key":"'
+  ltail='","body":"'
+  lfill=$(( 4000 + ${#lhead} + 12 - ${#lhead} - ${#lval} - ${#ltail} - 2 ))
+  lpad=$(awk -v n="$lfill" 'BEGIN{s="";while(length(s)<n)s=s "x";print substr(s,1,n)}')
+  printf '%s%s%s%s"}\n' "$lhead" "$lval" "$ltail" "$lpad" >&2
+fi
 echo "stub: round=$new_round streak=$streak status=$status"
 exit "${STUB_EXIT:-0}"
 STUB
