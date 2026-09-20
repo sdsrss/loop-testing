@@ -279,7 +279,7 @@ marker 存在但被截断 / 损坏时,视为比"缺失"更不可知:purge 会指
 而不是推断出"本次什么都没创建"。purge 跑完但不得不留下一个 worktree 时退出码为 `4`
 (`purge incomplete`)——先处理那个 worktree,再重跑 purge。也绝不删除
 只是"采纳"的 ref——经 `clean` → 重新 `setup` 后,qa 分支与基线标记属于复用而非本次创建,
-marker 记为 adopted,purge 只报不删,`--discard-fixes` 对它们不生效。证据目录同理,以下四种情况
+marker 记为 adopted,purge 只报不删,`--discard-fixes` 对它们不生效。证据目录同理,以下五种情况
 purge 只报不删:
 
 1. 首次运行前 `docs/looptesting/` 就已存在(你自己在那里放笔记或 ADR);
@@ -287,9 +287,13 @@ purge 只报不删:
 3. marker 明确记录"这个问题没被回答过"——从 v0.10.0 之前升级上来的沙箱会落在这里,
    因为从来没有任何一次运行测量过这个目录是谁建的;
 4. 有一个本次运行无法认领的 worktree 仍处于注册状态,而这里的 marker 是唯一还能识别它的记录
-   ——先处理那个 worktree,再重新 purge。
+   ——先处理那个 worktree,再重新 purge;
+5. 目录里有本沙箱没写过的文件。证据目录内部只按文件名删自己的产物,其余任何东西都会让目录留下
+   并被列名输出;归属标记与 `STATE.md` 会一并保留,这样以后再跑 `--purge` 仍能识别哪些属于沙箱,
+   而不是以退出码 `3` 拒绝。`runs/`、`decisions/`、`.sandbox/` 整个删除——你想留的东西不要放在
+   这三个里面。
 
-四种情况下是否删除都由你决定。手动方式:
+五种情况下是否删除都由你决定。手动方式:
 
 ```bash
 git branch -D qa/loop-testing && git tag -d qa-baseline

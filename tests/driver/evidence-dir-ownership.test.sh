@@ -102,6 +102,27 @@ for kind in claude codex; do
   assert_eq 0 "$?" "$kind: a SECOND purge still has a marker to work from (exit 0, not the fail-closed 3)"
   assert_exists "$proj3b/docs/looptesting/my-notes.md" "$kind: the second purge still keeps the user's file"
 
+  # --- 3c. a DANGLING SYMLINK is a leftover too ---------------------------------
+  # `[ -e ]` is false for a link whose target is gone, so a scan built on it reads
+  # the directory as empty, deletes the marker and STATE.md, and only then fails
+  # to rmdir — stranding the next purge on the no-marker exit 3 with residue still
+  # there. An agent that linked into a worktree `clean` later removed leaves
+  # exactly this.
+  ws3c=$(mk_ws); WS_ALL="$WS_ALL $ws3c"; proj3c="$ws3c/proj"
+  stub3c=$(write_setup_stub "$ws3c")
+  run_driver "$kind" "$proj3c" "$stub3c" >/dev/null 2>&1
+  assert_eq 0 "$?" "$kind: headless run converges before the dangling link appears"
+  ln -s "$ws3c/gone-with-the-worktree" "$proj3c/docs/looptesting/into-the-worktree"
+  [ -L "$proj3c/docs/looptesting/into-the-worktree" ] && [ ! -e "$proj3c/docs/looptesting/into-the-worktree" ] \
+    && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "  FAIL: $kind: fixture link is not dangling" >&2; }
+  ( cd "$proj3c" && bash "$CLEAN" --purge ) > "$ws3c/purge.out" 2>&1
+  assert_eq 0 "$?" "$kind: purge over a dangling link exits 0"
+  assert_exists "$proj3c/docs/looptesting/.sandbox/ownership.env" "$kind: a dangling link keeps the marker too"
+  assert_exists "$proj3c/docs/looptesting/STATE.md" "$kind: a dangling link keeps STATE.md too"
+  assert_file_contains "$ws3c/purge.out" "into-the-worktree" "$kind: purge names the dangling link it kept"
+  ( cd "$proj3c" && bash "$CLEAN" --purge ) > "$ws3c/purge2.out" 2>&1
+  assert_eq 0 "$?" "$kind: a second purge after a dangling link still works (exit 0, not 3)"
+
   # --- 3. the driver never overwrites an existing breadcrumb ---------------------
   ws3=$(mk_ws); WS_ALL="$WS_ALL $ws3"; proj3="$ws3/proj"
   stub3=$(write_setup_stub "$ws3")

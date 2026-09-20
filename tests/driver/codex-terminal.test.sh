@@ -48,10 +48,21 @@ else FAIL=$((FAIL+1)); echo "  FAIL: skill-dir left read-only after normal exit"
 if grep -qE "^trap 'shutdown_handler' EXIT" "$CODEX_DRIVER" \
    && grep -qE "^trap 'shutdown_handler [0-9]+' INT" "$CODEX_DRIVER" \
    && grep -qE "^trap 'shutdown_handler [0-9]+' TERM" "$CODEX_DRIVER" \
-   && grep -qE "^trap 'shutdown_handler [0-9]+' HUP" "$CODEX_DRIVER" \
-   && grep -qE '^ +stop_child$' "$CODEX_DRIVER" \
-   && grep -qE '^ +cleanup$' "$CODEX_DRIVER"; then
-  PASS=$((PASS+1)); echo "  ok: every stop signal runs the one handler, which stops the session before cleanup restores and releases"
-else FAIL=$((FAIL+1)); echo "  FAIL: the stop signals must all run shutdown_handler, which stops the session before cleanup" >&2; fi
+   && grep -qE "^trap 'shutdown_handler [0-9]+' HUP" "$CODEX_DRIVER"; then
+  PASS=$((PASS+1)); echo "  ok: every stop signal runs the one handler"
+else FAIL=$((FAIL+1)); echo "  FAIL: the stop signals must all run shutdown_handler" >&2; fi
+
+# ORDER, not mere presence: cleanup restores the skill dir and releases the lock,
+# so it must run AFTER the session is down. Asserting that both calls merely
+# EXIST passes just as happily when they are swapped, which is the whole defect.
+# Read the handler's own body and compare line positions.
+HBODY="$(awk '/^shutdown_handler\(\)/,/^\}/' "$CODEX_DRIVER")"
+SC_AT="$(printf '%s\n' "$HBODY" | grep -n '^ *stop_child$' | head -1 | cut -d: -f1)"
+CL_AT="$(printf '%s\n' "$HBODY" | grep -n '^ *cleanup$'    | head -1 | cut -d: -f1)"
+if [ -n "$SC_AT" ] && [ -n "$CL_AT" ] && [ "$SC_AT" -lt "$CL_AT" ]; then
+  PASS=$((PASS+1)); echo "  ok: shutdown_handler stops the session BEFORE cleanup restores and releases"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: shutdown_handler must call stop_child before cleanup (got stop_child@${SC_AT:-none}, cleanup@${CL_AT:-none})" >&2
+fi
 
 report "codex-terminal.test.sh"

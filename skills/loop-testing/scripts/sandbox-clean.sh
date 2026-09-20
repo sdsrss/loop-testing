@@ -621,7 +621,12 @@ if [ "$PURGE" = 1 ]; then
         # newline in a filename must not be able to split one entry into two.
         lt_leftovers=""
         for lt_p in "$LT_DIR"/* "$LT_DIR"/.[!.]* "$LT_DIR"/..?*; do
-          [ -e "$lt_p" ] || continue          # an unmatched glob expands to itself
+          # `-e` is FALSE for a dangling symlink, and a dangling symlink is a
+          # leftover: an agent that linked into a worktree `clean` has since
+          # removed leaves exactly one. Missing it made the directory look empty,
+          # so the marker and STATE.md were deleted and only then did `rmdir`
+          # fail on the link — the stranding this whole branch exists to prevent.
+          [ -e "$lt_p" ] || [ -L "$lt_p" ] || continue   # unmatched glob expands to itself
           case "${lt_p##*/}" in .sandbox|STATE.md) continue ;; esac
           lt_leftovers="${lt_leftovers:+$lt_leftovers, }${lt_p##*/}"
         done

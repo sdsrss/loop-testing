@@ -263,9 +263,22 @@ poll_sleep() {
 # session is gone", never as "something to kill".
 proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' ' '; }
 child_alive() { # pid start-time
+  local st
   kill -0 "$1" 2>/dev/null || return 1
   [ -n "$2" ] || return 0            # no start time recorded: pid-only, as before
-  [ "$(proc_start "$1")" = "$2" ] || return 1
+  # "Cannot tell" is NOT "mismatch". An empty answer means `ps` failed — and a
+  # full-permission agent session can exhaust forks and make it fail
+  # intermittently — so fall back to what kill -0 just proved rather than
+  # reporting a live session as gone and releasing the lock on top of it. A
+  # REUSED pid still yields a different non-empty start, so the guard below
+  # keeps working.
+  st="$(proc_start "$1")"
+  [ -n "$st" ] || return 0
+  # A non-empty start time that does NOT match means this pid is no longer the
+  # process we launched. The session is then treated as gone and nothing further
+  # is signalled — the realistic cause is pid reuse, and SIGKILLing a process
+  # group under a pid that now belongs to someone else is the worse failure.
+  [ "$st" = "$2" ] || return 1
   return 0
 }
 stop_child() {

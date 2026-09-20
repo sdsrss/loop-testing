@@ -263,6 +263,100 @@ run_double() {
   return 0
 }
 
+# run_broken_ps <label> <kind> <ps-behavior>
+# The wait decides whether the session is still alive by pairing `kill -0` with
+# the pid's start time from `ps`. If a failing `ps` is read as "the process is
+# gone", the driver releases the lock on top of a live full-permission session —
+# the guarantee inverted by the very tool used to check it. A session that can
+# exhaust forks can make `ps` fail INTERMITTENTLY, so each behavior below is
+# applied while the real PATH is otherwise intact.
+run_broken_ps() {
+  local label="$1" kind="$2" behavior="$3"
+  local ws stub drv sess lock pgid shim saw raced
+  ws=$(mk_proj); WS_ALL="$WS_ALL $ws"
+  stub=$(write_stubborn_stub "$ws")
+  write_state "$ws" RUNNING 0
+  lock="$ws/docs/looptesting/.driver.lock"
+  shim="$ws/shim"; mkdir -p "$shim"
+  # The hazard is an INTERMITTENT ps, not an absent one: a ps that fails from the
+  # start leaves CHILD_START empty and the pid-only fallback engages, which is
+  # safe. So this shim passes everything through until the test drops a sentinel
+  # (just before the stop signal), and after that fails ONLY the start-time query
+  # the wait loop depends on — the process-group query still works, so what is
+  # being measured is the liveness verdict and nothing else.
+  case "$behavior" in
+    rc127)   PS_FAIL='exit 127' ;;
+    rc1)     PS_FAIL='exit 1' ;;
+    garbage) PS_FAIL='echo "not a date at all"; exit 0' ;;
+    normal)  PS_FAIL=':' ;;
+  esac
+  cat > "$shim/ps" <<PSSHIM
+#!/usr/bin/env bash
+if [ -e "$ws/ps-broken" ]; then
+  for a in "\$@"; do
+    case "\$a" in lstart*) $PS_FAIL ;; esac
+  done
+fi
+exec $(command -v ps) "\$@"
+PSSHIM
+  chmod +x "$shim/ps"
+  if [ "$kind" = codex ]; then
+    set -- env PATH="$shim:$PATH" LOOP_TESTING_STOP_GRACE=3 bash "$CODEX_DRIVER" --project "$ws" --codex-bin "$stub" --no-protect --max-sessions 3 --max-minutes 5 --session-minutes 2
+  else
+    set -- env PATH="$shim:$PATH" LOOP_TESTING_STOP_GRACE=3 bash "$DRIVER" --project "$ws" --claude-bin "$stub" --max-sessions 3 --max-minutes 5 --session-minutes 2
+  fi
+  ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
+  drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — driver never wrote its lock pid" >&2; return 0; }
+  wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); echo "  FAIL: $label — child session never started beating" >&2; return 0; }
+  # The test's own view of the process table is never shimmed.
+  sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no session process group found under the driver" >&2; return 0; }
+  pgid=$(ps -o pgid= -p "$drv" | tr -d ' ')
+  : > "$ws/ps-broken"          # ps starts failing exactly as the wait begins
+  kill -TERM -- -"$pgid" 2>/dev/null
+  saw=0; raced=0
+  for _ in $(seq 1 600); do
+    if [ ! -e "$lock" ]; then
+      saw=1
+      kill -0 "$sess" 2>/dev/null && raced=1
+      break
+    fi
+    sleep 0.05
+  done
+  if [ "$behavior" = garbage ]; then
+    # A ps that answers in a DIFFERENT FORMAT is not "cannot tell" — it is a
+    # non-empty start time that does not match, which is exactly what a REUSED
+    # pid looks like. The rule is deliberate and asymmetric: a mismatch reads as
+    # "this pid is no longer our session", and nothing further is signalled,
+    # because SIGKILLing a process group under a pid that now belongs to someone
+    # else is the worse failure. So the guarantee to pin here is that the driver
+    # kills NOTHING under that pid — the session is still standing afterwards.
+    if [ "$saw" = 1 ] && kill -0 "$sess" 2>/dev/null; then PASS=$((PASS+1)); else
+      FAIL=$((FAIL+1)); echo "  FAIL: $label — a start-time MISMATCH must be read as 'not our session' and signalled no further (pid reuse), but the session was killed" >&2
+    fi
+  else
+    if [ "$saw" = 1 ] && [ "$raced" = 0 ]; then PASS=$((PASS+1)); else
+      FAIL=$((FAIL+1))
+      if [ "$saw" = 0 ]; then echo "  FAIL: $label — .driver.lock was never released" >&2
+      else echo "  FAIL: $label — a broken ps made the driver release the lock with session pid $sess still alive" >&2; fi
+    fi
+  fi
+  for _ in $(seq 1 40); do kill -0 "$drv" 2>/dev/null || break; sleep 0.25; done
+  kill -KILL "$drv" 2>/dev/null
+  if [ "$behavior" = garbage ]; then
+    # The session this case deliberately leaves standing is the fixture's, so
+    # reap it here rather than reporting it as an orphan.
+    for p in $(pgrep -f "$stub" 2>/dev/null); do
+      pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null
+      kill -KILL "$p" 2>/dev/null
+    done
+    PASS=$((PASS+1))
+  elif pgrep -f "$stub" > /dev/null 2>&1; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — orphaned session processes: $(pgrep -f "$stub" | tr '\n' ' ')" >&2
+    for p in $(pgrep -f "$stub"); do pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null; done
+  else PASS=$((PASS+1)); fi
+  return 0
+}
+
 send_sig() { # signal driver-pid driver-pgid
   case "$1" in
     TERM) kill -TERM -- -"$3" 2>/dev/null ;;
@@ -333,6 +427,14 @@ wait 2>/dev/null
 assert_rc "$rc" 143 "a bare kill -TERM <driver-pid> during a session exits 143"
 if [ "$elapsed" -lt 20 ]; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: bare kill -TERM was deferred to the session boundary (driver ran ${elapsed}s)" >&2; fi
+
+# A `ps` that cannot answer must never be read as "the session is gone".
+for k in claude codex; do
+  run_broken_ps "$k driver, ps exits 127 (absent-like)" "$k" rc127
+  run_broken_ps "$k driver, ps exits 1"                 "$k" rc1
+  run_broken_ps "$k driver, ps prints another format"   "$k" garbage
+  run_broken_ps "$k driver, ps normal (control)"        "$k" normal
+done
 
 # ── the two branches a test cannot stage ──────────────────────────────────────
 # A process that outlives SIGKILL needs an uninterruptible kernel state, so the

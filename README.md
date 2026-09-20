@@ -319,7 +319,7 @@ nothing. A purge that ran but had to leave a worktree standing exits `4`
 — after a `clean` → re-`setup` cycle the qa branch and baseline tag are re-used rather
 than created, so the marker records them as adopted, purge names them instead of removing
 them, and `--discard-fixes` does not apply. The same rule covers the evidence dir, which
-purge keeps and names — rather than deleting — in four cases:
+purge keeps and names — rather than deleting — in five cases:
 
 1. `docs/looptesting/` already existed when the first run started, because you keep your
    own notes or ADRs there;
@@ -328,9 +328,15 @@ purge keeps and names — rather than deleting — in four cases:
 3. the marker records the question as unanswered — a sandbox upgraded from before
    v0.10.0 lands here, because nothing ever measured who created the directory;
 4. a worktree it could not claim is still registered, and the marker is the only record
-   left that can identify it — resolve that worktree, then purge again.
+   left that can identify it — resolve that worktree, then purge again;
+5. it holds files this sandbox did not write. Inside the evidence dir purge deletes only
+   its own files, by name, so anything else keeps the directory alive and is named in the
+   output. The ownership marker and `STATE.md` are kept alongside it, so a later `--purge`
+   can still identify what is the sandbox's instead of refusing with exit `3`. `runs/`,
+   `decisions/` and `.sandbox/` are deleted whole — nothing you want kept may live in
+   those three.
 
-In all four, removing the directory is your call. Use the manual equivalent:
+In all five, removing the directory is your call. Use the manual equivalent:
 
 ```bash
 git branch -D qa/loop-testing && git tag -d qa-baseline

@@ -230,9 +230,19 @@ poll_sleep() {
 # session is gone", never as "something to kill".
 proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' ' '; }
 child_alive() { # pid start-time
+  local st
   kill -0 "$1" 2>/dev/null || return 1
   [ -n "$2" ] || return 0            # no start time recorded: pid-only, as before
-  [ "$(proc_start "$1")" = "$2" ] || return 1
+  # "Cannot tell" is NOT "mismatch" (see unattended-loop.sh): an empty answer
+  # means `ps` failed, which a full-permission session can cause by exhausting
+  # forks, so trust what kill -0 just proved instead of reporting a live session
+  # as gone. A REUSED pid still yields a different non-empty start.
+  st="$(proc_start "$1")"
+  [ -n "$st" ] || return 0
+  # A non-empty MISMATCH means this pid is no longer the process we launched:
+  # treat the session as gone and signal nothing further, because the realistic
+  # cause is pid reuse and killing a stranger's group is the worse failure.
+  [ "$st" = "$2" ] || return 1
   return 0
 }
 stop_child() {
