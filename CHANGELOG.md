@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased
+
+### Audit batch A — what happens after a crash, and the two read-only modes
+
+The product's central promise is that a crash is recoverable: progress lives in
+`docs/looptesting/`, and re-triggering the skill continues from it. No script
+implements that promise — `stop-gate` and both drivers only check whether a
+terminal status was written — so what happens after a crash is decided entirely
+by the prompt text the model reads. Four crash-adjacent situations were visible
+on disk and named nowhere (audit K-09, K-10, K-11), and the two read-only modes
+had no answer for the one hook that cannot see they are read-only (K-03).
+Suite: 37 suites / 1389 assertions → 38 suites / 1420 assertions, measured from
+a clean tree with `bash tests/run-all.sh | grep '^TOTAL:'`.
+
+**What changes for you.**
+
+1. **A finished run is not restarted.** Re-triggering the skill with no arguments
+   on a project whose `status:` is already `CONVERGED` / `INCOMPLETE` / `BLOCKED`
+   now reports instead of opening a new round. The unattended drivers already
+   exited 0 there; the skill disagreed, so a project that had delivered a
+   `FINAL_REPORT.md` could grow rounds on top of it and make that report's own
+   round count false.
+2. **A `FINAL_REPORT.md` sitting next to `status: RUNNING` is diagnosed, not
+   guessed at.** That is the exit sequence interrupted between its first and
+   second step. It is resolved by completeness — all ten sections present and the
+   stop condition actually met resumes the exit sequence; anything less deletes
+   the half-written report and keeps testing. Neither blanket rule is safe: one
+   throws away a finished report, the other ships a half-written one as final.
+3. **A round log numbered past `round:` costs that round, not the ledger.** The
+   round was interrupted before it settled, so its scenarios are re-run and it
+   cannot count toward `converged_streak`. Issues already filed stay filed.
+4. **`.active` is re-armed when resuming.** The resume path never reaches the
+   sandbox step that creates the sentinel, so every continuation after a crash
+   ran with the Stop hook silently disarmed — indistinguishable, on disk, from a
+   healthy one.
+5. **`status` and `report` say what to do when the gate blocks them.** The Stop
+   hook cannot see `$ARGUMENTS`, so a read-only query in a project with a live
+   loop is blocked and told to "continue the round loop" — the one thing those
+   modes forbid. The answer is now written down, including the two wrong exits:
+   do not start a run to satisfy the gate, and do not delete `.active`, which
+   would strip the guardrail off someone else's live run. The ceiling (3) is
+   stated so the model knows the block terminates.
+
+- **docs(protocol,skill)**: name the four crash-adjacent resumes (audit K-09,
+  K-10, K-11) and the read-only/Stop-hook interaction (K-03). `round-0.md` §0
+  owns the diagnoses; `exit-and-report.md` §4 now points at §0 for the window it
+  creates, rather than leaving two prompt files to drift the way K-02 did.
+- **ci**: pin `@anthropic-ai/claude-code` to 2.1.278 instead of `@latest` (audit
+  H-06). The job is a schema gate whose verdict is the CLI's validator, so an
+  unpinned install made a red run indistinguishable from a manifest this repo
+  broke, and a green one no evidence about the next.
+- **test**: one new suite, `tests/commands/resume-protocol.test.sh` (31
+  assertions). Every assertion was run against the pre-fix text and failed there
+  (26 of 31; the rest are extraction and pinning checks), and four were
+  mutation-checked against the specific reverts they exist to catch — including
+  a `.active` rule that keeps "confirm it exists" but loses the command to
+  rebuild it, which is the shape that would have passed a vocabulary match. The
+  suite also pins `MAX_BLOCKS=3` in `hooks/stop-gate.sh` to the number SKILL.md
+  now quotes.
+
 ## 0.12.0 — 2026-09-20
 
 ### Audit batch 2 — three of the four it started with
