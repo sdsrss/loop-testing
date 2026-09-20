@@ -143,6 +143,13 @@ tells you when a newer tag exists.
 
 ### Start
 
+> **The target project must be a git repository.** The sandbox *is* a git worktree
+> (or, with `--mode branch`, a branch) cut from your project, so there is nothing to
+> isolate without one. `sandbox-setup.sh` refuses with exit 3 — *not a git repository
+> — refusing to build a sandbox that cannot be isolated* — and the round-0 isolation
+> gate then stops the run as `BLOCKED` rather than working in your tree unprotected.
+> Run `git init` in the project first; a repository with no commits yet is fine.
+
 Two ways, both work from inside your target project:
 
 - **Slash command (deterministic, no trigger phrase needed):**
