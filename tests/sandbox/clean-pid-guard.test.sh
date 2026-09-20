@@ -110,5 +110,9 @@ if kill -0 "$real_pid" 2>/dev/null; then
   FAIL=$((FAIL+1)); echo "  FAIL: a zero-padded REAL pid ($padded) was skipped by the guard" >&2
   kill -9 "$real_pid" 2>/dev/null
 else PASS=$((PASS+1)); fi
+# Case 3 does not assert on the wrapper's own sentinel (cases 1-2 reap theirs inside
+# assert_sentinel_alive), so reap it here — otherwise every run leaves a `sleep 20`
+# orphan behind for 20 s (audit 2026-09-20 T-02).
+_wp=$(cat "$OUT/sentinel.pid" 2>/dev/null); [ -n "$_wp" ] && kill "$_wp" 2>/dev/null
 
 report "clean-pid-guard.test.sh"
