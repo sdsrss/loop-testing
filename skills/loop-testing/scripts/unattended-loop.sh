@@ -369,7 +369,7 @@ shutdown_handler() { # [exit-code]
   STOPPING=1
   stop_child
   release_lock_or_hold
-  [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR"
+  [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR" "$SESSION_ERR.part"
   SESSION_ERR=""
   STOP_DONE=1
   STOPPING=0
@@ -414,31 +414,62 @@ SESSION_ERR_LINES=20
 SESSION_ERR_BYTES=4000
 session_err_open() {   # truncate (or create) this session's capture file
   [ "${LOOP_TESTING_DISABLE_SESSION_STDERR:-0}" != "1" ] || { SESSION_ERR=""; return 0; }
-  if [ -n "$SESSION_ERR" ]; then : > "$SESSION_ERR" 2>/dev/null; return 0; fi
+  if [ -n "$SESSION_ERR" ]; then rm -f "$SESSION_ERR" "$SESSION_ERR.part" 2>/dev/null; return 0; fi
   SESSION_ERR="$(mktemp "${TMPDIR:-/tmp}/loop-testing-session-err.XXXXXX" 2>/dev/null)" || SESSION_ERR=""
+  # Absolutise it. mktemp honours a RELATIVE $TMPDIR, and this path is used in a
+  # redirect evaluated inside the subshell AFTER `cd "$PROJECT"` — where it no
+  # longer resolves, so the subshell dies before exec and the session never runs
+  # at all. Same shape as a relative script path handed to a subshell that cd's.
+  case "$SESSION_ERR" in ''|/*) ;; *) SESSION_ERR="$PWD/$SESSION_ERR" ;; esac
+  # mktemp created it; remove it so that its REAPPEARANCE (by rename, below) is
+  # the bounded writer's completion signal. `wait` returns when the session
+  # exits, which is before the writer has seen EOF and flushed.
+  rm -f "$SESSION_ERR" "$SESSION_ERR.part" 2>/dev/null
   return 0
 }
 session_err_redact() {
-  # Specific shapes first, so a partially masked value cannot re-match; the last
-  # rule is a catch-all for long opaque tokens (the `#` delimiter avoids escaping
-  # the `/` inside the bearer character class).
+  # Order matters: specific shapes first so a partially masked value cannot
+  # re-match. A pre-ship review put real lines through the first version of this
+  # and got the credentials back out, so each rule below names what it is for.
+  local q="'" dq='"'
   sed -E \
     -e 's/(sk-[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+/\1***REDACTED***/g' \
     -e 's/(gh[pousr]_)[A-Za-z0-9]{8,}/\1***REDACTED***/g' \
     -e 's/(xox[baprs]-)[A-Za-z0-9-]{8,}/\1***REDACTED***/g' \
     -e 's/AKIA[0-9A-Z]{16}/AKIA***REDACTED***/g' \
-    -e 's#([Bb]earer )[A-Za-z0-9._~+/-]{8,}=*#\1***REDACTED***#g' \
-    -e 's/([Aa]uthorization:[[:space:]]*)[^[:space:]]+/\1***REDACTED***/g' \
-    -e 's/[A-Za-z0-9_-]{40,}/***REDACTED***/g' 2>/dev/null
+    `# userinfo in a URL: https://ci-bot:glpat-…@host — no rule covered this` \
+    -e "s#(://[^/[:space:]:@]+:)[^@[:space:]/]+@#\\1***REDACTED***@#g" \
+    `# any whitespace after the scheme word, not a literal space (a TAB got through)` \
+    -e 's#([Bb]earer[[:space:]]+)[A-Za-z0-9._~+/-]{8,}=*#\1***REDACTED***#g' \
+    `# Authorization: take the REST OF THE LINE past an optional scheme word.` \
+    `# The old rule took the next token, so it redacted "Basic" and published the` \
+    `# base64 that follows it. Case-insensitive: headers are printed as sent.` \
+    -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*([A-Za-z]+[[:space:]]+)?).*/\1***REDACTED***/' \
+    `# name=value where the NAME says secret/token/password/key — covers` \
+    `# X-Api-Key:, "api_key":"…", AWS_SECRET_ACCESS_KEY= (whose value has / and +` \
+    `# and so never formed a long enough opaque run to be caught generically)` \
+    -e "s#([A-Za-z0-9_.-]*([Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Kk][Ee][Yy])[A-Za-z0-9_.-]*[$dq$q]?[[:space:]]*[:=][[:space:]]*[$dq$q]?)[A-Za-z0-9._~+/=-]+#\\1***REDACTED***#g" \
+    `# last resort: an unlabelled opaque run. 32, not 24: at 24 it ate ordinary` \
+    `# path segments and branch names out of the diagnostics this exists to keep.` \
+    -e 's#[A-Za-z0-9_+=-]{32,}#***REDACTED***#g' 2>/dev/null
 }
 session_err_log() { # <session-number>
-  [ -n "$SESSION_ERR" ] && [ -s "$SESSION_ERR" ] || return 0
+  [ -n "$SESSION_ERR" ] || return 0
+  # The writer flushes at EOF, which happens after `wait` has already returned.
+  # Bounded, and it does NOT tax a quiet session: a session that wrote nothing
+  # still renames an empty file immediately, so this falls through at once.
+  local waited=0
+  while [ ! -e "$SESSION_ERR" ] && [ "$waited" -lt 20 ]; do
+    sleep 0.1 2>/dev/null || sleep 1
+    waited=$((waited + 1))
+  done
+  [ -s "$SESSION_ERR" ] || return 0
   log_line "session $1 stderr (last $SESSION_ERR_LINES lines, redacted — best effort, not a guarantee):"
   # Bounded twice: bytes first, so one runaway line cannot be read whole.
   tail -c "$SESSION_ERR_BYTES" "$SESSION_ERR" 2>/dev/null | tail -n "$SESSION_ERR_LINES" 2>/dev/null \
     | session_err_redact \
     | while IFS= read -r eline || [ -n "$eline" ]; do log_line "  | $eline"; done
-  : > "$SESSION_ERR" 2>/dev/null
+  rm -f "$SESSION_ERR" 2>/dev/null
   return 0
 }
 
@@ -522,16 +553,18 @@ while true; do
   # redirections stay on the exec'd command rather than the subshell, so a
   # failing `cd "$PROJECT"` still says so.
   session_err_open
+  # When capture is off this resolves to /dev/null.part -> /dev/null, which is
+  # a write to a file nobody reads; the tail is still bounded, so it cannot grow.
   ERR_SINK=/dev/null; [ -n "$SESSION_ERR" ] && ERR_SINK="$SESSION_ERR"
   if [ -n "$TIMEOUT_BIN" ]; then
     ( trap - INT QUIT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>"$ERR_SINK" ) \
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2> >(tail -c "$SESSION_ERR_BYTES" > "$ERR_SINK.part" 2>/dev/null; mv -f "$ERR_SINK.part" "$ERR_SINK" 2>/dev/null) ) \
       <&0 &
   else
     ( trap - INT QUIT; cd "$PROJECT" && export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 && exec \
       "${SANITIZE_ENV[@]}" "$CLAUDE_BIN" -p "$RESUME_PROMPT" \
-      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2>"$ERR_SINK" ) \
+      --plugin-dir "$PLUGIN_DIR" --permission-mode bypassPermissions --max-turns "$MAX_TURNS" >/dev/null 2> >(tail -c "$SESSION_ERR_BYTES" > "$ERR_SINK.part" 2>/dev/null; mv -f "$ERR_SINK.part" "$ERR_SINK" 2>/dev/null) ) \
       <&0 &
   fi
   CHILD=$!

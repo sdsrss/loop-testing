@@ -85,6 +85,14 @@ echo "stub-codex: round=$new_round streak=$streak status=$status"
 # D-05 fixtures: STUB_STDERR is emitted verbatim on stderr, STUB_STDERR_LINES
 # repeats a numbered line that many times (tail-cap cases).
 [ -n "${STUB_STDERR:-}" ] && printf '%s\n' "$STUB_STDERR" >&2
+if [ -n "${STUB_STDERR_STORM:-}" ]; then
+  # ~1 MB per iteration of junk on stderr, for the unbounded-growth fixture.
+  j=0; pad=$(printf '%0.sx' $(seq 1 1000))
+  while [ "$j" -lt "$STUB_STDERR_STORM" ]; do
+    k=0; while [ "$k" -lt 1000 ]; do printf '%s\n' "$pad" >&2; k=$((k+1)); done
+    j=$((j+1))
+  done
+fi
 if [ -n "${STUB_STDERR_LINES:-}" ]; then
   i=1; while [ "$i" -le "$STUB_STDERR_LINES" ]; do printf 'stderr line %s.\n' "$i" >&2; i=$((i+1)); done
 fi

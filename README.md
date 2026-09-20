@@ -181,10 +181,14 @@ its stderr is not. After each session the last 20 lines (4000 bytes) of that std
 appended to `driver.log` under `session N stderr:`, which is where an expired key, a rate
 limit, an unknown flag or a bad working directory actually says so — without it every one
 of those arrives as `exit=N` and the no-progress verdict, indistinguishable from each
-other. Known credential shapes (`sk-…`, `ghp_…`, `xox…`, `AKIA…`, `Bearer …`,
-`Authorization:`, and long opaque tokens) are masked first. **That masking is best effort,
-not a guarantee**: it matches shapes, so a secret in a form it does not know reaches the
-file. `driver.log` is in the evidence directory you are invited to read and attach, so if
+other. Known credential shapes are masked first: `sk-…`, `ghp_…`, `xox…`,
+`AKIA…`, `Bearer …`, the whole value after `Authorization:`, the userinfo in a
+`https://user:pass@host` URL, the value of any `name=value` or `"name": "value"` whose name
+contains secret/token/password/key, and unlabelled opaque runs of 32 characters or more.
+**That masking is best effort, not a guarantee**: it matches shapes, so a secret in a form
+it does not know reaches the file. A pre-ship review found the first version of the
+`Authorization:` rule masking the scheme word and publishing the credential after it, which
+is the kind of mistake this sentence exists to keep you sceptical about. `driver.log` is in the evidence directory you are invited to read and attach, so if
 that trade is not one you want, set `LOOP_TESTING_DISABLE_SESSION_STDERR=1` and the session's
 stderr goes back to `/dev/null`.
 
