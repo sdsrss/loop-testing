@@ -21,7 +21,10 @@ done < <(find skills tests hooks install -name '*.sh' -type f -print0 2>/dev/nul
 
 if command -v shellcheck >/dev/null 2>&1; then
   echo "== shellcheck (errors only) =="
-  mapfile -t sh_files < <(find skills tests hooks install -name '*.sh' -type f 2>/dev/null)
+  # No `mapfile`: it is bash 4+, and this runner has to start on macOS's bash 3.2
+  # (audit T-09) — a runner that cannot run is worse than any test it would skip.
+  sh_files=()
+  while IFS= read -r f; do sh_files+=("$f"); done < <(find skills tests hooks install -name '*.sh' -type f 2>/dev/null)
   if [ "${#sh_files[@]}" -gt 0 ] && shellcheck -S error -e SC1091 "${sh_files[@]}"; then
     echo "  ok: no errors"
   else overall=1; fi
@@ -31,16 +34,65 @@ fi
 
 echo "== shell tests =="
 tests_found=0
+suites=0
+asserts=0
+afails=0
+# Each suite's last tally line is "<suite>: <N> passed, <M> failed". Capturing
+# the run lets us sum those into one TOTAL, so a published assertion count is
+# recomputable from `bash tests/run-all.sh | tail -1` instead of being summed by
+# hand over whichever suites happened to print a number (audit T-04).
+_ra_out="$(mktemp "${TMPDIR:-/tmp}/loop-runall.XXXXXX")" || { echo "FAILED: mktemp"; exit 1; }
+trap 'rm -f "$_ra_out"' EXIT INT TERM HUP
 while IFS= read -r -d '' t; do
   tests_found=1
-  if bash "$t"; then echo "  ok: $t"; else echo "  TEST FAIL: $t"; overall=1; fi
+  suites=$((suites + 1))
+  # `</dev/null` is load-bearing, not hygiene. The loop reads the file list on
+  # stdin, so a suite that reads stdin ate the rest of that list and the runner
+  # stopped early while still printing ALL GREEN: 12 of 35 suites ran.
+  if bash "$t" </dev/null >"$_ra_out" 2>&1; then rc=0; else rc=1; fi
+  cat "$_ra_out"
+  if [ "$rc" -eq 0 ]; then echo "  ok: $t"; else echo "  TEST FAIL: $t"; overall=1; fi
+  tally=$(grep -E '^[^ ]+: [0-9]+ passed, [0-9]+ failed$' "$_ra_out" | tail -1)
+  if [ -z "$tally" ]; then
+    # A suite that reports no tally cannot be counted, and a suite that cannot be
+    # counted is where a zero-assertion suite hides. Fail rather than skip.
+    echo "  GATE FAIL: $t printed no assertion tally"; overall=1
+  else
+    p=${tally#*: }; p=${p%% passed,*}
+    f=${tally#* passed, }; f=${f%% failed}
+    [ "$p" -gt 0 ] || { echo "  GATE FAIL: $t reported 0 assertions"; overall=1; }
+    asserts=$((asserts + p)); afails=$((afails + f))
+  fi
 done < <(find tests -name '*.test.sh' -type f -print0 2>/dev/null | sort -z)
 [ "$tests_found" -eq 1 ] || { echo "  GATE FAIL: no *.test.sh found (zero discovery must not pass)"; overall=1; }
+# Ran-everything gate. Zero discovery was already caught; this catches the other
+# half, a loop that STOPPED early — which is how 23 suites went unrun while the
+# runner printed ALL GREEN. Counting files separately from the loop is the point:
+# the two numbers can only agree if every discovered suite was actually executed.
+_ra_files=$(find tests -name '*.test.sh' -type f 2>/dev/null | wc -l | tr -d ' ')
+[ "$suites" -eq "$_ra_files" ] || {
+  echo "  GATE FAIL: ran $suites of $_ra_files suites — the run ended early"; overall=1; }
 
+node_counted=0
 if [ -d tests/moa ]; then
   echo "== node --test tests/moa/ =="
   if command -v node >/dev/null 2>&1; then
-    if node --test tests/moa/*.test.mjs; then echo "  ok: moa tests"; else echo "  MOA TEST FAIL"; overall=1; fi
+    if node --test tests/moa/*.test.mjs >"$_ra_out" 2>&1; then rc=0; else rc=1; fi
+    cat "$_ra_out"
+    if [ "$rc" -eq 0 ]; then echo "  ok: moa tests"; else echo "  MOA TEST FAIL"; overall=1; fi
+    # node --test reports its own totals; fold them in so one number covers the
+    # whole run. Each .test.mjs file counts as one suite, same rule as shell.
+    np=$(grep -E '^. pass [0-9]+$' "$_ra_out" | tail -1); np=${np##* }
+    nf=$(grep -E '^. fail [0-9]+$' "$_ra_out" | tail -1); nf=${nf##* }
+    case "${np:-x}" in ''|*[!0-9]*) np="" ;; esac
+    case "${nf:-x}" in ''|*[!0-9]*) nf="" ;; esac
+    if [ -n "$np" ] && [ -n "$nf" ]; then
+      nsuites=$(find tests/moa -name '*.test.mjs' -type f 2>/dev/null | wc -l | tr -d ' ')
+      suites=$((suites + nsuites)); asserts=$((asserts + np)); afails=$((afails + nf))
+      node_counted=1
+    else
+      echo "  GATE FAIL: could not read node's pass/fail totals"; overall=1
+    fi
   else
     echo "  node not installed, skipping moa tests"
   fi
@@ -48,5 +100,16 @@ else
   echo "  GATE FAIL: tests/moa missing (zero discovery must not pass)"; overall=1
 fi
 
+# The line a release note quotes verbatim. "Suite" = one file under tests/
+# matching *.test.* ; "assertion" = one pass-or-fail decision a suite reports.
+# Recompute with:  bash tests/run-all.sh | grep '^TOTAL:'
+# When node is absent the moa suites are skipped, so the counts cover shell only
+# and this line says so rather than quietly reporting a smaller total.
+if [ "$node_counted" -eq 1 ]; then
+  printf 'TOTAL: %d suites, %d assertions, %d failed\n' "$suites" "$asserts" "$afails"
+else
+  printf 'TOTAL: %d suites, %d assertions, %d failed (shell only — node not run)\n' \
+    "$suites" "$asserts" "$afails"
+fi
 [ "$overall" -eq 0 ] && echo "ALL GREEN" || echo "FAILED"
 exit "$overall"

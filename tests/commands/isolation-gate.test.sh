@@ -25,8 +25,10 @@ ROUND0="$REPO_ROOT/skills/loop-testing/references/round-0.md"
 SETUP="$REPO_ROOT/skills/loop-testing/scripts/sandbox-setup.sh"
 
 _fails=0
-pass() { printf '  ok: %s\n' "$1"; }
-fail() { printf '  FAIL: %s\n' "$1"; _fails=1; }
+_pass=0
+_failn=0
+pass() { printf '  ok: %s\n' "$1"; _pass=$((_pass + 1)); }
+fail() { printf '  FAIL: %s\n' "$1"; _fails=1; _failn=$((_failn + 1)); }
 # Markdown wraps phrases across lines: flatten whitespace before matching.
 flat() { tr '[:space:]' ' ' < "$1" | tr -s ' '; }
 has()  { if flat "$1" | grep -qF "$2"; then pass "$3"; else fail "$3 (missing '$2' in ${1##*/})"; fi; }
@@ -123,5 +125,5 @@ fi
 hasnt "$ROUND0" "任一不满足＝隔离未成立：立即停止" \
   "the old four-check-only wording is gone (it made a 9 look like a pass)"
 
-printf '%s: %s\n' "${0##*/}" "$([ "$_fails" -eq 0 ] && echo 'ok' || echo 'FAILED')"
+printf '%s: %d passed, %d failed\n' "${0##*/}" "$_pass" "$_failn"
 exit "$_fails"

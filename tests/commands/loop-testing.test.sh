@@ -29,9 +29,11 @@ SKILL="$REPO_ROOT/skills/loop-testing/SKILL.md"
 PROMPT="$REPO_ROOT/prompts/loop-testing.md"
 
 _fails=0
+_pass=0
+_failn=0
 _name="${0##*/}"
-pass() { printf '  ok: %s\n' "$1"; }
-fail() { printf '  FAIL: %s\n' "$1"; _fails=1; }
+pass() { printf '  ok: %s\n' "$1"; _pass=$((_pass + 1)); }
+fail() { printf '  FAIL: %s\n' "$1"; _fails=1; _failn=$((_failn + 1)); }
 # whitespace-flattened substring match: markdown wraps phrases across lines, so
 # collapse all runs of whitespace to a single space before matching.
 has()  { if tr '[:space:]' ' ' < "$1" | tr -s ' ' | grep -qF -- "$2"; then pass "$3"; else fail "$3 (missing '$2' in ${1##*/})"; fi; }
@@ -398,7 +400,7 @@ printf '%s' "$fb" | grep -qF 'ownership.env' \
   || fail "SKILL.md fallback must mention the ownership.env gate"
 
 finish() {
-  if [ "$_fails" -eq 0 ]; then printf '%s: PASS\n' "$_name"; exit 0
-  else printf '%s: FAIL\n' "$_name"; exit 1; fi
+  printf '%s: %d passed, %d failed\n' "$_name" "$_pass" "$_failn"
+  [ "$_fails" -eq 0 ]
 }
 finish

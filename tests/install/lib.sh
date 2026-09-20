@@ -10,9 +10,15 @@ INSTALLER="$REPO_ROOT/install/install-codex.sh"
 
 _fails=0
 _name="${0##*/}"
+# Assertion counters. `_fails` stays a 0/1 exit flag; these two feed the tally
+# line `finish` prints, which tests/run-all.sh sums into its TOTAL. Every suite
+# must report a tally — a suite that prints none, or reports zero assertions,
+# is a gate failure there rather than a silent pass (audit T-03/T-04).
+_pass=0
+_failn=0
 
-pass() { printf '  ok: %s\n' "$1"; }
-fail() { printf '  FAIL: %s\n' "$1"; _fails=1; }
+pass() { printf '  ok: %s\n' "$1"; _pass=$((_pass + 1)); }
+fail() { printf '  FAIL: %s\n' "$1"; _fails=1; _failn=$((_failn + 1)); }
 
 assert_path()    { if [ -e "$1" ]; then pass "exists: $1"; else fail "missing: $1 ($2)"; fi; }
 assert_no_path() { if [ ! -e "$1" ]; then pass "absent: $1"; else fail "should not exist: $1 ($2)"; fi; }
@@ -28,6 +34,8 @@ make_sandbox() {
 }
 
 finish() {
-  if [ "$_fails" -eq 0 ]; then printf '%s: PASS\n' "$_name"; exit 0
-  else printf '%s: FAIL\n' "$_name"; exit 1; fi
+  # Same one-line format the sandbox/driver/hook suites use, so run-all.sh has a
+  # single shape to parse: "<suite>: <N> passed, <M> failed".
+  printf '%s: %d passed, %d failed\n' "$_name" "$_pass" "$_failn"
+  [ "$_fails" -eq 0 ]
 }

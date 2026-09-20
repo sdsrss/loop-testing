@@ -26,6 +26,12 @@
 # SAFETY: mktemp project, stub binary, --no-protect on the codex side so the
 # real ~/.codex is never touched. Every survivor is killed on exit.
 set -u
+# This suite drains stdin (pty work and backgrounded subshells that inherit it).
+# A caller that feeds its own work list on stdin — tests/run-all.sh does exactly
+# that — loses the rest of the list, so it stops early while still reporting
+# green. The runner now also redirects, but a suite should not be a hazard to
+# whoever runs it, so detach here too.
+exec </dev/null
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 CODEX_DRIVER="$REPO_ROOT/skills/loop-testing/scripts/unattended-codex.sh"
 
