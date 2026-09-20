@@ -77,6 +77,13 @@ done
 
 [ -n "$PROJECT" ] || die "--project <dir> is required"
 [ -d "$PROJECT" ] || die "--project is not a directory: $PROJECT"
+# Absolutize (audit D-02; unattended-loop.sh already did). The path is used
+# twice per session — `cd "$PROJECT"` and then `codex exec -C "$PROJECT"`, which
+# Codex resolves against the cwd it now has — so `--project proj` became
+# `proj/proj` for every session, each failed before reading the prompt, and the
+# run ended as NO_PROGRESS exit 5 with the loop blamed for a path the driver
+# itself had mangled.
+PROJECT="$(cd "$PROJECT" && pwd)" || die "cannot enter --project: $PROJECT"
 for v in MAX_SESSIONS MAX_MINUTES SESSION_MINUTES; do
   # Name the flag the user typed (--max-minutes), not the variable (MAX_MINUTES).
   # `tr`, not ${v,,} + ${flag//_/-}: case-modification expansion is bash 4.0+ and a
@@ -91,8 +98,23 @@ LT="$PROJECT/docs/looptesting"
 STATE="$LT/STATE.md"
 ISSUES="$LT/ISSUES.md"
 DLOG="$LT/driver.log"
+# Ownership handshake with sandbox-setup.sh (audit D-03; kept identical to
+# unattended-loop.sh). The driver needs docs/looptesting for driver.log and the
+# lock BEFORE the first session runs setup, so on a fresh project setup found the
+# dir already present, recorded it as the user's, and --purge kept it forever —
+# saying it held files that were already theirs. Setup treats the
+# `.sandbox/created-dirs.env` breadcrumb as the authority on who made the dir
+# and never overwrites one; the driver is the process that knows, so it writes
+# the breadcrumb when it is the one that created the dir — and only then. A dir
+# that was there before the driver stays the user's; an existing breadcrumb
+# (an earlier lifecycle's answer) is left as written.
+LT_EXISTED=1; [ -d "$LT" ] || LT_EXISTED=0
 mkdir -p "$LT"
 : >> "$DLOG" || die "cannot write driver.log at $DLOG"
+if [ "$LT_EXISTED" = 0 ] && [ ! -f "$LT/.sandbox/created-dirs.env" ]; then
+  mkdir -p "$LT/.sandbox" 2>/dev/null \
+    && printf 'MADE_LOOPTESTING_DIR=1\n' > "$LT/.sandbox/created-dirs.env" 2>/dev/null
+fi
 
 # Concurrency guard: refuse to run a second driver on the same target — two drivers
 # would race STATE.md / driver.log / ISSUES.md / the worktree and corrupt the

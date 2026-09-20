@@ -133,8 +133,23 @@ progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB|bootst
   printf '%s|%s|%s|%s|%s' "$(round_of)" "$(issue_count)" "$s" "$(runs_sig)" "$(bootstrap_sig)"
 }
 
+# Ownership handshake with sandbox-setup.sh (audit D-03; kept identical to
+# unattended-codex.sh). The driver needs docs/looptesting for driver.log and the
+# lock BEFORE the first session runs setup, so on a fresh project setup found the
+# dir already present, recorded it as the user's, and --purge kept it forever —
+# saying it held files that were already theirs. Setup treats the
+# `.sandbox/created-dirs.env` breadcrumb as the authority on who made the dir
+# and never overwrites one; the driver is the process that knows, so it writes
+# the breadcrumb when it is the one that created the dir — and only then. A dir
+# that was there before the driver stays the user's; an existing breadcrumb
+# (an earlier lifecycle's answer) is left as written.
+LT_EXISTED=1; [ -d "$LT" ] || LT_EXISTED=0
 mkdir -p "$LT"
 : >> "$DRIVER_LOG" || die "cannot write driver.log at $DRIVER_LOG"
+if [ "$LT_EXISTED" = 0 ] && [ ! -f "$LT/.sandbox/created-dirs.env" ]; then
+  mkdir -p "$LT/.sandbox" 2>/dev/null \
+    && printf 'MADE_LOOPTESTING_DIR=1\n' > "$LT/.sandbox/created-dirs.env" 2>/dev/null
+fi
 
 # Concurrency guard: refuse to run a second driver on the same target — two drivers
 # would race STATE.md / driver.log / ISSUES.md / the worktree and corrupt the
