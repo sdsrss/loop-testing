@@ -17,14 +17,27 @@
 # writing a fake replay line into a round log first. Describe this as a SOFT gate
 # that raises the cost of cheating, never as "mechanically prevents" (audit K-04).
 #
-# WHAT A Bash COMMAND HAS TO BE to count as a ledger write: the ledger must be an
-# operand of a verb that writes it — a redirection target, a `tee`/`sponge`
-# operand, or a file operand of an in-place `sed`/`perl`/`ruby`. That decision is
-# made by LEXING the command (python3 `shlex`, no expansion, no grammar, no
-# execution) and comparing operand TOKENS to the ledger path. A read of the
-# ledger is never a write, however many write-looking tokens share the command
-# line — H-01 was that false deny, and the accusation this hook prints at a
-# correct action is its most expensive failure mode.
+# WHAT A Bash COMMAND HAS TO BE to count as a ledger write: the ledger has to be
+# the thing a writing verb writes. The writer set, in full:
+#   * a redirection target (`>`, `>>`, `2>`, `>|`);
+#   * an operand of `tee` or `sponge`;
+#   * a file operand of an in-place `sed`/`perl`/`ruby` (`-i`, `--in-place`);
+#   * the output file of `sort -o` / `--output`, or the OUT positional of
+#     `uniq IN OUT` — two entries on the filter list that a flag turns into
+#     writers.
+# The verb is read after skipping `VAR=val` assignments AND after unwrapping
+# wrapper verbs (`command`, `env`, `nice`, `timeout`, `stdbuf`, `nohup`,
+# `busybox`, `xargs`, …), which otherwise hide the writer behind them.
+#
+# That decision is made by LEXING the command (python3 `shlex`, no expansion, no
+# grammar, no execution) and comparing operand TOKENS to the ledger path. It is
+# not the only path: without python3, past the length cap, when the lexer rejects
+# the input, or when a write target is unresolvable, the regex leg further down
+# decides instead, and it is weaker. Both legs are target-bound.
+#
+# A read of the ledger is never a write, however many write-looking tokens share
+# the command line — H-01 was that false deny, and the accusation this hook
+# prints at a correct action is its most expensive failure mode.
 #
 # RESIDUAL — these still reach the ledger unseen:
 #   * indirection through another interpreter: `bash -c`, `python3 -c`,
@@ -297,11 +310,18 @@ try:
         # filter that writes is not a filter for the row-dropping claim either.
         fw=[]
         if verb=="sort":
-            for f in flags:
-                if f.startswith("--output="): fw.append(f.split("=",1)[1])
-                elif f.startswith("-o") and not f.startswith("--") and len(f)>2: fw.append(f[2:])
-            if any(f in ("-o","--output") for f in flags): fw.extend(ops)
-        if verb=="uniq" and len(ops)>=2: fw.append(ops[-1])
+            # Walk `rest` IN ORDER: the target of a separated -o is the token
+            # right after it, not every operand. Taking them all made the ledger
+            # read as sort INPUT look like the write target and accused a read.
+            k=0
+            while k<len(rest):
+                t1=rest[k]
+                if t1 in ("-o","--output"):
+                    if k+1<len(rest): fw.append(rest[k+1]); k+=2; continue
+                elif t1.startswith("--output="): fw.append(t1.split("=",1)[1])
+                elif t1.startswith("-o") and not t1.startswith("--") and len(t1)>2: fw.append(t1[2:])
+                k+=1
+        if verb=="uniq" and len(ops)>=2: fw.append(ops[-1])   # uniq IN OUT
         for o in fw:
             if norm(o): w=1; ip=1
             elif unres(o): UN=1

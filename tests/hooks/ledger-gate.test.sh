@@ -594,4 +594,24 @@ run_ledger "$WS20" "$json"; assert_rc $? 0 "sort -o somewhere else -> allow"
 json='{"tool_name":"Bash","tool_input":{"command":"awk '"'"'{gsub(/FIXED_UNVERIFIED/,\"VERIFIED\"); print > \"docs/looptesting/ISSUES.md\"}'"'"' docs/looptesting/ISSUES.md"}}'
 run_ledger "$WS20" "$json"; assert_rc $? 0 "documented residual: awk print > \"file\" inside the program text"
 
+# ── Round 8. `sort -o OUT IN` names its target in the token AFTER -o; taking
+#    every operand instead made a ledger read as INPUT look like the write
+#    target, and accused correct work. All four spellings are pinned. ──
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | sort -o docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sort -o FILE (separated) -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | sort -odocs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sort -oFILE (attached) -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | sort --output=docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sort --output=FILE -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | sort --output docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sort --output FILE (separated long) -> deny"
+# The ledger as sort's INPUT, with the output going elsewhere, is a read.
+json='{"tool_name":"Bash","tool_input":{"command":"sort -o /tmp/s.md docs/looptesting/ISSUES.md && grep -c VERIFIED /tmp/s.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "sort -o ELSEWHERE with the ledger as input -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"sort --output=/tmp/s.md docs/looptesting/ISSUES.md && grep -c VERIFIED /tmp/s.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "sort --output=ELSEWHERE with the ledger as input -> allow"
+# uniq already takes only its last operand; pin that the input side is a read.
+json='{"tool_name":"Bash","tool_input":{"command":"uniq docs/looptesting/ISSUES.md /tmp/u.md && grep -c VERIFIED /tmp/u.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "uniq LEDGER ELSEWHERE -> allow (ledger is the input)"
+
 report "ledger-gate.test.sh"
