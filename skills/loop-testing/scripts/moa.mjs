@@ -99,14 +99,27 @@ const PROVIDERS = {
 // ===========================================================================
 // Secret redaction
 // ===========================================================================
+// Redaction is a literal substring match, so the list must contain the exact
+// bytes that can come back. A shorter string than this is not a credential
+// worth the collateral: `split()`-ing a 1–3 char token out of a document
+// rewrites ordinary prose (M-05 — see the username note below).
+const MIN_SECRET_CHARS = 4;
+const PROXY_ENV_NAMES = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'];
+
 function collectSecrets(env) {
-  const secrets = [];
+  const secrets = new Set();
+  const add = (s) => { if (typeof s === 'string' && s.length >= MIN_SECRET_CHARS) secrets.add(s); };
   for (const p of Object.values(PROVIDERS)) {
     const v = env[p.keyEnv];
-    if (v && v.trim()) secrets.push(v);
+    if (!v || !v.trim()) continue;
+    // Both forms (M-01): resolveModelProvider() SENDS the trimmed value, so the
+    // trimmed value is what an echoing endpoint reflects — a key with trailing
+    // whitespace or a `\r` (a CRLF-saved .env) never matched its own echo.
+    add(v);
+    add(v.trim());
   }
   // Proxy credentials (user:pass@host in *_PROXY) must not surface in errors either.
-  for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy']) {
+  for (const name of PROXY_ENV_NAMES) {
     const v = env[name];
     if (!v || !v.trim()) continue;
     try {
@@ -115,16 +128,20 @@ function collectSecrets(env) {
       // percent-decoded value, AND the base64 `user:pass` blob that
       // proxyAuthHeader() actually writes to the wire (that blob IS the
       // credential — redacting only its parts would miss it if it ever surfaced).
-      if (u.password) { secrets.push(u.password); secrets.push(decodeURIComponent(u.password)); }
-      if (u.username) { secrets.push(u.username); secrets.push(decodeURIComponent(u.username)); }
+      // The USERNAME is deliberately NOT on the list (M-05): it is not a secret,
+      // and a username like `admin` or `user` rewrote every occurrence of that
+      // word in the archived decision. The password and the blob cover the wire.
+      if (u.password) { add(u.password); add(decodeURIComponent(u.password)); }
       if (u.username) {
-        secrets.push(Buffer
+        add(Buffer
           .from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password || '')}`)
           .toString('base64'));
       }
     } catch { /* not a parseable URL — nothing to redact */ }
   }
-  return secrets;
+  // Longest first, so a secret that is a prefix of another (raw vs trimmed)
+  // cannot leave the longer form's tail behind.
+  return [...secrets].sort((a, b) => b.length - a.length);
 }
 
 function makeRedactor(secrets) {
@@ -253,13 +270,11 @@ function resolveModelProvider(entry, env) {
 // still takes effect regardless of origin scheme.
 // ===========================================================================
 function proxyEnabled(env) {
-  return Boolean(
-    (env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy || '').trim(),
-  );
+  return PROXY_ENV_NAMES.some((name) => env[name] && env[name].trim());
 }
 
 function proxySourceName(env) {
-  for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy']) {
+  for (const name of PROXY_ENV_NAMES) {
     if (env[name] && env[name].trim()) return name;
   }
   return null;
@@ -746,7 +761,7 @@ async function main() {
 
   // --dry-run: print resolved config, make no network call.
   if (args['dry-run']) {
-    process.stdout.write(dryRunReport(cfg, env) + '\n');
+    process.stdout.write(redact(dryRunReport(cfg, env)) + '\n');
     return 0;
   }
 
@@ -793,7 +808,10 @@ async function main() {
         proxyResolver,
         redact,
       });
-      return { model: entry.model, provider: resolved.provider, content };
+      // Redact model output the moment it arrives (M-04): the renderer truncates
+      // fields and inert blobs, and a secret straddling a cut would otherwise
+      // leave its prefix behind for the end-of-doc pass to miss.
+      return { model: entry.model, provider: resolved.provider, content: redact(content) };
     }),
   );
 
@@ -822,7 +840,7 @@ async function main() {
   const aggResolved = resolveModelProvider(cfg.aggregator, env);
   let aggContent;
   try {
-    aggContent = await chatComplete({
+    aggContent = redact(await chatComplete({
       model: cfg.aggregator.model,
       messages: aggregatorMessages(contextMd, opinions),
       temperature: cfg.aggregator_temperature,
@@ -832,17 +850,18 @@ async function main() {
       maxBytes,
       proxyResolver,
       redact,
-    });
+    }));   // redacted before rendering (M-04), same reason as the reference opinions
   } catch (e) {
     process.stderr.write(`error: aggregator model unavailable — MoA degraded, fall back to single-model. ${redact(e.message)}\n`);
     return 2;
   }
 
-  // Redact the assembled doc before it leaves the process. The doc embeds raw model
+  // Redact the assembled doc before it leaves the process. The doc embeds model
   // output verbatim; a hostile/compromised or logging endpoint that reflects the
   // request can echo the Authorization header into its completion, which would
-  // otherwise land the key in the archived DEC.md / stdout. Every error path is
-  // already redacted; the success doc was the one uncovered channel (audit MO-1).
+  // otherwise land the key in the archived DEC.md / stdout (audit MO-1). The
+  // model outputs were already redacted on arrival (M-04); this pass is the
+  // backstop for anything assembled around them.
   const doc = redact(buildDecisionMarkdown({
     opinions,
     failedRefs,

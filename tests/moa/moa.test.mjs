@@ -1123,6 +1123,131 @@ test('a secret appearing in an aggregator object key is still redacted', async (
   });
 });
 
+// M-01: the key is SENT trimmed (`resolveModelProvider` trims) but was collected
+// for redaction UNtrimmed, and the redactor is a literal substring match. A key
+// with trailing whitespace — or a `\r`, which is what a CRLF-saved `.env` yields
+// — therefore never matched its own echo, and the endpoint's reflection of the
+// Authorization header landed the raw key in DEC.md and stdout.
+test('redaction: a key with trailing whitespace / CR (CRLF .env) is still scrubbed from an echoing endpoint (M-01)', async () => {
+  await withWorkspace(async (dir) => {
+    const KEY = 'sk-LEAKTEST-9f3kQ7';
+    for (const raw of [`${KEY} `, `${KEY}\r`, `${KEY}\r\n`]) {
+      const stub = await startServer(echoAuthHandler({ aggModel: 'agg-model' }));
+      try {
+        const input = await writeInput(dir);
+        const config = await writeConfig(dir, TWO_REF_CONFIG);
+        const out = join(dir, 'DEC.md');
+        const { code, stdout, stderr } = await runMoa(
+          ['--input', input, '--config', config, '--output', out],
+          { OPENAI_API_KEY: raw, OPENAI_BASE_URL: `${stub.url}/v1` },
+        );
+        assert.equal(code, 0, `stderr: ${stderr}`);
+        // The wire contract: the trimmed key is what is sent (and thus what echoes).
+        assert.ok(stub.requests.every((r) => r.headers.authorization === `Bearer ${KEY}`),
+          `expected the trimmed key on the wire for ${JSON.stringify(raw)}`);
+        const doc = await readFile(out, 'utf8');
+        assert.ok(!doc.includes(KEY), `raw key leaked into DEC.md for env value ${JSON.stringify(raw)}`);
+        assert.ok(!stdout.includes(KEY), `raw key leaked to stdout for env value ${JSON.stringify(raw)}`);
+        assert.ok(!stderr.includes(KEY), `raw key leaked to stderr for env value ${JSON.stringify(raw)}`);
+        assert.ok(doc.includes('REDACTED'), 'expected the redaction marker where the echoed key was');
+      } finally {
+        await stub.close();
+      }
+    }
+  });
+});
+
+// M-04: rendering truncates a field at MD_MAX_CHARS and the document was only
+// redacted AFTER that, by literal match. A key straddling the cut left its
+// prefix in the archived decision — a partial credential is still a leak.
+test('redaction: a key straddling the field truncation boundary leaves no prefix behind (M-04)', async () => {
+  await withWorkspace(async (dir) => {
+    const SECRET = 'sk-STRADDLE-0123456789abcdefghijklmnopqrstuvwxyz'; // 48 chars
+    const stub = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      const auth = (req.headers.authorization || '').replace(/^Bearer /, '');
+      res.setHeader('content-type', 'application/json');
+      const content = model === 'agg-model'
+        ? JSON.stringify({
+          summary: 'S', rationale: 'RA', risks: 'RK',
+          // 20 chars of the key sit before the 20000-char cut, 28 after it.
+          recommendation: `${'x'.repeat(20000 - 20)}${auth}-tail`,
+        })
+        : `opinion-from-${model}`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stdout, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        { OPENAI_API_KEY: SECRET, OPENAI_BASE_URL: `${stub.url}/v1` },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      const prefix = SECRET.slice(0, 20);
+      assert.ok(!doc.includes(prefix), `key prefix "${prefix}" survived the truncation boundary in DEC.md`);
+      assert.ok(!stdout.includes(prefix), 'key prefix leaked to stdout');
+      assert.ok(!doc.includes(SECRET), 'full key leaked into DEC.md');
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+// M-05: the proxy USERNAME was on the secret list. A username like `admin`
+// turned every occurrence of that word in the model output into
+// `***REDACTED***`, mangling the archived decision. The password and the
+// base64 `user:pass` blob (the actual wire credential) stay redacted.
+test('proxy credentials: a common-word proxy username is not scrubbed from the document; password + auth blob still are (M-05)', async () => {
+  await withWorkspace(async (dir) => {
+    const proxyUser = 'admin';
+    const proxyPass = 'S3CRET-proxy-pw';
+    const authBlob = Buffer.from(`${proxyUser}:${proxyPass}`).toString('base64');
+    // The proxy stub doubles as responder (absolute-form forwarding, as in the
+    // routing test) and reflects the Proxy-Authorization header into the content.
+    const proxy = await startServer((req, res, body) => {
+      let model = '';
+      try { model = JSON.parse(body).model; } catch { /* ignore */ }
+      const pa = req.headers['proxy-authorization'] || '';
+      res.setHeader('content-type', 'application/json');
+      const content = model === 'agg-model'
+        ? JSON.stringify({
+          summary: 'the admin console', recommendation: `run as admin; saw ${pa}`,
+          rationale: 'admin rights are needed', risks: 'RK',
+        })
+        : `opinion: ask the admin (${pa})`;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+    try {
+      const input = await writeInput(dir);
+      const config = await writeConfig(dir, TWO_REF_CONFIG);
+      const out = join(dir, 'DEC.md');
+      const { code, stdout, stderr } = await runMoa(
+        ['--input', input, '--config', config, '--output', out],
+        {
+          OPENAI_API_KEY: 'sk-fake',
+          OPENAI_BASE_URL: 'http://10.255.255.1/v1',
+          HTTPS_PROXY: `http://${proxyUser}:${proxyPass}@127.0.0.1:${proxy.port}`,
+        },
+      );
+      assert.equal(code, 0, `stderr: ${stderr}`);
+      const doc = await readFile(out, 'utf8');
+      assert.ok(doc.includes('the admin console'), `the word "admin" was scrubbed from the decision:\n${doc}`);
+      assert.ok(doc.includes('admin rights are needed'), 'the word "admin" was scrubbed from rationale');
+      assert.ok(!doc.includes(proxyPass), 'proxy password leaked into DEC.md');
+      assert.ok(!doc.includes(authBlob), 'proxy base64 auth blob leaked into DEC.md');
+      assert.ok(!stdout.includes(authBlob) && !stderr.includes(authBlob), 'auth blob leaked to stdout/stderr');
+    } finally {
+      await proxy.close();
+    }
+  });
+});
+
 // The `recommendation` fallback is the raw aggregator output, which is not a
 // rendered field and so was never length-capped.
 test('the raw-output fallback is length-capped like a rendered field', async () => {
