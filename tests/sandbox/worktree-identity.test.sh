@@ -562,4 +562,57 @@ assert_exists "$WS29/proj/docs/looptesting/.sandbox/ownership.env" \
 assert_file_contains "$WS29/clean.out" "could not confirm" \
   "clean says it could not answer the ownership question"
 
+# --- case 30: the unclaimed record must survive the NEXT rebuild too (S-09) ---
+# Case 15 covers one rebuild. The record it checks is written from the verdict of
+# THAT run, and the next rebuild has a verdict of its own — about a different
+# path — so it wrote UNCLAIMED_WORKTREE= empty and the marker stopped naming the
+# worktree it had walked away from. Nothing else on disk names it. That is the
+# same transitivity hole ADOPTED_BRANCH/ADOPTED_TAG were given a carry-forward
+# for, on the field where the consequence is a worktree nobody can find rather
+# than a ref nobody can delete: README's fourth purge keep-case simply stops
+# firing after the second rebuild, and purge closes over the evidence dir that
+# held the only record.
+#
+# Two rebuilds, and the second one has no unclaimed worktree of its own: clean
+# removes the worktree the first rebuild created, so the second sees `absent` —
+# the ordinary "recorded worktree is gone" rebuild, not an exotic state.
+foreign_worktree_repo; assert_ok $? "fixture for the two-rebuild record"; WS30="$FOREIGN_WS"
+( cd "$WS30/proj" && bash "$SETUP" --mode worktree --worktree-path "$WS30/elsewhere" ) >/dev/null 2>&1
+assert_ok $? "rebuild 1 lands at the requested path"
+MK30="$WS30/proj/docs/looptesting/.sandbox/ownership.env"
+assert_file_contains "$MK30" "UNCLAIMED_WORKTREE=$WS30/shared-wt" \
+  "fixture: rebuild 1 recorded the worktree it could not claim"
+( cd "$WS30/proj" && bash "$CLEAN" ) >/dev/null 2>&1
+assert_ok $? "clean removes the worktree rebuild 1 created"
+( cd "$WS30/proj" && bash "$SETUP" --mode worktree --worktree-path "$WS30/elsewhere" ) >/dev/null 2>&1
+assert_ok $? "rebuild 2 succeeds"
+assert_file_contains "$MK30" "UNCLAIMED_WORKTREE=$WS30/shared-wt" \
+  "rebuild 2 still records the worktree the FIRST rebuild could not claim"
+
+# The record only matters for what purge does with it.
+sed 's/^status: .*/status: CONVERGED/' "$WS30/proj/docs/looptesting/STATE.md" > "$WS30/st" \
+  && mv "$WS30/st" "$WS30/proj/docs/looptesting/STATE.md"
+( cd "$WS30/proj" && bash "$CLEAN" --purge ) > "$WS30/purge.out" 2>&1
+assert_eq "4" "$?" "purge still stops short over the worktree it cannot claim"
+assert_file_contains "$WS30/purge.out" "$WS30/shared-wt" "purge still names it"
+assert_exists "$WS30/shared-wt/feature.txt" "and still does not touch the user's work in it"
+assert_exists "$MK30" "the marker that names it survives purge"
+
+# --- case 31: a record that is no longer on disk is not carried forever -------
+# The carry-forward must not turn into a permanent exit 4. With the unclaimed
+# worktree removed by the user, the next rebuild has nothing to name and purge
+# must be able to finish.
+foreign_worktree_repo; assert_ok $? "fixture for the stale-record case"; WS31="$FOREIGN_WS"
+( cd "$WS31/proj" && bash "$SETUP" --mode worktree --worktree-path "$WS31/elsewhere" ) >/dev/null 2>&1
+assert_ok $? "rebuild 1 lands at the requested path"
+( cd "$WS31/proj" && git worktree remove --force "$WS31/shared-wt" ) >/dev/null 2>&1
+assert_absent "$WS31/shared-wt" "fixture: the user dealt with the unclaimed worktree"
+( cd "$WS31/proj" && bash "$CLEAN" ) >/dev/null 2>&1
+( cd "$WS31/proj" && bash "$SETUP" --mode worktree --worktree-path "$WS31/elsewhere" ) >/dev/null 2>&1
+assert_ok $? "rebuild 2 succeeds"
+MK31="$WS31/proj/docs/looptesting/.sandbox/ownership.env"
+if grep -qF "UNCLAIMED_WORKTREE=$WS31/shared-wt" "$MK31"; then
+  FAIL=$((FAIL+1)); echo "  FAIL: a path that no longer exists was carried forward" >&2
+else PASS=$((PASS+1)); fi
+
 report "worktree-identity.test.sh"

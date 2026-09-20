@@ -526,6 +526,25 @@ if [ -f "$MARKER" ]; then
           die "a worktree this sandbox cannot claim is standing at $RECORDED_WT. Either pass --worktree-path to build the sandbox somewhere else, or deal with that worktree first — 'git worktree remove --force $RECORDED_WT' if it is the sandbox's, move it aside if it is yours — and re-run. If it has '$BRANCH' checked out, --worktree-path alone will not be enough: git will refuse the branch, not the path" 6
         fi ;;
     esac
+    # Carry the unclaimed worktree across the rebuild for the same reason the
+    # adopted refs below are carried, on the field where forgetting costs more.
+    # The record written above describes THIS run's verdict; the next rebuild has
+    # a verdict about a different path and wrote this key empty, so after two
+    # rebuilds the marker no longer named the worktree it had walked away from —
+    # and nothing else on disk does. purge keys off exactly this, so its fourth
+    # keep-case stopped firing and it closed over the evidence dir that held the
+    # only record (audit S-09).
+    #
+    # Only while the path is still there: a record of something the user has
+    # since removed would make every later purge stop short over nothing. And
+    # only when this run has no unclaimed worktree of its own — the field holds
+    # one path, so a run that walks away from a SECOND worktree still forgets the
+    # first. That is a real residual, reachable only by redirecting --worktree-path
+    # twice in a row, and closing it needs a multi-valued marker key.
+    PRIOR_UNCLAIMED_WT="$(mval UNCLAIMED_WORKTREE)"
+    if [ -z "$UNCLAIMED_WORKTREE" ] && [ -n "$PRIOR_UNCLAIMED_WT" ] && [ -e "$PRIOR_UNCLAIMED_WT" ]; then
+      UNCLAIMED_WORKTREE="$PRIOR_UNCLAIMED_WT"
+    fi
     # Carry ownership across the marker rebuild: sandbox-clean deliberately KEEPS
     # the qa branch and baseline tag, so re-deriving ownership below from "does
     # this ref exist now" would record neither — orphaning artifacts this sandbox
