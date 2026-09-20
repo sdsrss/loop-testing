@@ -1,5 +1,74 @@
 # Changelog
 
+## Unreleased
+
+### Audit batch 2 — the first four
+
+v0.11.0 shipped the audit's eleven-item blocking list. This is the start of what
+the same report filed as batch 2, picked for value rather than for order: the one
+remaining fail-open in the mechanism layer, the two failures that were invisible
+while they happened, and the convergence rule that decides whether the loop ever
+stops. Full suite: `TOTAL: 39 suites, 1359 assertions, 0 failed`.
+
+**What changes for you.**
+
+1. **A STATE.md carrying two different `status:` values now blocks the stop.** The
+   gate took the first one, so an example or quoted `status: CONVERGED` written
+   above the real `status: RUNNING` let the session stop and deleted the `.active`
+   sentinel on the way out. Repeats that agree still parse; only disagreement
+   blocks, and the reason names both values.
+2. **A failed unattended session tells you why.** The last 20 lines of the agent's
+   stderr are appended to `driver.log` after each session, redacted first. An
+   expired key, a rate limit, an unknown flag and a bad working directory used to
+   arrive as `exit=N` and the no-progress verdict, indistinguishable from one
+   another. The redaction is best effort, not a guarantee, and
+   `LOOP_TESTING_DISABLE_SESSION_STDERR=1` turns the capture off. Session stdout
+   is still discarded — it is the transcript, not evidence.
+3. **`moa.mjs` says when your model ids cannot resolve.** With only
+   `OPENAI_API_KEY` set, the OpenRouter-namespaced default models resolve to
+   `api.openai.com`, where every request 404s — and `--dry-run` used to report
+   that configuration as fully resolved. Both `--dry-run` and the real run now
+   name it and the three ways out. A custom `OPENAI_BASE_URL` stays quiet, since
+   gateways do accept namespaced ids.
+4. **A round that tests less than before resets the convergence streak**, instead
+   of merely not counting: A-converged / B-shrunk / C-converged used to reach
+   `converged_streak: 2` on two rounds that were never consecutive. "Not
+   significantly below previous rounds" is now a number — `cases_this_round` at
+   least 80% of the maximum over all prior rounds, read from `runs/round-N.md` —
+   with one documented, quantified exception that has its own slot in the round
+   template.
+5. **A P0-P2 marked `CANNOT_REPRODUCE` no longer blocks convergence forever.**
+   `issue-rules.md` requires that state for anything that will not reproduce
+   while the convergence criteria refused it. `FIXED_UNVERIFIED` is now named and
+   refused on purpose, with its way out stated.
+
+- **fix(hooks)**: a conflicting `status:` line is ambiguity, not a verdict (audit
+  H-03). `head -1` resolved a duplicated machine field by position, which is
+  fail-open in the destructive direction — the same shape as deciding a path's
+  role from raw command text. An ambiguous `round:` is reported unknown (-1)
+  rather than guessed, which withholds only the progress-based counter reset. The
+  parse is builtins-only: `sort`/`wc` would have read a terminal status as
+  unparseable on the bare PATH the grep-only and python3-only legs run under.
+  Mutation-checked against both position rules.
+- **fix(driver)**: capture the session's stderr, redact it, and append the tail to
+  `driver.log` (audit D-05), on both drivers — D-02 was a fix applied to one of
+  them. The capture file is disposed of through the same shutdown sequence that
+  releases the lock, so it does not outlive the run on any exit path.
+- **fix(moa)**: warn when a namespaced `vendor/model` id resolves to provider
+  `openai` at the stock endpoint (audit M-06). Warned, not refused: refusing
+  would repeat the M-03 first attempt, which turned a documented exit-2 degrade
+  into exit 1 and stalled the loop.
+- **docs(protocol)**: convergence criteria 3 and 7 made decidable (audit K-06,
+  K-07), plus the two copies each rule runs through — `runs/round-N.md` is named
+  the single source for `cases_this_round` (K-21) and the `STATE.md` template's
+  shorter zero-list defers to the reference and carries the new trigger (K-22).
+  A template that disagrees with the protocol is the rule the model follows.
+- **test**: three new suites — `tests/commands/convergence-criteria.test.sh`
+  (23 assertions, 11 red against the previous text),
+  `tests/driver/session-stderr.test.sh` and
+  `tests/driver/codex-session-stderr.test.sh` (15 assertions, each property
+  mutation-checked) — plus 6 in `tests/hooks/stop-gate.test.sh` and 2 node tests.
+
 ## 0.11.0 — 2026-09-20
 
 Two batches, in the order they landed: a fresh-user QA pass, then the blocking list
