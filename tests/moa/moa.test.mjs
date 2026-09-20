@@ -1637,3 +1637,57 @@ test('proxy: a bare IPv6 NO_PROXY entry matches an IPv6 endpoint (R2-P3)', async
     assert.match(miss.stdout, /\[::1\]:11434.*via HTTPS_PROXY/, `a non-matching IPv6 entry must not bypass:\n${miss.stdout}`);
   });
 });
+
+// R3-P3 (pre-existing on a7295ed, 50a846b and 42d2970 alike): the depth-cap
+// branch serializes the subtree with JSON.stringify BEFORE redacting it, and
+// serialization re-escapes every string — so a credential containing `"`, `\`
+// or a control character stops matching its own secret and lands in DEC.md
+// whole. This is not a truncation bug: the payload here is far under the
+// 500-char cut, so no cut happens; the escaping alone defeats the match.
+// Redaction has to happen DURING serialization.
+test('redaction: a secret containing a JSON-escapable character is scrubbed from a depth-capped blob (R3-P3)', async () => {
+  await withWorkspace(async (dir) => {
+    const KEYS = [
+      ['plain', 'sk-PLAIN-abc123xyz'],            // control: already clean, must stay clean
+      ['double quote', 'sk-QU"OTE-abc123xyz'],
+      ['backslash', 'sk-BS\\LASH-abc123xyz'],
+    ];
+    for (const [label, SECRET] of KEYS) {
+      // Seven object levels: the renderer's depth cap is 6, so the innermost
+      // object is serialized as an inert blob rather than walked.
+      const stub = await startServer((req, res, body) => {
+        let model = '';
+        try { model = JSON.parse(body).model; } catch { /* ignore */ }
+        const auth = req.headers.authorization || '';
+        res.setHeader('content-type', 'application/json');
+        const content = model === 'agg-model'
+          ? JSON.stringify({
+            summary: 'S', recommendation: 'R', rationale: 'RA',
+            risks: { a: { b: { c: { d: { e: { f: { g: `endpoint echoed ${auth}` } } } } } } },
+          })
+          : `opinion-from-${model}`;
+        res.statusCode = 200;
+        res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+      });
+      try {
+        const input = await writeInput(dir);
+        const config = await writeConfig(dir, TWO_REF_CONFIG);
+        const out = join(dir, 'DEC.md');
+        const { code, stdout, stderr } = await runMoa(
+          ['--input', input, '--config', config, '--output', out],
+          { OPENAI_API_KEY: SECRET, OPENAI_BASE_URL: `${stub.url}/v1` },
+        );
+        assert.equal(code, 0, `[${label}] stderr: ${stderr}`);
+        const doc = await readFile(out, 'utf8');
+        // Both forms: as the key was typed, and as JSON.stringify would write it.
+        const escaped = JSON.stringify(SECRET).slice(1, -1);
+        assert.ok(!doc.includes(SECRET), `[${label}] the key leaked into a depth-capped blob in DEC.md`);
+        assert.ok(!doc.includes(escaped), `[${label}] the JSON-escaped key leaked into a depth-capped blob in DEC.md`);
+        assert.ok(!stdout.includes(escaped), `[${label}] the JSON-escaped key leaked to stdout`);
+        assert.ok(doc.includes('REDACTED'), `[${label}] expected the redaction marker where the echoed key was`);
+      } finally {
+        await stub.close();
+      }
+    }
+  });
+});

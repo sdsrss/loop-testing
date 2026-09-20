@@ -389,8 +389,12 @@ function proxyFor(env, urlStr) {
 function makeProxyResolver(env) {
   return (urlStr) => {
     const sel = proxyFor(env, urlStr);
-    // Defense in depth for an endpoint validateProxyEnv could not pre-resolve:
-    // never speak plaintext HTTP/CONNECT to a socks (or TLS) proxy port.
+    // Belt-and-braces, and measured UNREACHABLE today (zero fires across the
+    // whole suite): this and validateProxyEnv consume the same proxyFor() over
+    // the same endpoint set, so they cannot disagree, and the one path that
+    // skips config-time validation — an unparseable base URL — throws inside
+    // proxyFor() before reaching here. Kept so a future refactor that resolves
+    // an endpoint later still cannot speak plaintext to a socks (or TLS) port.
     if (sel.url) {
       const problem = proxyUrlProblem(sel.source, sel.url);
       if (problem) throw new Error(problem);
@@ -725,8 +729,15 @@ function toMarkdownValue(v, redact, depth = 0) {
   if (depth >= MD_MAX_DEPTH) {
     // Deeper than any real committee answer. Keep the payload as inert text
     // rather than recursing into it — the decision still lands, bounded.
+    // Redact DURING serialization, not after: JSON.stringify escapes as it
+    // writes, so a credential containing `"`, `\` or a control character comes
+    // out as `sk-QU\"OTE…` and stops matching its own secret. That leak needs no
+    // truncation at all — the blob below can be far under the cut. (Residual,
+    // narrower still: a secret inside an object KEY at this depth is escaped the
+    // same way, and a replacer cannot rename keys; the pass below catches it
+    // only when it carries no escapable character.)
     let inert;
-    try { inert = JSON.stringify(v); } catch { return null; }
+    try { inert = JSON.stringify(v, (_k, val) => (typeof val === 'string' ? redact(val) : val)); } catch { return null; }
     if (!inert) return null;
     inert = redact(inert.replace(/`/g, "'"));
     return `\`${inert.length > 500 ? `${inert.slice(0, 500)}…` : inert}\``;
