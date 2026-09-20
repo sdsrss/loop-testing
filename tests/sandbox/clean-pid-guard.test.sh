@@ -41,25 +41,40 @@ new_repo() {
 # group*, then runs clean. rc.txt is written only if clean RETURNS — a `kill 0`
 # from clean kills the wrapper and the sentinel together, so both the missing
 # rc.txt and the dead sentinel are direct evidence of the blast radius.
+# A 4th argument of `self` makes the wrapper record its OWN pid in .pids — the
+# only way to build a .pids entry that is genuinely an ancestor of the clean
+# process, which no value computed out here could be.
 make_wrapper() { # dir
   cat > "$1/run-clean.sh" <<'EOS'
 #!/usr/bin/env bash
-repo="$1"; clean="$2"; out="$3"
+repo="$1"; clean="$2"; out="$3"; mode="${4:-}"
 sleep 20 & echo "$!" > "$out/sentinel.pid"
 cd "$repo" || exit 9
-bash "$clean" > "$out/clean.out" 2>&1
+echo "$$" > "$out/wrapper.pid"
+case "$mode" in
+  self|self2) echo "$$" > "$repo/docs/looptesting/.pids" ;;
+esac
+if [ "$mode" = self2 ]; then
+  # One more shell between the wrapper and clean, so the recorded PID is clean's
+  # GRANDparent and only the ancestor walk can find it. The trailing `exit` stops
+  # bash from exec-optimizing a lone command away, which would collapse the level
+  # and silently turn this into the parent case; mid.pid is what proves it did not.
+  bash -c 'echo $$ > "$2/mid.pid"; bash "$1" > "$2/clean.out" 2>&1; exit $?' _ "$clean" "$out"
+else
+  bash "$clean" > "$out/clean.out" 2>&1
+fi
 echo "rc=$?" > "$out/rc.txt"
 EOS
   chmod +x "$1/run-clean.sh"
 }
 
-run_clean_isolated() { # repo out_dir pids_content
-  local repo="$1" out="$2" pids="$3" wrapper
-  rm -f "$out/rc.txt" "$out/clean.out" "$out/sentinel.pid"
+run_clean_isolated() { # repo out_dir pids_content [self]
+  local repo="$1" out="$2" pids="$3" mode="${4:-}" wrapper
+  rm -f "$out/rc.txt" "$out/clean.out" "$out/sentinel.pid" "$out/wrapper.pid" "$out/mid.pid"
   printf '%s\n' "$pids" > "$repo/docs/looptesting/.pids"
   make_wrapper "$out"
   set -m
-  "$out/run-clean.sh" "$repo" "$CLEAN" "$out" >/dev/null 2>&1 &
+  "$out/run-clean.sh" "$repo" "$CLEAN" "$out" "$mode" >/dev/null 2>&1 &
   wrapper=$!
   wait "$wrapper" 2>/dev/null
   set +m
@@ -113,6 +128,61 @@ else PASS=$((PASS+1)); fi
 # Case 3 does not assert on the wrapper's own sentinel (cases 1-2 reap theirs inside
 # assert_sentinel_alive), so reap it here — otherwise every run leaves a `sleep 20`
 # orphan behind for 20 s (audit 2026-09-20 T-02).
+_wp=$(cat "$OUT/sentinel.pid" 2>/dev/null); [ -n "$_wp" ] && kill "$_wp" 2>/dev/null
+
+# --- case 4: a recorded PID that is clean's OWN ancestor (audit S-06) ---------
+# The 0/1 guard above rejects two values. It does not reject the shape the same
+# input channel actually produces: `lsof -t -i :PORT` / `ss -ltnp` report whoever
+# holds the port, and that can be the agent session — or the unattended driver —
+# that is running this very cleanup. A recycled PID arrives at the same place.
+#
+# The damage is not "one extra SIGTERM". collect_tree expands the recorded PID
+# into its whole descendant tree, and clean is one of those descendants, so the
+# target set contains clean's own PID: it signals itself and dies at that line,
+# which is BEFORE the worktree removal and before `.active` is disarmed. The
+# teardown stops halfway, the sandbox stays up, and the stop-gate keeps refusing
+# to end the session — the failure that most looks like the tool hanging.
+#
+# Only the wrapper can produce this fixture: it writes its own $$ into .pids, so
+# the recorded PID is genuinely clean's parent. The load-bearing assertion is the
+# worktree one — a self-signalled clean never reaches it.
+new_repo; assert_ok $? "setup for the .pids=<clean's own parent> case"; REPO="$NEW_REPO"
+OUT=$(dirname "$REPO")
+run_clean_isolated "$REPO" "$OUT" "" self
+assert_absent "$(dirname "$REPO")/proj-qa-loop" "clean completed its real work with its own parent in .pids"
+assert_exists "$OUT/rc.txt" "clean's parent survived to write the return code"
+assert_file_contains "$OUT/clean.out" "refusing to signal PID" "clean names the refused ancestor PID"
+assert_absent "$REPO/docs/looptesting/.active" "the stop-gate sentinel was still disarmed"
+_wp=$(cat "$OUT/sentinel.pid" 2>/dev/null); [ -n "$_wp" ] && kill "$_wp" 2>/dev/null
+
+# --- case 5: control — an unrelated recorded PID is still stopped -------------
+# Case 4 passes for a "fix" that stops signalling anything at all. This one does
+# not: a PID that is no relation to clean must still be terminated.
+new_repo; assert_ok $? "setup for the unrelated-PID control"; REPO="$NEW_REPO"
+OUT=$(dirname "$REPO")
+sleep 20 & unrelated_pid=$!
+run_clean_isolated "$REPO" "$OUT" "$unrelated_pid"
+if kill -0 "$unrelated_pid" 2>/dev/null; then
+  FAIL=$((FAIL+1)); echo "  FAIL: an unrelated recorded PID was left running" >&2
+  kill -9 "$unrelated_pid" 2>/dev/null
+else PASS=$((PASS+1)); fi
+_wp=$(cat "$OUT/sentinel.pid" 2>/dev/null); [ -n "$_wp" ] && kill "$_wp" 2>/dev/null
+
+# --- case 6: a GRANDparent, which only the ancestor walk can catch ------------
+# Case 4 is satisfied by `$PPID` alone, so on its own it leaves the walk above it
+# untested — and the real shape has depth: the unattended driver starts a session
+# which runs the skill which runs clean, and it is the DRIVER's pid that `ss`
+# reports for a port it opened. This case puts one extra shell in between and
+# asserts the fixture really has two levels before asserting anything about the
+# guard, so a collapsed intermediate cannot pass as coverage of the walk.
+new_repo; assert_ok $? "setup for the .pids=<clean's grandparent> case"; REPO="$NEW_REPO"
+OUT=$(dirname "$REPO")
+run_clean_isolated "$REPO" "$OUT" "" self2
+_w6=$(cat "$OUT/wrapper.pid" 2>/dev/null); _m6=$(cat "$OUT/mid.pid" 2>/dev/null)
+if [ -n "$_w6" ] && [ -n "$_m6" ] && [ "$_w6" != "$_m6" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: fixture — the intermediate shell collapsed, so this case never reached the ancestor walk" >&2; fi
+assert_absent "$(dirname "$REPO")/proj-qa-loop" "clean completed its real work with its own grandparent in .pids"
+assert_file_contains "$OUT/clean.out" "refusing to signal PID" "clean names the refused grandparent PID"
 _wp=$(cat "$OUT/sentinel.pid" 2>/dev/null); [ -n "$_wp" ] && kill "$_wp" 2>/dev/null
 
 report "clean-pid-guard.test.sh"
