@@ -42,7 +42,7 @@ node "$SKILL_DIR"/scripts/moa.mjs \
   --output docs/looptesting/decisions/DEC-007.md
 ```
 
-> `$SKILL_DIR` = 本技能安装目录（Claude：`${CLAUDE_PLUGIN_ROOT}/skills/loop-testing`；Codex：`~/.codex/skills/loop-testing`；定位详见 SKILL.md「脚本与模板定位」）。**先跑 `--dry-run` 确认配置与 key 就绪，再发起付费调用；引擎定位不到 ≠ MoA 不可用**——找不到脚本时先按上述路径解析，仍找不到才走 §5 的 `degraded: single-model` 降级。
+> `$SKILL_DIR` = 本技能安装目录（Claude：`${CLAUDE_PLUGIN_ROOT}/skills/loop-testing`；Codex：`${CODEX_HOME:-$HOME/.codex}/skills/loop-testing`（装时用 `--target DIR` 则为该 `DIR`）；定位详见 SKILL.md「脚本与模板定位」）。**先跑 `--dry-run` 确认配置与 key 就绪，再发起付费调用；引擎定位不到 ≠ MoA 不可用**——找不到脚本时先按上述路径解析，仍找不到才走 §5 的 `degraded: single-model` 降级。
 
 可选参数：
 

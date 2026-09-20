@@ -125,7 +125,7 @@ silent when offline or in local dev mode. Disable it with `LOOP_TESTING_DISABLE_
 Codex uses the same `SKILL.md` format; install with the bundled script:
 
 ```bash
-bash install/install-codex.sh                 # install to ~/.codex/skills/loop-testing
+bash install/install-codex.sh                 # install to ${CODEX_HOME:-~/.codex}/skills/loop-testing
 bash install/install-codex.sh --target <dir>  # custom skills dir
 bash install/install-codex.sh --dry-run       # print actions only
 bash install/install-codex.sh --check-update  # compare installed version vs latest tag
@@ -262,7 +262,7 @@ A finished run (after `sandbox-clean.sh`) **deliberately keeps** these artifacts
 | `qa/loop-testing` branch | target repo | **holds the fix commits — they exist nowhere else** |
 | `qa-baseline` tag | target repo | marks the pre-run baseline for diffing |
 | `latest-tag` — in `${CLAUDE_PLUGIN_DATA}` when installed as a plugin (`~/.claude/plugins/data/loop-testing@…/`), else `~/.cache/loop-testing/` | plugin data dir / user cache dir | 24h update-check throttle (Claude Code hook); safe to delete any time. Under the plugin data dir `claude plugin uninstall` removes it for you (`--keep-data` opts out); the `~/.cache` fallback is used by Codex and `--plugin-dir` dev loads and is removed by hand |
-| `~/.codex/skills/loop-testing` (+ a `.bak` after reinstalls), `~/.codex/prompts/loop-testing.md` | Codex home | the installed skill; removed by `install/install-codex.sh --uninstall` |
+| `${CODEX_HOME:-~/.codex}/skills/loop-testing` (+ a `.bak` after reinstalls), `${CODEX_HOME:-~/.codex}/prompts/loop-testing.md`, or the `--target DIR` you installed into | Codex home | the installed skill; removed by `install/install-codex.sh --uninstall` (pass the same `--target`) |
 
 **Harvest first, then purge** — the fix commits live only on the qa branch:
 
@@ -271,20 +271,35 @@ A finished run (after `sandbox-clean.sh`) **deliberately keeps** these artifacts
 #    FINAL_REPORT.md §4 maps each ISSUE to its commit hash)
 git log qa-baseline..qa/loop-testing --oneline
 git merge qa/loop-testing            # or cherry-pick selected hashes
+```
 
-# 2. Purge everything the run owned (marker-gated, terminal runs only).
-#    SKILL_DIR is the INSTALLED skill directory, not the target project —
-#    set it for your install before running the command:
-SKILL_DIR=~/.codex/skills/loop-testing                                              # Codex
-SKILL_DIR=~/.claude/plugins/cache/loop-testing/loop-testing/<version>/skills/loop-testing  # Claude Code plugin (ls that dir for <version>)
-SKILL_DIR=<path to this repo>/skills/loop-testing                                   # --plugin-dir load / git clone
+Then purge. `SKILL_DIR` is the **installed skill** directory, not the target project —
+list your installs first and name the one you want, because this deletes things:
+
+```bash
+# 2. Find your install — prints one line per install found.
+ls -d "${CODEX_HOME:-$HOME/.codex}"/skills/loop-testing \
+      "$HOME"/.claude/plugins/cache/*/loop-testing/*/skills/loop-testing \
+      "$PWD"/skills/loop-testing 2>/dev/null
+
+# 3. Set it to one of the lines above, then purge.
+SKILL_DIR="<paste one of the paths printed above>"
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
-#    a branch with commits beyond the baseline is always KEPT — deleting commits
-#    stays your call. When the tip is also reachable from another ref (you MERGED
-#    it somewhere), purge says so instead of asking you to harvest again; a backup
-#    push of the branch itself does NOT count, and a cherry-pick harvest rewrites
-#    the commits, so neither is detected. Once you have taken what you want,
-#    waive explicitly:
+```
+
+Several lines can come back: the plugin cache keeps older versions next to the current
+one, and a cache segment is not always a version number — it can be a commit SHA such as
+`022b3c274938`, so there is nothing to sort. Pick the one you are actually running.
+Installed with `install-codex.sh --target DIR`? That `DIR` is your `SKILL_DIR`.
+
+A branch with commits beyond the baseline is always **kept** — deleting commits stays
+your call. When the tip is also reachable from another ref (you *merged* it somewhere),
+purge says so instead of asking you to harvest again; a backup push of the branch itself
+does **not** count, and a cherry-pick harvest rewrites the commits, so neither is
+detected. Once you have taken what you want, waive explicitly — in the same shell, so
+`SKILL_DIR` is still set:
+
+```bash
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
 ```
 

@@ -108,7 +108,7 @@ claude --plugin-dir .
 Codex 与 Claude Code 共用同一 `SKILL.md` 格式,用随仓库脚本安装:
 
 ```bash
-bash install/install-codex.sh                 # 装到 ~/.codex/skills/loop-testing
+bash install/install-codex.sh                 # 装到 ${CODEX_HOME:-~/.codex}/skills/loop-testing
 bash install/install-codex.sh --target <dir>  # 指定技能目录
 bash install/install-codex.sh --dry-run       # 只打印动作,不写文件
 bash install/install-codex.sh --check-update  # 比对已装版本与 GitHub 最新 tag
@@ -229,7 +229,7 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 | `qa/loop-testing` 分支 | 目标仓库 | **承载全部修复 commit——只存在于该分支** |
 | `qa-baseline` tag | 目标仓库 | 标记跑前基线,便于 diff |
 | `latest-tag` — 以插件安装时在 `${CLAUDE_PLUGIN_DATA}`(`~/.claude/plugins/data/loop-testing@…/`),否则在 `~/.cache/loop-testing/` | 插件数据目录 / 用户缓存目录 | 更新检查 24h 节流(Claude Code hook),随时可删。放在插件数据目录时 `claude plugin uninstall` 会一并清掉(`--keep-data` 可保留);`~/.cache` 兜底路径供 Codex 与 `--plugin-dir` 开发加载使用,需手动删 |
-| `~/.codex/skills/loop-testing`(重装后另有 `.bak`)、`~/.codex/prompts/loop-testing.md` | Codex 主目录 | 已安装技能;`install/install-codex.sh --uninstall` 移除 |
+| `${CODEX_HOME:-~/.codex}/skills/loop-testing`(重装后另有 `.bak`)、`${CODEX_HOME:-~/.codex}/prompts/loop-testing.md`,或你安装时指定的 `--target DIR` | Codex 主目录 | 已安装技能;`install/install-codex.sh --uninstall` 移除(需带同样的 `--target`) |
 
 **先收割,再清扫**——修复 commit 只在 qa 分支上:
 
@@ -238,17 +238,32 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 #    FINAL_REPORT.md §4 有 ISSUE ↔ commit 哈希对照表)
 git log qa-baseline..qa/loop-testing --oneline
 git merge qa/loop-testing            # 或 cherry-pick 选定哈希
+```
 
-# 2. 一键清扫本次运行的全部自建物(marker 门控,仅限终态运行)。
-#    SKILL_DIR 是技能的**安装目录**,不是目标项目——按你的安装方式先赋值再执行:
-SKILL_DIR=~/.codex/skills/loop-testing                                              # Codex
-SKILL_DIR=~/.claude/plugins/cache/loop-testing/loop-testing/<version>/skills/loop-testing  # Claude Code 插件(ls 该目录查 <version>)
-SKILL_DIR=<本仓库路径>/skills/loop-testing                                           # --plugin-dir 加载 / git clone
+然后清扫。`SKILL_DIR` 指**技能的安装目录**,不是目标项目——这条命令会删东西,所以先把
+你的安装列出来,再亲手指定用哪一份:
+
+```bash
+# 2. 找到你的安装——每找到一份就打印一行。
+ls -d "${CODEX_HOME:-$HOME/.codex}"/skills/loop-testing \
+      "$HOME"/.claude/plugins/cache/*/loop-testing/*/skills/loop-testing \
+      "$PWD"/skills/loop-testing 2>/dev/null
+
+# 3. 把它设为上面打印出的某一行,然后清扫。
+SKILL_DIR="<paste one of the paths printed above>"
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
-#    分支相对基线仍有 commit 就一律保留——删不删由你定。若分支指针还能从
-#    其它 ref 到达(你已把它 merge 到某处),purge 会直接说明,不再要求你重新
-#    收割;对该分支自身做 backup push 不算,cherry-pick 收割会改写 commit,
-#    两者都检测不到。确认已合入所需修复后,显式放弃:
+```
+
+可能会打印出多行:插件缓存会把旧版本和当前版本并排留着,而且缓存里的版本目录段**不一定是
+版本号**——也可能是 commit SHA(例如 `022b3c274938`),因此没有可排序的东西。请挑你**实际
+在用**的那一份。若安装时用了 `install-codex.sh --target DIR`,那个 `DIR` 就是 `SKILL_DIR`。
+
+分支相对基线仍有 commit 就一律**保留**——删不删由你定。若分支指针还能从其它 ref 到达
+(你已把它 merge 到某处),purge 会直接说明,不再要求你重新收割;对该分支自身做 backup
+push 不算,cherry-pick 收割会改写 commit,两者都检测不到。确认已合入所需修复后,显式
+放弃——在**同一个 shell** 里执行,`SKILL_DIR` 仍然有效:
+
+```bash
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
 ```
 

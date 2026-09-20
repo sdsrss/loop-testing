@@ -134,24 +134,135 @@ README_EN="$REPO_ROOT/README.md"
 README_ZH="$REPO_ROOT/README.zh-CN.md"
 TEMPLATE="$REPO_ROOT/skills/loop-testing/templates/FINAL_REPORT.md"
 
-# K-05: both READMEs run `bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge` — a
-# command a user pastes verbatim. Neither defined SKILL_DIR, so pasted as-is it ran
-# `/scripts/sandbox-clean.sh`. Assert a `SKILL_DIR=` assignment precedes the FIRST use.
 for f in "$README_EN" "$README_ZH"; do
   n="${f##*/}"
-  first_use=$(grep -n '"\$SKILL_DIR"' "$f" | head -1 | cut -d: -f1)
-  first_def=$(grep -n '^SKILL_DIR=' "$f" | head -1 | cut -d: -f1)
-  if [ -z "$first_use" ]; then fail "$n: purge command using \"\$SKILL_DIR\" is gone (README purge section)"
-  elif [ -z "$first_def" ]; then fail "$n: \"\$SKILL_DIR\" is used (line $first_use) but never assigned (K-05)"
-  elif [ "$first_def" -lt "$first_use" ]; then pass "$n: SKILL_DIR is assigned (line $first_def) before its first use (line $first_use)"
-  else fail "$n: SKILL_DIR is first assigned at line $first_def, after its first use at line $first_use (K-05)"; fi
-  # every install shape a user can have gets a definition
-  has "$f" 'SKILL_DIR=~/.codex/skills/loop-testing' "$n defines SKILL_DIR for the Codex install"
-  has "$f" 'SKILL_DIR=~/.claude/plugins/cache/loop-testing/loop-testing/' "$n defines SKILL_DIR for the Claude Code plugin install"
   # D-04: the permission mode the drivers actually use must be disclosed where the
   # drivers are documented — the exact flags, so a reader can grep the driver for them.
   has "$f" '--permission-mode bypassPermissions' "$n discloses the Claude driver's bypassPermissions mode (D-04)"
   has "$f" '-s danger-full-access' "$n discloses the Codex driver's danger-full-access sandbox (D-04)"
+done
+
+# ── K-05: the purge block has to WORK when pasted, not merely mention SKILL_DIR ─
+# The guard that used to live here asserted only "a SKILL_DIR= line appears before
+# the first use of $SKILL_DIR". That passes on lines that DO NOT PARSE, which is
+# why it stayed green while both READMEs were broken: in
+#   SKILL_DIR=~/.claude/plugins/cache/…/<version>/skills/loop-testing
+# bash reads `<version>` as a redirection, so the value is truncated at `<` (the
+# English file kept `…/loop-testing/`, and the purge silently hit a path that does
+# not exist) or left empty (the Chinese file, which then ran `/scripts/sandbox-clean.sh`).
+# So: run the documented block in a real bash, against fixture installs, and assert
+# on where it actually lands. Every fixture $HOME contains a space on purpose.
+extract_purge_block() { # readme -> the ```bash fence that assigns SKILL_DIR
+  awk '
+    /^```bash$/    { inb=1; buf=""; next }
+    inb && /^```$/ { if (buf ~ /SKILL_DIR=/) { printf "%s", buf; found=1; exit } inb=0; next }
+    inb            { buf = buf $0 "\n" }
+    END            { if (!found) exit 1 }
+  ' "$1"
+}
+
+K5=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-k05.XXXXXX")
+trap 'rm -rf "$K5"' EXIT
+mkdir -p "$K5/neutral"
+mk_install() { mkdir -p "$1/scripts"; printf '#!/usr/bin/env bash\necho "STUB-CLEAN $*"\n' > "$1/scripts/sandbox-clean.sh"; }
+
+# Run the block verbatim. stdout collects the candidate listing (and any stub that
+# ran); stderr goes to $K5/err, where a careless paste must name the placeholder.
+run_block() { # blockfile home codexhome cwd
+  if [ -n "$3" ]; then ( cd "$4" && HOME="$2" CODEX_HOME="$3" bash "$1" ) 2>"$K5/err"
+  else                 ( cd "$4" && HOME="$2" env -u CODEX_HOME bash "$1" ) 2>"$K5/err"; fi
+}
+
+# every path the block prints must be a real, readable install
+assert_all_candidates_readable() { # listing label
+  local line bad=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ -r "$line/scripts/sandbox-clean.sh" ] || { bad=1; echo "  (unreadable candidate: $line)" >&2; }
+  done <<EOF
+$1
+EOF
+  if [ "$bad" -eq 0 ]; then pass "$2: every printed candidate has a readable scripts/sandbox-clean.sh"
+  else fail "$2: the block printed a path with no readable scripts/sandbox-clean.sh"; fi
+}
+
+for f in "$README_EN" "$README_ZH"; do
+  n="${f##*/}"
+  blk="$K5/block-$n.sh"
+  if extract_purge_block "$f" > "$blk" && [ -s "$blk" ]; then
+    pass "$n: the purge section has a bash block that assigns SKILL_DIR"
+  else
+    fail "$n: no fenced bash block assigns SKILL_DIR — the K-05 harness cannot run"
+    continue
+  fi
+
+  # THE regression: the placeholder must be QUOTED. Unquoted, `<...>` is a
+  # redirection and the assignment never carries the text the reader was told to
+  # replace; quoted, a careless paste fails naming the placeholder instead.
+  if grep -qE '^SKILL_DIR="' "$blk"; then pass "$n: SKILL_DIR is assigned a quoted value"
+  else fail "$n: SKILL_DIR must be assigned a QUOTED value — unquoted <placeholder> parses as a redirection (K-05)"; fi
+
+  # fixture 1 — Codex default layout, no CODEX_HOME
+  H="$K5/case-codex/a home dir"; mk_install "$H/.codex/skills/loop-testing"
+  outA=$(run_block "$blk" "$H" "" "$K5/neutral")
+  cands=$(printf '%s\n' "$outA" | grep -F "$K5/case-codex" || true)
+  printf '%s\n' "$cands" | grep -qxF "$H/.codex/skills/loop-testing" \
+    && pass "$n: lists the default Codex install (space in \$HOME survives)" \
+    || fail "$n: default Codex install not listed (got: $cands)"
+
+  # fixture 2 — CODEX_HOME pointed somewhere else
+  H2="$K5/case-codexhome/a home dir"; CH="$K5/case-codexhome/a codex home"
+  mkdir -p "$H2"; mk_install "$CH/skills/loop-testing"
+  outB=$(run_block "$blk" "$H2" "$CH" "$K5/neutral")
+  printf '%s\n' "$outB" | grep -qxF "$CH/skills/loop-testing" \
+    && pass "$n: honours CODEX_HOME instead of ~/.codex" \
+    || fail "$n: CODEX_HOME install not listed (got: $outB)"
+
+  # fixture 3 — plugin cache holding several versions, one of them a commit SHA.
+  # The block must PRINT them all and pick none: 0.9.0 sorts after 0.10.0
+  # lexically and a SHA has no order at all, so there is nothing safe to sort by.
+  H3="$K5/case-cache/a home dir"; C3="$H3/.claude/plugins/cache/loop-testing/loop-testing"
+  mk_install "$C3/0.10.0/skills/loop-testing"
+  mk_install "$C3/0.9.0/skills/loop-testing"
+  mk_install "$C3/022b3c274938/skills/loop-testing"
+  outC=$(run_block "$blk" "$H3" "" "$K5/neutral")
+  nC=$(printf '%s\n' "$outC" | grep -c "^$C3/" || true)
+  if [ "$nC" -eq 3 ]; then pass "$n: prints all three cached versions, choosing none"
+  else fail "$n: expected 3 cached candidates, got $nC ($outC)"; fi
+  assert_all_candidates_readable "$outC" "$n"
+
+  # fixture 4 — a clone you are standing in
+  H4="$K5/case-clone/a home dir"; CL="$K5/case-clone/a clone dir"
+  mkdir -p "$H4"; mk_install "$CL/skills/loop-testing"
+  outD=$(run_block "$blk" "$H4" "" "$CL")
+  printf '%s\n' "$outD" | grep -qxF "$CL/skills/loop-testing" \
+    && pass "$n: lists the clone you are standing in" \
+    || fail "$n: clone install not listed (got: $outD)"
+
+  # fixture 5 — nothing installed anywhere
+  H5="$K5/case-none/a home dir"; mkdir -p "$H5"
+  outE=$(run_block "$blk" "$H5" "" "$K5/neutral")
+  nE=$(printf '%s' "$outE" | grep -c . || true)
+  if [ "$nE" -eq 0 ]; then pass "$n: with nothing installed the block lists nothing"
+  else fail "$n: with nothing installed the block still printed: $outE"; fi
+
+  # the careless paste — block run WITHOUT editing the placeholder. It must not
+  # execute anything, and must fail naming the placeholder (this is the property
+  # the unquoted version lacked: it bound an empty/truncated path and ran it).
+  if printf '%s' "$outA" | grep -qF 'STUB-CLEAN'; then
+    fail "$n: an unedited paste RAN sandbox-clean — the placeholder must not resolve (K-05)"
+  else pass "$n: an unedited paste runs no sandbox-clean"; fi
+  if grep -qF 'paste one of the paths printed above' "$K5/err"; then
+    pass "$n: an unedited paste fails naming the placeholder"
+  else fail "$n: an unedited paste must fail naming the placeholder, stderr was: $(cat "$K5/err")"; fi
+
+  # and the edited paste — the reader substitutes a printed line and purges.
+  chosen=$(printf '%s\n' "$outC" | grep "^$C3/" | sed -n '2p')
+  awk -v c="$chosen" '/^SKILL_DIR=/ { print "SKILL_DIR=\"" c "\""; next } { print }' "$blk" > "$K5/edited.sh"
+  outF=$(run_block "$K5/edited.sh" "$H3" "" "$K5/neutral")
+  printf '%s' "$outF" | grep -qF 'STUB-CLEAN --purge' \
+    && pass "$n: substituting a printed path purges with that install" \
+    || fail "$n: edited paste did not reach sandbox-clean --purge (got: $outF)"
 done
 # ...and the disclosure must not be stale: the drivers must still use exactly those flags.
 grep -qF -- '--permission-mode bypassPermissions' "$REPO_ROOT/skills/loop-testing/scripts/unattended-loop.sh" \
