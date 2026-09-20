@@ -60,6 +60,72 @@ a clean tree with `bash tests/run-all.sh | grep '^TOTAL:'`.
   suite also pins `MAX_BLOCKS=3` in `hooks/stop-gate.sh` to the number SKILL.md
   now quotes.
 
+### D-05 returns: a failed unattended session says why
+
+The session-stderr capture pulled from 0.12.0 is back, with the design its review
+asked for. **A failed unattended session now appends the last 20 lines (4000
+bytes) of that session's stderr to `driver.log`, redacted**, under
+`session N stderr:` — where an expired key, a rate limit, an unknown flag or a
+bad working directory actually says which one it was. Every one of those used to
+arrive as `exit=N` plus the no-progress verdict, indistinguishable. Set
+`LOOP_TESTING_DISABLE_SESSION_STDERR=1` to keep it on `/dev/null`.
+
+**What changed from the version that was pulled.** That one bounded the capture at
+a writer — `2> >(tail -c … > "$SINK.part"; mv -f …)` — and the opt-out made it
+fatal: the sink is then `/dev/null`, `/dev/null.part` is not creatable by a normal
+user, so the writer exited, the session's stderr pipe lost its reader and every
+session died of SIGPIPE at round 0; under root the rename replaced the
+`/dev/null` device node itself. This one is a plain redirect into a fresh file per
+session. No writer, no second path derived from the sink, nothing to wait for.
+
+Three review rounds across two independent reviewers found the rest, and two of
+the three were defects in the repair rather than in the original:
+
+1. **One file per session, not one file reused.** `O_TRUNC` resets a file's size,
+   never the offset of an already-open file description, so a background
+   grandchild still holding fd 2 wrote into the *next* session's file at its
+   stale offset — its output filed under that session, and that session's own
+   error pushed out of the tail window. Reproduced: session 2's expired-key
+   message absent from the log. The D-05 symptom, produced by the D-05 fix.
+2. **The byte cap amputated labels.** `tail -c` cuts on a byte boundary before
+   redaction runs, so a credential straddling 4000 bytes reached the rules with
+   its `"api_key":"` removed — a bare run, under the fallback, published verbatim
+   while the filler after it was masked, so the line read as redacted. One
+   4091-byte HTTP dump leaked 18 of a 31-character secret. The partial first line
+   is dropped now, and the log says so when that leaves nothing.
+3. **Redaction: a quoted `"authorization": "Basic …"` bypassed the header rule**
+   entirely (JSON, Python and Ruby all put a quote where it wanted a colon), and
+   glued credential names — `accessToken`, `ClientSecret`, `dbPassword` — bypassed
+   the name rule, which wants a separator before the secret word. Both are
+   matched now. Two attempts to do the glued case *structurally*, on
+   capitalisation, failed in opposite directions: `accessToken` and `nextToken`
+   are both lowerCamelCase, `AccessToken` and `SyntaxToken` are both PascalCase,
+   so case discriminates nothing. It is an enumerated prefix list.
+
+**Known holes, stated rather than closed** (both READMEs carry the full list): a
+value under 10 characters after a credential-shaped name is not masked, which
+costs `token: unexpected end of input` one word; an unlisted prefix
+(`twilioToken=`) and a glued suffix (`keyId=`) are not recognised; hyphenated CSS
+spec names (`ident-token:`) are; an unlabelled 40-character AWS key is not, because
+widening the fallback to reach it redacts every absolute path in every `ENOENT`;
+an `authorization` value on the following line is not; and within one session the
+capture file is unbounded. The masking is shape-matching and is documented as
+best effort, not a guarantee.
+
+- **fix(driver)**: capture each session's stderr into its own file and append a
+  redacted tail to `driver.log` (audit D-05). `shutdown_handler` keeps that file,
+  and names it on stderr, when a session outlived `SIGKILL` — that is the one
+  case where it is the only record of what the surviving full-permission session
+  was doing, and the path that deleted it did so at the moment the user was being
+  told to go investigate.
+- **test(driver)**: two suites, one per driver copy, 63 + 47 assertions. The
+  cross-session case carries a self-probe, because both of its assertions pass if
+  the grandchild never writes. Three assertions across these suites were found
+  passing for the wrong reason during review and rewritten — one of them by
+  applying the reviewer's method to a fixture of my own, where a marker added
+  without adjusting the arithmetic moved the byte cut and left the leak assertion
+  naming a fragment that was never exposed.
+
 ## 0.12.0 — 2026-09-20
 
 ### Audit batch 2 — three of the four it started with
