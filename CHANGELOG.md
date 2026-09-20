@@ -1,14 +1,58 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 — 2026-09-20
 
-### Audit batch 2 — the first four
+### Audit batch 2 — three of the four it started with
 
 v0.11.0 shipped the audit's eleven-item blocking list. This is the start of what
-the same report filed as batch 2, picked for value rather than for order: the one
-remaining fail-open in the mechanism layer, the two failures that were invisible
-while they happened, and the convergence rule that decides whether the loop ever
-stops. Full suite: `TOTAL: 39 suites, 1359 assertions, 0 failed`.
+the same report filed as batch 2: the one remaining fail-open in the mechanism
+layer, the MoA routing that reported a broken configuration as ready, and the
+convergence rule that decides whether the loop ever stops. Suite:
+36 suites / 1308 assertions → 37 suites / 1389 assertions, both measured from a
+clean tree with `bash tests/run-all.sh | grep '^TOTAL:'`.
+
+It started with four. **The fourth — writing each session's stderr into
+`driver.log`, so a failed unattended run says why — was pulled from this release
+and is not in it.** Two independent review passes found 1 CRITICAL, 2 HIGH,
+4 MEDIUM and 3 LOW in that one change, every one of them introduced by it, and
+the last round's CRITICAL was introduced by the round of repairs before it: with
+the documented privacy opt-out set, the capture pipe had no reader and every
+session died of SIGPIPE at round 0, and under a root user (Docker's default) the
+writer replaced the `/dev/null` device node with a regular file. The feature is
+diagnostics; the other three are safety and correctness. It returns as its own
+change, with the design the reviewer recommended instead of the one that kept
+failing.
+
+Every fix here was written by one agent and then attacked by two others that had
+not written it, and that second pass is most of what follows: **the fixes this
+batch set out to make contained more HIGH defects than the batch was fixing.**
+The pattern from the last two releases repeated exactly — across both rounds,
+1 CRITICAL, 7 HIGH, 13 MEDIUM and 10 LOW inside commits whose own tests were
+green.
+
+The one worth reading: **the H-03 fix made the Stop hook fail OPEN, twice.** Its
+builtins-only dedupe is O(n²) and runs after the hook's internal timeout budget,
+and the platform treats a Stop hook killed by its 15s manifest timeout as
+"allow" — 18 000 machine-field lines took 14.7s. The first repair capped the line
+COUNT, which the second review showed does not bound the cost at all: 200 legal
+lines of 100 KB each is 20 MB of scanning, killed at 15s, where the parse it
+replaced answered in 0.8s. Values are bounded now as well as lines. The header
+comment asserting the gate "cannot approach the timeout" had been true only of
+the code it replaced, and says so.
+
+Also worth stating: the first measurement said the new hook was *faster* than the
+old one. The harness passed a relative path into a subshell that had already
+`cd`'d, so the hook never ran and the timing was bash failing to open a file — a
+correct ship-blocking finding nearly dismissed on a broken check.
+
+**Upgrading from 0.11.0.** Nothing to migrate: no file format changed, no flag
+was removed, and the unattended drivers are byte-identical to 0.11.0. One default
+behaves differently and is worth knowing before your next run: **a `STATE.md`
+carrying two different `status:` values now blocks the stop** where it used to
+take the first one, and one carrying more than 200 machine-field lines is refused
+outright. If you hand-write that file, keep `status:` and `round:` to one line
+each. The whole release reverts by pinning the previous version — `/plugin install loop-testing@loop-testing --version 0.11.0` for Claude
+Code, or re-running `install/install-codex.sh` from a `v0.11.0` checkout for Codex.
 
 **What changes for you.**
 
@@ -17,13 +61,9 @@ stops. Full suite: `TOTAL: 39 suites, 1359 assertions, 0 failed`.
    above the real `status: RUNNING` let the session stop and deleted the `.active`
    sentinel on the way out. Repeats that agree still parse; only disagreement
    blocks, and the reason names both values.
-2. **A failed unattended session tells you why.** The last 20 lines of the agent's
-   stderr are appended to `driver.log` after each session, redacted first. An
-   expired key, a rate limit, an unknown flag and a bad working directory used to
-   arrive as `exit=N` and the no-progress verdict, indistinguishable from one
-   another. The redaction is best effort, not a guarantee, and
-   `LOOP_TESTING_DISABLE_SESSION_STDERR=1` turns the capture off. Session stdout
-   is still discarded — it is the transcript, not evidence.
+2. **A STATE.md the gate cannot parse cheaply is refused, not parsed anyway.**
+   More than 200 `status:`/`round:` lines, or values longer than 64 characters,
+   and the gate blocks and says so. An honest STATE.md has two such lines.
 3. **`moa.mjs` says when your model ids cannot resolve.** With only
    `OPENAI_API_KEY` set, the OpenRouter-namespaced default models resolve to
    `api.openai.com`, where every request 404s — and `--dry-run` used to report
@@ -34,9 +74,10 @@ stops. Full suite: `TOTAL: 39 suites, 1359 assertions, 0 failed`.
    of merely not counting: A-converged / B-shrunk / C-converged used to reach
    `converged_streak: 2` on two rounds that were never consecutive. "Not
    significantly below previous rounds" is now a number — `cases_this_round` at
-   least 80% of the maximum over all prior rounds, read from `runs/round-N.md` —
-   with one documented, quantified exception that has its own slot in the round
-   template.
+   least 80% of the maximum over the last three rounds, read from
+   `runs/round-N.md`, with one exception that has to be an inequality rather than
+   a paragraph and has its own slot in the round template. One case is defined:
+   a FEATURE_MATRIX row times a PLAN scenario.
 5. **A P0-P2 marked `CANNOT_REPRODUCE` no longer blocks convergence forever.**
    `issue-rules.md` requires that state for anything that will not reproduce
    while the convergence criteria refused it. `FIXED_UNVERIFIED` is now named and
@@ -45,15 +86,40 @@ stops. Full suite: `TOTAL: 39 suites, 1359 assertions, 0 failed`.
 - **fix(hooks)**: a conflicting `status:` line is ambiguity, not a verdict (audit
   H-03). `head -1` resolved a duplicated machine field by position, which is
   fail-open in the destructive direction — the same shape as deciding a path's
-  role from raw command text. An ambiguous `round:` is reported unknown (-1)
-  rather than guessed, which withholds only the progress-based counter reset. The
-  parse is builtins-only: `sort`/`wc` would have read a terminal status as
-  unparseable on the bare PATH the grep-only and python3-only legs run under.
-  Mutation-checked against both position rules.
-- **fix(driver)**: capture the session's stderr, redact it, and append the tail to
-  `driver.log` (audit D-05), on both drivers — D-02 was a fix applied to one of
-  them. The capture file is disposed of through the same shutdown sequence that
-  releases the lock, so it does not outlive the run on any exit path.
+  role from raw command text. The parse is builtins-only: `sort`/`wc` would have
+  read a terminal status as unparseable on the bare PATH the grep-only and
+  python3-only legs run under. **Review then found three defects inside that
+  fix**, two of them fail-open where the code it replaced blocked: the parse was
+  unbounded (O(n²), 14.7s on 18 000 machine-field lines, past the 15s manifest
+  timeout that the platform treats as "allow"), reporting an ambiguous `round:`
+  as -1 disabled the progress reset for a whole continuation chain so the
+  deadlock valve force-allowed a *live, advancing* loop on its fourth stop, and
+  an empty `status:` value was dropped rather than counted, letting a bare
+  `status:` above a real `status: CONVERGED` disarm the gate. The parse is now
+  capped at 200 machine-field lines and fails closed; progress is measured by the
+  round-value SET rather than one normalized integer; an empty value counts.
+  A second review pass then showed that line cap does not bound the COST — 200
+  legal lines of 100 KB each is 20 MB of scanning, killed at 15s where the old
+  parse answered in 0.8s — and that truncating the round signature to a prefix
+  re-opened the force-allow it was written to close. Values are capped at 64
+  characters and the signature is the whole set. Two residuals are stated rather
+  than closed: round values differing only past character 64 dedupe to one, and a
+  `round:` line carrying something volatile means this valve never fires.
+- **deferred**: the D-05 session-stderr capture is NOT in this release. Two
+  review passes found 1 CRITICAL, 2 HIGH, 4 MEDIUM and 3 LOW inside it, all
+  introduced by the change itself, and the CRITICAL was introduced by the repairs
+  to the round before: with `LOOP_TESTING_DISABLE_SESSION_STDERR=1` set, the
+  bounded writer resolved to `/dev/null.part`, which a normal user cannot create,
+  so the capture pipe had no reader and every session died of SIGPIPE at round 0
+  — and under a root user (Docker's default) the writer's rename replaced the
+  `/dev/null` device node with a regular file holding the unredacted tail. The
+  reviewer's own advice on a further MEDIUM was to abandon the pipe design the
+  repair had adopted. The unattended drivers are therefore byte-identical to
+  0.11.0, and a failed session still reports `exit=N` and nothing more. It comes
+  back as its own change: a plain-file redirect with a per-session truncator, and
+  a redaction set that does not treat `key` as a substring — `monkey`,
+  `keyboard` and `token: expected ';'` were all being gutted out of exactly the
+  diagnostics the feature exists to preserve.
 - **fix(moa)**: warn when a namespaced `vendor/model` id resolves to provider
   `openai` at the stock endpoint (audit M-06). Warned, not refused: refusing
   would repeat the M-03 first attempt, which turned a documented exit-2 degrade
@@ -63,11 +129,20 @@ stops. Full suite: `TOTAL: 39 suites, 1359 assertions, 0 failed`.
   the single source for `cases_this_round` (K-21) and the `STATE.md` template's
   shorter zero-list defers to the reference and carries the new trigger (K-22).
   A template that disagrees with the protocol is the rule the model follows.
-- **test**: three new suites — `tests/commands/convergence-criteria.test.sh`
-  (23 assertions, 11 red against the previous text),
-  `tests/driver/session-stderr.test.sh` and
-  `tests/driver/codex-session-stderr.test.sh` (15 assertions, each property
-  mutation-checked) — plus 6 in `tests/hooks/stop-gate.test.sh` and 2 node tests.
+- **fix(moa)**: the M-06 gate decided by the provider NAME and by a string
+  compare against the default base URL, so it stayed silent on two live
+  404-every-request configs — a differently-cased `api.openai.com`, and any
+  `OPENROUTER_*` variable pointed at stock OpenAI. It resolves the URL and
+  compares hosts now, for any provider. Deciding a referent's role by its name
+  instead of resolving it is this project's recurring defect shape, and the fix
+  written for it had the same bug.
+- **test**: one new suite, `tests/commands/convergence-criteria.test.sh`, plus
+  two rounds of repairs to the assertions themselves, because review showed four
+  of them green against reverts of the very rules they claimed to hold, two more
+  green against the pre-fix binary, and the stop-gate regression case green
+  against a file that still escaped the timeout. Where a test asserts over a document or a report, it now names
+  the phrase that distinguishes the right rule from the wrong one, and says in
+  its own header that a text predicate cannot do more than that.
 
 ## 0.11.0 — 2026-09-20
 
