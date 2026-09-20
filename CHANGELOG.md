@@ -76,6 +76,23 @@ exists to end.
    job. Move the config elsewhere and pass `--config`, or remove the directory by
    hand once you have taken what you want. Relocating the default path out of the
    directory purge owns is filed for the next batch.
+8. **Purge keeps the evidence directory whenever it keeps a ref**, because the
+   marker inside it is what the recommended follow-up reads. In `--mode branch` that
+   is every run: git will not delete the branch you are standing on, so switch away,
+   delete it, and purge again. A purge that had to leave a worktree standing exits
+   `4` rather than reporting a plain "done".
+9. **Shutdown exit codes are `130` (INT), `143` (TERM), `129` (HUP) and `131` (QUIT)**,
+   and the wait before `SIGKILL` is tunable with `LOOP_TESTING_STOP_GRACE`.
+10. **The unattended drivers write `docs/looptesting/.sandbox/created-dirs.env`** so a
+   headless run's evidence directory is recognised as the tool's own and `--purge` can
+   remove it, instead of being kept forever with the wrong explanation.
+11. **`moa.mjs --dry-run` prints a different report**: one line per endpoint naming the
+   proxy decision, the `NO_PROXY` list, and base URLs with any userinfo stripped. A
+   non-`http:` proxy for an endpoint that actually selects it is now refused at config
+   time with exit 1 instead of being spoken to in plaintext.
+12. **`sandbox-setup.sh` rebuilds the worktree when the marker records an empty one**
+   rather than treating the absence as "we own this" and arming the sentinel with no
+   isolation behind it.
 
 - **fix(driver)**: stop the child session before releasing the lock (audit D-01, P0).
   `timeout` puts the session in its own process group, and the driver ran it as a

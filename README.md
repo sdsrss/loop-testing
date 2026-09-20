@@ -273,6 +273,12 @@ git log qa-baseline..qa/loop-testing --oneline
 git merge qa/loop-testing            # or cherry-pick selected hashes
 ```
 
+Harvest before you purge, in that order: `--purge` deletes the baseline tag before it
+decides what to do with the branch, so a purge that keeps the branch and tells you to
+harvest has already removed the `qa-baseline` this command uses. The commit is not
+lost — the kept ownership marker still records it as `BASELINE_HEAD`, so
+`git log <that hash>..qa/loop-testing` gets you the same list.
+
 Then purge. `SKILL_DIR` is the **installed skill** directory, not the target project —
 list your installs first and name the one you want, because this deletes things:
 

@@ -240,6 +240,11 @@ git log qa-baseline..qa/loop-testing --oneline
 git merge qa/loop-testing            # 或 cherry-pick 选定哈希
 ```
 
+先收割再 purge,顺序不能反:`--purge` 在决定如何处理分支之前就删掉了基线标记,所以
+一次「保留分支并提示你去收割」的 purge,已经把这条命令要用的 `qa-baseline` 删掉了。
+提交没有丢——保留下来的归属标记里仍记着它的 `BASELINE_HEAD`,用
+`git log <那个哈希>..qa/loop-testing` 能得到同样的列表。
+
 然后清扫。`SKILL_DIR` 指**技能的安装目录**,不是目标项目——这条命令会删东西,所以先把
 你的安装列出来,再亲手指定用哪一份:
 
