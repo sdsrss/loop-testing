@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased
+
+### Audit batch B — the teardown, the refusals, and a lock that could be stolen
+
+Seven findings from the 2026-09-20 audit, and what they have in common is where
+they live: the paths that run when something has already gone wrong. A cleanup
+in an environment that is not a login shell; a setup that refuses; a second
+driver meeting a lock. None of them is on the happy path, which is why the suite
+was green across all seven. No flag, format or default changed.
+
+Suite: 40 suites / 1548 assertions → 43 / 1635, both measured with
+`bash tests/run-all.sh | grep '^TOTAL:'`, not recalled.
+
+**What changes for you.**
+
+- A teardown started without `HOME` in the environment — cron, a systemd unit
+  with no `User=`, `env -i`, a container entrypoint — now finishes. It used to
+  exit 1 on an unbound variable inside the guard that protects `$HOME`, before
+  removing the worktree and before disarming the stop-gate sentinel, so the
+  cleanup failed exactly where $HOME did not exist and left the session unable
+  to stop (S-05).
+- A live worktree is no longer reported as "already gone" when `git worktree
+  list` fails outright — an unreadable or locked `.git/worktrees`, a corrupted
+  admin entry. The failed command used to read as absence, so `--purge` deleted
+  the baseline tag and closed with "purge done." and exit 0 over a sandbox that
+  was still standing. It now says it could not tell, keeps everything, and exits
+  4, the code that already meant "ran but stopped short" (S-04).
+- `sandbox-clean` will not signal its own process or its ancestors, whatever
+  `docs/looptesting/.pids` says. That file is written from parsed `lsof`/`ss`
+  output, and the process holding a port can be the session — or the unattended
+  driver — that is running the cleanup; the recorded PID was expanded into its
+  descendant tree, which contains the cleanup itself, so clean signalled itself
+  and died before removing anything (S-06).
+- A refused setup no longer leaves a `qa-baseline` tag behind. The tag was
+  created before the worktree stage and the ownership marker is written at the
+  end, so "worktree path already exists" — a refusal whose own message tells you
+  to re-run — exited with a tag nothing recorded, and the retry correctly
+  declined to claim it. The tag is now created last, after everything that can
+  refuse (S-07).
+- A worktree a rebuild could not claim stays named across later rebuilds. The
+  marker is the only place that path is written down, and the second rebuild used
+  to overwrite the record with its own verdict — after which `--purge` deleted
+  the evidence dir that held it and never mentioned the worktree again (S-09).
+- A driver lock held by a process you cannot signal is refused instead of
+  stolen. `kill -0` fails both for "gone" and for "alive, owned by someone else",
+  and the second reading put two `bypassPermissions` drivers on one `STATE.md`,
+  `ISSUES.md` and worktree — the one thing the lock exists to prevent. A holder
+  owned by root, by a systemd unit, or by another account on a shared box is
+  ordinary (D-06).
+
+**Documentation.** `templates/FINAL_REPORT.md` was missing two of the ten
+sections `references/exit-and-report.md` §5 defines — pre-existing/environment
+issues, and the verification checklist — so the model did not write them. Its
+red-line sentence omitted `amend` and `rebase`, which SKILL.md forbids, and its
+commit list never asked for the disclosure that matters: commits listed per
+branch, with anything that landed on the main branch called out. It also carried
+a P3-only section the reference does not define, beside a section already
+ordered P0→P3 (K-12). And both READMEs now state that the target must be a git
+repository — the sandbox is a worktree cut from it, `sandbox-setup.sh` refuses
+with exit 3 without one, and the isolation gate then stops the run as `BLOCKED`;
+previously that refusal was where you found out (K-13).
+
+Each fix is one commit, with the finding ID, what was measured before it, and
+the mutation check that shows the new assertions can fail.
+
 ## 0.13.0 — 2026-09-20
 
 ### What a crash leaves behind, and what a failed session says
