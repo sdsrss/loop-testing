@@ -108,7 +108,11 @@ fi
 # SANDBOX_VERSION (numeric), MODE and TOP. Deliberately not a whole-file schema —
 # v1 markers legitimately lack ADOPTED_*/UNCLAIMED_WORKTREE/WORKTREE_STAMP, and
 # rejecting those would strand every sandbox created before v0.10.0.
-marker_key() { grep -aE "^$1=[^[:space:]]" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-; }
+# Both readers drop the trailing CR and whitespace: a CRLF marker (Windows
+# editor, core.autocrlf, an evidence dir copied through a zip) used to make every
+# value end in `\r`, so this validity check refused the file and setup, reading
+# the same bytes, called a live worktree gone (audit S-08).
+marker_key() { grep -aE "^$1=[^[:space:]]" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]]*$//'; }
 M_VER="$(marker_key SANDBOX_VERSION)"
 M_MODE="$(marker_key MODE)"
 M_TOP="$(marker_key TOP)"
@@ -141,7 +145,7 @@ if [ "$PURGE" = 1 ]; then
 fi
 
 # Read marker fields by parsing (NEVER source: a tampered marker must not run).
-mval() { grep -E "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-; }
+mval() { grep -aE "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]]*$//'; }
 CREATED_WORKTREE="$(mval CREATED_WORKTREE)"
 SANDBOX_BRANCH="$(mval SANDBOX_BRANCH)"
 WORKTREE_STAMP="$(mval WORKTREE_STAMP)"

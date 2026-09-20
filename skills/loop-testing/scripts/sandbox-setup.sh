@@ -25,7 +25,10 @@
 # worktree has the sandbox branch checked out, in which case git refuses the
 # branch and the path must be cleared · 7 branch-mode sandbox is on
 # another branch · 8 the
-# evidence dir could not be created/written (refused before touching git).
+# evidence dir could not be created/written (refused before touching git) · 9 the
+# ownership marker is present but unreadable (missing or malformed
+# SANDBOX_VERSION / MODE / TOP): nothing in it can be trusted, so nothing was
+# done — inspect docs/looptesting/.sandbox/ownership.env.
 set -u
 
 MODE="worktree"
@@ -76,7 +79,7 @@ die() {
 # Print the header block as the help text (same mechanism as install-codex.sh):
 # one source of truth, so usage and exit codes cannot drift from the comment that
 # documents them.
-usage() { sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # --help is handled in its own pass, BEFORE the parse loop: it must win over any
 # other flag on the line and never reach the filesystem.
@@ -203,14 +206,42 @@ MARKER="$SB/ownership.env"
 INHERITED_CREATED_LT=""
 MARKER_PRESENT_AT_START=0
 [ -f "$MARKER" ] && MARKER_PRESENT_AT_START=1
+
+# Marker fields are read by parsing, never sourced. The ONE reader (mirrors
+# sandbox-clean's): first matching line, value after the first `=`, with the
+# trailing CR and whitespace dropped. A CRLF marker — a Windows editor,
+# core.autocrlf, an evidence dir copied through a zip — used to hand back
+# `path\r`, which matches no line of `git worktree list`, so a LIVE sandbox read
+# as "recorded worktree is gone" and setup rebuilt over it, at a path whose last
+# byte was the CR (audit S-08).
+mval() { grep -aE "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]]*$//'; }
+
+# Present is not the same as readable (audit S-01). sandbox-clean validates the
+# marker before trusting a field; this side used to read the same file with a
+# bare grep|cut and trust whatever came back — an empty CREATED_WORKTREE from a
+# truncated or hand-edited marker made the resume path call the worktree "ours",
+# print "already initialized", arm .active and exit 0 with no worktree at all:
+# the loop then ran against, and committed into, the main tree. Same validity
+# rule as clean: the three keys every marker has carried since v0.1.2.
 if [ -f "$MARKER" ]; then
-  MARKER_VERSION="$(grep -E '^SANDBOX_VERSION=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+  _mk_ver="$(mval SANDBOX_VERSION)"
+  _mk_bad=""
+  case "$_mk_ver" in ''|*[!0-9]*) _mk_bad="SANDBOX_VERSION" ;; esac
+  [ -n "$(mval MODE)" ] || _mk_bad="${_mk_bad:+$_mk_bad, }MODE"
+  [ -n "$(mval TOP)" ]  || _mk_bad="${_mk_bad:+$_mk_bad, }TOP"
+  if [ -n "$_mk_bad" ]; then
+    die "the ownership marker at $MARKER is unreadable (missing or malformed: $_mk_bad) — nothing in it can be trusted, so this run did nothing. Inspect that file: if the sandbox it describes is finished and you recognise the leftovers, remove them by hand per the README cleanup section, delete the marker, and re-run" 9
+  fi
+fi
+
+if [ -f "$MARKER" ]; then
+  MARKER_VERSION="$(mval SANDBOX_VERSION)"
   # Digit-count first: a marker can hold anything, and `[ huge -ge 2 ]` prints a
   # raw "integer expression expected" at the user. Three or more digits is >= 100.
   case "$MARKER_VERSION" in
     ''|*[!0-9]*) : ;;
-    ?|??) [ "$MARKER_VERSION" -ge 2 ] && INHERITED_CREATED_LT="$(grep -E '^CREATED_LOOPTESTING_DIR=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)" ;;
-    *)    INHERITED_CREATED_LT="$(grep -E '^CREATED_LOOPTESTING_DIR=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)" ;;
+    ?|??) [ "$MARKER_VERSION" -ge 2 ] && INHERITED_CREATED_LT="$(mval CREATED_LOOPTESTING_DIR)" ;;
+    *)    INHERITED_CREATED_LT="$(mval CREATED_LOOPTESTING_DIR)" ;;
   esac
 fi
 
@@ -356,14 +387,26 @@ UNCLAIMED_WORKTREE=""
 ADOPTED_BRANCH=""
 ADOPTED_TAG=""
 if [ -f "$MARKER" ]; then
-  RECORDED_WT="$(grep -E '^CREATED_WORKTREE=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
-  RECORDED_STAMP="$(grep -E '^WORKTREE_STAMP=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
-  RECORDED_BRANCH="$(grep -E '^SANDBOX_BRANCH=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+  RECORDED_WT="$(mval CREATED_WORKTREE)"
+  RECORDED_STAMP="$(mval WORKTREE_STAMP)"
+  RECORDED_BRANCH="$(mval SANDBOX_BRANCH)"
+  RECORDED_MODE="$(mval MODE)"
+  # Branch mode has no worktree by design. In worktree mode an empty
+  # CREATED_WORKTREE is never a live sandbox — every worktree-mode marker since
+  # v0.1.0 writes the path — so it is treated exactly like a worktree that is
+  # gone: rebuild if the path is free, refuse if something stands there. It
+  # used to default to `ours` and short-circuit into an unisolated "ready".
   WT_STATE=ours
-  [ -n "$RECORDED_WT" ] && WT_STATE="$(wt_ownership "$RECORDED_WT" "$RECORDED_STAMP" "$RECORDED_BRANCH")"
+  if [ -n "$RECORDED_WT" ]; then
+    WT_STATE="$(wt_ownership "$RECORDED_WT" "$RECORDED_STAMP" "$RECORDED_BRANCH")"
+  elif [ "$RECORDED_MODE" != branch ]; then
+    WT_STATE=absent
+  fi
   REBUILD_WHY=""
   case "$WT_STATE" in
-    absent)  REBUILD_WHY="recorded worktree is gone ($RECORDED_WT)" ;;
+    absent)
+      if [ -n "$RECORDED_WT" ]; then REBUILD_WHY="recorded worktree is gone ($RECORDED_WT)"
+      else REBUILD_WHY="the marker records no worktree for a worktree-mode sandbox"; fi ;;
     stale)   REBUILD_WHY="the recorded worktree's directory is gone ($RECORDED_WT), leaving only a dangling registration" ;;
     foreign) REBUILD_WHY="the worktree at $RECORDED_WT is not this sandbox's (its stamp does not match)" ;;
     unknown) REBUILD_WHY="cannot confirm the worktree at $RECORDED_WT belongs to this sandbox" ;;
@@ -416,15 +459,13 @@ if [ -f "$MARKER" ]; then
     # the qa branch and baseline tag, so re-deriving ownership below from "does
     # this ref exist now" would record neither — orphaning artifacts this sandbox
     # created beyond --purge's reach, and silencing its harvest warning.
-    PRIOR_CREATED_BRANCH="$(grep -E '^CREATED_BRANCH=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
-    PRIOR_CREATED_TAG="$(grep -E '^CREATED_TAG=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+    PRIOR_CREATED_BRANCH="$(mval CREATED_BRANCH)"
+    PRIOR_CREATED_TAG="$(mval CREATED_TAG)"
     # Adoption must be transitive. After the first rebuild the marker records
     # CREATED_BRANCH= (empty) + ADOPTED_BRANCH=…, so reading only CREATED_* would
     # find nothing to carry on the NEXT rebuild and purge would fall silent again.
-    [ -n "$PRIOR_CREATED_BRANCH" ] \
-      || PRIOR_CREATED_BRANCH="$(grep -E '^ADOPTED_BRANCH=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
-    [ -n "$PRIOR_CREATED_TAG" ] \
-      || PRIOR_CREATED_TAG="$(grep -E '^ADOPTED_TAG=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+    [ -n "$PRIOR_CREATED_BRANCH" ] || PRIOR_CREATED_BRANCH="$(mval ADOPTED_BRANCH)"
+    [ -n "$PRIOR_CREATED_TAG" ]    || PRIOR_CREATED_TAG="$(mval ADOPTED_TAG)"
     # The marker is NOT removed here. It is overwritten at the end of a successful
     # rebuild; deleting it up front means a rebuild that fails for any reason
     # (worktree path taken, add refused) leaves the worktree, branch and tag with
@@ -437,7 +478,6 @@ if [ -f "$MARKER" ]; then
     # path, the path is free again after a clean, and a user who picked it with
     # --worktree-path may well reuse it. Adopting it would run the loop, and
     # commit its fixes, onto the user's own branch with no isolation at all.
-    RECORDED_MODE="$(grep -E '^MODE=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
     if [ "$RECORDED_MODE" = "branch" ]; then
       # Only re-verify against the branch the marker ACTUALLY recorded. A legacy
       # marker (written before SANDBOX_BRANCH existed) has no recorded branch, so
@@ -445,7 +485,7 @@ if [ -f "$MARKER" ]; then
       # refusing would break a valid custom-branch sandbox with wrong advice
       # (and could false-pass onto the wrong branch). Skip the check for legacy
       # markers; new sandboxes always record SANDBOX_BRANCH so they are covered.
-      want="$(grep -E '^SANDBOX_BRANCH=' "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"
+      want="$RECORDED_BRANCH"
       if [ -n "$want" ]; then
         # `branch --show-current` needs git >= 2.22; symbolic-ref is the portable
         # equivalent — empty + nonzero on detached HEAD, exactly like --show-current
@@ -572,7 +612,7 @@ git -C "$TOP" status --porcelain > "$SB/git-status-baseline.txt" 2>/dev/null || 
 # lifecycle line wrote when the dir first appeared, then a previous marker's
 # field, then this run's own mkdir. Presence of the directory is never evidence —
 # a plain clean keeps it, so by the next setup it always exists.
-BREADCRUMB_MADE_LT="$(grep -E '^MADE_LOOPTESTING_DIR=' "$SB/created-dirs.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+BREADCRUMB_MADE_LT="$(grep -aE '^MADE_LOOPTESTING_DIR=' "$SB/created-dirs.env" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]]*$//')"
 if [ "$BREADCRUMB_MADE_LT" = 1 ] || [ "$MADE_LT" = 1 ]; then
   CREATED_LT=true              # measured: this lifecycle line created the dir
 elif [ "$BREADCRUMB_MADE_LT" = 0 ]; then
