@@ -76,7 +76,30 @@ GD="$(git rev-parse --git-dir 2>/dev/null)"
 GCD="$(git rev-parse --git-common-dir 2>/dev/null)"
 if [ -n "$GCD" ] && [ "$GD" != "$GCD" ]; then
   case "$GCD" in /*) : ;; *) GCD="$(cd "$GCD" 2>/dev/null && pwd)" ;; esac
-  MAIN_TOP="$(git -C "$(dirname "$GCD")" rev-parse --show-toplevel 2>/dev/null)"
+  GCD_P="$(cd "$GCD" 2>/dev/null && pwd -P)"
+  # Mirrors sandbox-setup.sh (audit S-02): a candidate is the main tree of THIS
+  # repository only if its git-common-dir is the one we started from. "The repo
+  # containing the parent of the common dir" is a layout guess, wrong exactly
+  # when a --separate-git-dir or bare repository sits inside another repo — the
+  # clean then looked for (and, on --purge, deleted under) the OUTER repo.
+  same_repo() {
+    local c
+    [ -n "$1" ] && [ -d "$1" ] || return 1
+    c="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    [ -n "$c" ] || return 1
+    case "$c" in /*) : ;; *) c="$1/$c" ;; esac
+    c="$(cd "$c" 2>/dev/null && pwd -P)"
+    [ -n "$c" ] && [ -n "$GCD_P" ] && [ "$c" = "$GCD_P" ]
+  }
+  MAIN_TOP=""
+  for _cand in \
+    "$(git -C "$TOP" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1)" \
+    "$(dirname "$GCD")"; do
+    [ -n "$_cand" ] || continue
+    _cand_top="$(git -C "$_cand" rev-parse --show-toplevel 2>/dev/null)"
+    [ -n "$_cand_top" ] || continue
+    if same_repo "$_cand_top"; then MAIN_TOP="$_cand_top"; break; fi
+  done
   if [ -n "$MAIN_TOP" ] && [ "$MAIN_TOP" != "$TOP" ] && [ -d "$MAIN_TOP" ]; then
     echo_info "invoked from inside a linked worktree — re-anchoring to the main tree: $MAIN_TOP"
     TOP="$MAIN_TOP"

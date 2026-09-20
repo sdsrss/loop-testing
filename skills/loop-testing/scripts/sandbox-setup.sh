@@ -177,7 +177,35 @@ GD="$(git rev-parse --git-dir 2>/dev/null)"
 GCD="$(git rev-parse --git-common-dir 2>/dev/null)"
 if [ -n "$GCD" ] && [ "$GD" != "$GCD" ]; then
   case "$GCD" in /*) : ;; *) GCD="$(cd "$GCD" 2>/dev/null && pwd)" ;; esac
-  MAIN_TOP="$(git -C "$(dirname "$GCD")" rev-parse --show-toplevel 2>/dev/null)"
+  GCD_P="$(cd "$GCD" 2>/dev/null && pwd -P)"
+  # A candidate is the main tree of THIS repository only if its git-common-dir
+  # is the one we started from (audit S-02). The old rule — "the repository
+  # containing the parent of the common dir" — is a guess about layout, and it
+  # is wrong exactly when a --separate-git-dir or a bare repository lives inside
+  # another repo (a dotfiles repo in $HOME, say): the sandbox was then built in
+  # the OUTER repo — its tag, branch, worktree and docs/looptesting all there.
+  same_repo() {
+    local c
+    [ -n "$1" ] && [ -d "$1" ] || return 1
+    c="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    [ -n "$c" ] || return 1
+    case "$c" in /*) : ;; *) c="$1/$c" ;; esac
+    c="$(cd "$c" 2>/dev/null && pwd -P)"
+    [ -n "$c" ] && [ -n "$GCD_P" ] && [ "$c" = "$GCD_P" ]
+  }
+  MAIN_TOP=""
+  # First candidate: what git itself lists first — the main worktree (or the
+  # bare repository, which has no tree and fails the toplevel lookup, so no
+  # re-anchor happens: there is nothing to anchor to). Second: the historical
+  # guess. Either one is accepted only when same_repo says so.
+  for _cand in \
+    "$(git -C "$TOP" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1)" \
+    "$(dirname "$GCD")"; do
+    [ -n "$_cand" ] || continue
+    _cand_top="$(git -C "$_cand" rev-parse --show-toplevel 2>/dev/null)"
+    [ -n "$_cand_top" ] || continue
+    if same_repo "$_cand_top"; then MAIN_TOP="$_cand_top"; break; fi
+  done
   if [ -n "$MAIN_TOP" ] && [ "$MAIN_TOP" != "$TOP" ] && [ -d "$MAIN_TOP" ]; then
     echo "sandbox-setup: invoked from inside a linked worktree — re-anchoring to the main tree: $MAIN_TOP"
     TOP="$MAIN_TOP"
