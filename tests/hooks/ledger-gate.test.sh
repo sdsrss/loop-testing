@@ -547,4 +547,51 @@ run_ledger "$WS20" "$json"; assert_rc $? 2 "newline inside a quoted argument is 
 json='{"tool_name":"Bash","tool_input":{"command":"perl -i -pe '"'"'tr/VERIFIED/verified/'"'"' docs/looptesting/ISSUES.md"}}'
 run_ledger "$WS20" "$json"; assert_rc $? 0 "perl tr/// downgrade -> allow"
 
+# ── Review round 7. Three ways to name a writer that the verb lookup missed. ──
+
+# 1. VERB WRAPPERS. `command`, `env`, `nice`, `timeout`, `stdbuf`, `nohup`,
+#    `busybox` and `xargs` all take a command as their argument, so the first
+#    word was the wrapper and the real writer was never classified.
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"' | command tee -a docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "wrapper: command tee -a ledger -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"' | env tee -a docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "wrapper: env tee -a ledger -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"' | env -u FOO BAR=1 tee -a docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "wrapper: env with a value-flag and an assignment -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"timeout 5 sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "wrapper: timeout DURATION sed -i -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"nice -n 10 tee docs/looptesting/ISSUES.md <<< '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"'"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "wrapper: nice -n N tee -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-002 | P1 | VERIFIED | x'"'"' | xargs -I{} nohup tee -a docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "wrapper: xargs -I{} then nohup, two deep -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"stdbuf -oL sed -i '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "wrapper: stdbuf -oL sed -i -> deny"
+# Unwrapping must not create denies of its own: a wrapped FILTER is still a
+# filter, and a wrapped write of a footprinted ID is still legitimate.
+json='{"tool_name":"Bash","tool_input":{"command":"command grep -v VERIFIED docs/looptesting/ISSUES.md | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "wrapper on a filter keeps the chain -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"echo '"'"'### ISSUE-003 | P1 | VERIFIED | x'"'"' | command tee -a docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "wrapper: footprinted ID -> allow"
+json='{"tool_name":"Bash","tool_input":{"command":"timeout 5 grep -c VERIFIED docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "wrapper on a read -> allow"
+
+# 2. A LISTED FILTER THAT CAN WRITE. `sort -o` and `uniq IN OUT` replace a file
+#    as surely as sponge does; the list meant "reads stdin, writes stdout".
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | sort -o docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sort -o ledger -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md | sort --output=docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "sort --output=ledger -> deny"
+json='{"tool_name":"Bash","tool_input":{"command":"sed '"'"'s/FIXED_UNVERIFIED/VERIFIED/'"'"' docs/looptesting/ISSUES.md > /tmp/x\nuniq /tmp/x docs/looptesting/ISSUES.md\n"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 2 "uniq IN OUT where OUT is the ledger -> deny"
+# …and plain `sort` in a filter chain is still a filter.
+json='{"tool_name":"Bash","tool_input":{"command":"cat docs/looptesting/ISSUES.md | grep -v VERIFIED | sort | sponge docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "plain sort in a filter chain -> still allow"
+json='{"tool_name":"Bash","tool_input":{"command":"grep -v VERIFIED docs/looptesting/ISSUES.md | sort -o /tmp/elsewhere.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "sort -o somewhere else -> allow"
+
+# 3. A REDIRECT INSIDE ANOTHER LANGUAGE'S PROGRAM TEXT. Documented residual, in
+#    the same class as python3 -c: this gate reads shell, not awk.
+json='{"tool_name":"Bash","tool_input":{"command":"awk '"'"'{gsub(/FIXED_UNVERIFIED/,\"VERIFIED\"); print > \"docs/looptesting/ISSUES.md\"}'"'"' docs/looptesting/ISSUES.md"}}'
+run_ledger "$WS20" "$json"; assert_rc $? 0 "documented residual: awk print > \"file\" inside the program text"
+
 report "ledger-gate.test.sh"

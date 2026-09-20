@@ -26,10 +26,15 @@
 # line — H-01 was that false deny, and the accusation this hook prints at a
 # correct action is its most expensive failure mode.
 #
-# RESIDUAL — these still reach the ledger unseen, by design:
-#   * indirection through another interpreter: `xargs`, `bash -c`, `python3 -c`,
+# RESIDUAL — these still reach the ledger unseen:
+#   * indirection through another interpreter: `bash -c`, `python3 -c`,
 #     `ruby -e`, `ed`, and file-copy verbs whose target needs per-verb argument
 #     knowledge (`mv`, `cp`, `dd`, `install`, `truncate`);
+#   * A REDIRECT WRITTEN INSIDE ANOTHER LANGUAGE. `awk '{print > "ledger"}'`,
+#     and the same through perl `open` or ruby `File.write`. The redirect is in
+#     the program text, not in the shell, and this gate reads shell. Closing it
+#     would mean parsing every embedded language, so it stays here beside
+#     `python3 -c` rather than being chased;
 #   * a path computed at runtime — a variable, a command substitution, a glob —
 #     which is reported as unresolved and never guessed at. A BRACKET glob is
 #     worse than the others: `ISSUE[S].md` splits the literal name, so the regex
@@ -48,14 +53,29 @@
 #   * a fake replay line written to a round log first — the original design
 #     residual, unchanged.
 #
-# STATE OF ONE FAMILY, stated as of now rather than as a closure claim. "Get the
-# written text somewhere the write group cannot see it" has been re-cut four
-# times (pipeline grouping, brace lists and subshells, here-strings, newlines).
-# The current position is not that the family is exhausted — it is that the two
-# defaults are set so a new sibling fails safe rather than open: text that cannot
-# be placed does NOT earn the downgrade exit, and the row-dropping exemption is
-# granted only to a real filter chain feeding a writer through a pipe. A sibling
-# that slips past both is a bug to fix, not a shape this comment covers.
+# WHERE THIS PREDICATE ACTUALLY STANDS. Do not read any of the above as "closed".
+# Two failure directions, and they are not symmetric. The regex predicate this
+# replaced OVER-matched: it read a `grep` of the ledger as a write and accused
+# the model of faking a verdict, which is the expensive failure, and every such
+# false deny found in review is fixed here. The lexer UNDER-matches instead, and
+# its tail is long, because a shell has many ways to name a writer indirectly.
+# Two families have each been re-cut several times:
+#
+#   1. Getting the written text where the write group cannot see it — pipeline
+#      grouping, brace lists and subshells, here-strings, newlines.
+#   2. Naming the writer so the verb lookup misses it — wrappers (`command`,
+#      `env`, `timeout`, `xargs`, …), and a listed filter that a flag turns into
+#      a writer (`sort -o`, `uniq IN OUT`).
+#
+# Four review rounds found four holes in the first family; a fifth pass found
+# four more in the second in ten minutes. That is not the signature of an
+# exhausted family, so assume siblings remain. What is true is that the defaults
+# fail safe: text that cannot be placed does NOT earn the downgrade exit, the
+# row-dropping exemption needs a real filter chain feeding a writer through a
+# pipe, and an unresolvable write target is reported rather than guessed at.
+# Treat a new sibling as a bug to fix, not as a shape this comment covers, and
+# keep the cheat-cost framing above — a model that wants a fake verdict writes a
+# fake replay line and never touches any of this.
 #
 # Fails OPEN on any parse problem or missing tooling — a gate must never brick a
 # session. Escape hatch (humans, not models): LOOP_TESTING_DISABLE_LEDGER_GATE=1.
@@ -206,11 +226,37 @@ try:
         cur.append(("word",t)); i+=1
     segs.append(cur); seps.append("")
     ASSIGN=re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+    WRAP={"command","env","nice","timeout","stdbuf","nohup","busybox","xargs",
+          "setsid","ionice","chrt","sudo","doas","time"}
+    VALFLAG={"-u","--unset","-n","--adjustment","-I","--replace","-L","-P","-s",
+             "--signal","-d","-E","-a","-k","--kill-after","--max-args","-i","-o","-e"}
     W=IP=UN=0; text=[]; info=[]
     for seg in segs:
         words=[w for k,w in seg if k=="word"]
         j=0
         while j<len(words) and ASSIGN.match(words[j]): j+=1
+        # Unwrap verb WRAPPERS. Each of these takes a command as its argument, so
+        # the first word was the wrapper and the writer behind it was never
+        # classified: `echo ROW | command tee -a ledger` wrote the row. Skip the
+        # wrapper, its own flags (and the value of a flag that takes one), any
+        # VAR=val it carries, and the leading duration of timeout. Best-effort by
+        # design: if a skip goes wrong the verb simply fails to resolve to a
+        # writer, which is the behaviour before unwrapping existed — never a new
+        # deny. Bounded so a pathological line cannot spin.
+        guard=0
+        while j<len(words) and posixpath.basename(words[j]) in WRAP and guard<8:
+            guard+=1
+            w0=posixpath.basename(words[j]); j+=1
+            while j<len(words):
+                t0=words[j]
+                if ASSIGN.match(t0): j+=1; continue
+                if t0.startswith("-") and len(t0)>1:
+                    j+=1
+                    if t0 in VALFLAG and j<len(words): j+=1
+                    continue
+                if w0=="timeout" and re.match(r"^[0-9]+(\.[0-9]+)?[smhd]?$", t0):
+                    j+=1; continue
+                break
         verb=posixpath.basename(words[j]) if j<len(words) else ""
         rest=words[j+1:] if j<len(words) else []
         flags=[r for r in rest if r.startswith("-") and len(r)>1]
@@ -242,8 +288,26 @@ try:
         # contribute.
         FILTER=("grep","egrep","fgrep","rg","ag","ack","head","tail","sort",
                 "uniq","cut","wc","cat","nl","tac","rev","column","comm","join")
+        # AUDIT of the FILTER list for verbs that can be made to write a file.
+        # sort takes `-o FILE` / `--output=FILE`; uniq takes an OUTPUT positional.
+        # Both then replace that file exactly as sponge does. The rest carry no
+        # file-output flag: grep/egrep/fgrep/rg/ag/head/tail/cut/wc/cat/nl/tac/
+        # rev/column have none; `ack --output` and `join -o` are output FORMATS
+        # printed to stdout, and `comm --output-delimiter` is a delimiter. A
+        # filter that writes is not a filter for the row-dropping claim either.
+        fw=[]
+        if verb=="sort":
+            for f in flags:
+                if f.startswith("--output="): fw.append(f.split("=",1)[1])
+                elif f.startswith("-o") and not f.startswith("--") and len(f)>2: fw.append(f[2:])
+            if any(f in ("-o","--output") for f in flags): fw.extend(ops)
+        if verb=="uniq" and len(ops)>=2: fw.append(ops[-1])
+        for o in fw:
+            if norm(o): w=1; ip=1
+            elif unres(o): UN=1
         stdin_redir=any(k=="stdin" for k,_ in seg)
-        info.append((w,ip,[] if verb in FILTER else ops,verb,verb in FILTER,stdin_redir))
+        isfilter=(verb in FILTER) and not fw
+        info.append((w,ip,[] if isfilter else ops,verb,isfilter,stdin_redir))
     # Text of a write = the operands of its whole PIPELINE, not of its own segment:
     # in `sed s/…/VERIFIED/ ledger | sponge ledger` the substitution sits one
     # segment upstream of the verb that writes. Only pipes join; `;` and `&&` do
