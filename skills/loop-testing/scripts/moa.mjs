@@ -100,10 +100,12 @@ const PROVIDERS = {
 // Secret redaction
 // ===========================================================================
 // Redaction is a literal substring match, so the list must contain the exact
-// bytes that can come back. A shorter string than this is not a credential
-// worth the collateral: `split()`-ing a 1–3 char token out of a document
-// rewrites ordinary prose (M-05 — see the username note below).
-const MIN_SECRET_CHARS = 4;
+// bytes that can come back. Every entry is a credential — the proxy username,
+// the one ordinary word that used to be listed, was removed in M-05 — so there
+// is no length floor: a 4-char floor leaked short keys outright AND inverted
+// M-01, listing a raw `"abc "` (4) while the trimmed `"abc"` (3) that is
+// actually SENT went unprotected. Empty values are still never listed.
+const MIN_SECRET_CHARS = 1;
 const PROXY_ENV_NAMES = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'];
 
 function collectSecrets(env) {
@@ -703,14 +705,21 @@ function mdIndent(s) { return s.split('\n').join('\n  '); }
 // archived decision file verbatim. Only newlines and backticks are rewritten:
 // the first would forge a section heading, the second would break the span, and
 // neither appears in a credential.
-function mdKey(k) {
-  const flat = String(k).replace(/[\r\n]+/g, ' ').replace(/`/g, "'").trim();
+// EVERY truncation site below redacts BEFORE it cuts. The model's content is
+// itself a JSON document, so a secret can arrive `\u`-escaped: the arrival-time
+// pass cannot see it, JSON.parse re-materializes it here, and a cut through the
+// middle would leave a usable prefix in the archived decision — with the
+// endpoint choosing the padding, and so choosing how much survives. Redacting
+// first makes the cut land on `***REDACTED***` instead.
+function mdKey(k, redact) {
+  const flat = redact(String(k).replace(/[\r\n]+/g, ' ').replace(/`/g, "'").trim());
   return flat ? `\`${flat.slice(0, 200)}\`` : '(unnamed)';
 }
 
-function toMarkdownValue(v, depth = 0) {
+// `redact` comes before `depth` so the array map below cannot pass an index into it.
+function toMarkdownValue(v, redact, depth = 0) {
   if (v == null) return null;
-  if (typeof v === 'string') return v.trim() || null;
+  if (typeof v === 'string') return redact(v).trim() || null;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   if (typeof v !== 'object') return null;
   if (depth >= MD_MAX_DEPTH) {
@@ -719,19 +728,19 @@ function toMarkdownValue(v, depth = 0) {
     let inert;
     try { inert = JSON.stringify(v); } catch { return null; }
     if (!inert) return null;
-    inert = inert.replace(/`/g, "'");
+    inert = redact(inert.replace(/`/g, "'"));
     return `\`${inert.length > 500 ? `${inert.slice(0, 500)}…` : inert}\``;
   }
   if (Array.isArray(v)) {
     // NOT `v.map(toMarkdownValue)`: map passes the index as the second argument,
     // which would land in `depth` and defeat the cap.
-    const items = v.map((x) => toMarkdownValue(x, depth + 1)).filter(Boolean);
+    const items = v.map((x) => toMarkdownValue(x, redact, depth + 1)).filter(Boolean);
     return items.length ? items.map((s) => `- ${mdIndent(s)}`).join('\n') : null;
   }
   const rows = Object.entries(v)
     .map(([k, val]) => {
-      const s = toMarkdownValue(val, depth + 1);
-      return s ? `- **${mdKey(k)}**: ${mdIndent(s)}` : null;   // mdKey already delimits
+      const s = toMarkdownValue(val, redact, depth + 1);
+      return s ? `- **${mdKey(k, redact)}**: ${mdIndent(s)}` : null;   // mdKey already delimits
     })
     .filter(Boolean);
   return rows.length ? rows.join('\n') : null;
@@ -739,20 +748,20 @@ function toMarkdownValue(v, depth = 0) {
 
 // One rendered field, length-capped. Re-indenting at every level is O(size×depth),
 // so a wide+deep answer can amplify far past anything worth archiving.
-function mdField(v, fallback) {
-  const s = toMarkdownValue(v) ?? fallback;   // the fallback is raw model output — cap it too
+function mdField(v, fallback, redact) {
+  const s = toMarkdownValue(v, redact) ?? redact(fallback);   // the fallback is raw model output — cap it too
   if (typeof s !== 'string') return s;
   return s.length > MD_MAX_CHARS
     ? `${s.slice(0, MD_MAX_CHARS)}\n\n> [由 moa.mjs 截断：该字段渲染后超出 ${MD_MAX_CHARS} 字符上限。]`
     : s;
 }
 
-function buildDecisionMarkdown({ opinions, failedRefs, aggModel, aggContent, degraded, defaultProviderName }) {
+function buildDecisionMarkdown({ opinions, failedRefs, aggModel, aggContent, degraded, defaultProviderName, redact }) {
   const parsed = extractJsonObject(aggContent) || {};
-  const summary = mdField(parsed.summary, '（聚合模型未返回结构化摘要，原始输出见"聚合推荐方案"。）');
-  const recommendation = mdField(parsed.recommendation, aggContent.trim());
-  const rationale = mdField(parsed.rationale, '（见"聚合推荐方案"。）');
-  const risks = mdField(parsed.risks, '（见"聚合推荐方案"。）');
+  const summary = mdField(parsed.summary, '（聚合模型未返回结构化摘要，原始输出见"聚合推荐方案"。）', redact);
+  const recommendation = mdField(parsed.recommendation, aggContent.trim(), redact);
+  const rationale = mdField(parsed.rationale, '（见"聚合推荐方案"。）', redact);
+  const risks = mdField(parsed.risks, '（见"聚合推荐方案"。）', redact);
 
   const opinionSection = [];
   for (const o of opinions) {
@@ -1006,6 +1015,7 @@ async function main() {
     aggContent,
     degraded,
     defaultProviderName: defaultProvider(env),
+    redact,   // applied at every truncation site inside, before the cut
   }));
 
   if (args.output) {
