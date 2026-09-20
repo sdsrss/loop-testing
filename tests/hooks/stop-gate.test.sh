@@ -244,4 +244,32 @@ arm "$WS22"; write_state "$WS22" CONVERGED 6 2
 assert_rc $? 0 "terminal status parses on a bare PATH (no sort/uniq/wc) -> allow"
 assert_absent "$WS22/$ACT" "terminal status disarms on a bare PATH (H-03 parse is builtins-only)"
 
+# X. The parse must be BOUNDED. It runs after the grep's own GATE_BUDGET, and the
+#    platform treats a Stop hook killed by its 15s manifest timeout as exit 0 =
+#    ALLOW — so a parse that scales with STATE.md is a fail-OPEN path. The dedupe
+#    introduced with H-03 was O(n²): 18 000 distinct machine-field lines took
+#    14.7s, inside the manifest timeout, against 0.21s for the parse it replaced.
+#    `timeout 5` is the assertion: rc 2 means it blocked, rc 124 means it would
+#    have been killed by the platform and the stop would have been ALLOWED.
+WS23=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19" "$WS20" "$WS21" "$WS22" "$WS23"' EXIT
+arm "$WS23"
+{ echo '# STATE'; i=0; while [ "$i" -lt 20000 ]; do echo "round: $i"; i=$((i+1)); done; echo 'status: RUNNING'; } \
+  > "$WS23/docs/looptesting/STATE.md"
+( cd "$WS23" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR timeout 5 bash "$STOP" ) >/dev/null 2>&1
+RC23=$?
+assert_rc "$RC23" 2 "20k distinct machine-field lines still BLOCK, and inside 5s (not killed -> allowed)"
+assert_exists "$WS23/$ACT" "an oversized STATE.md leaves the sentinel armed"
+ERR23=$( ( cd "$WS23" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR timeout 5 bash "$STOP" ) 2>&1 1>/dev/null )
+case "$ERR23" in
+  *"machine-field"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: the refusal must name the line cap — got [$ERR23]" >&2 ;;
+esac
+
+# Y. The cap must not fire on an honest file: a STATE.md with a handful of
+#    machine-field lines still parses normally, or the bound is a new false block.
+WS24=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19" "$WS20" "$WS21" "$WS22" "$WS23" "$WS24"' EXIT
+arm "$WS24"; write_state "$WS24" CONVERGED 7 2
+run_stop "$WS24" false; assert_rc $? 0 "an ordinary STATE.md is nowhere near the line cap -> allow"
+assert_absent "$WS24/$ACT" "ordinary terminal STATE.md still disarms under the bounded parse"
+
 report "stop-gate.test.sh"

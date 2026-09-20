@@ -25,10 +25,14 @@
 #     self-set hooks.json value). CORRECTION vs architecture §2.3, which assumed
 #     ~120s. IMPORTANT: a Stop hook KILLED by the platform timeout is treated as
 #     exit 0 = ALLOW (a killed Stop hook does NOT block). So fail-closed blocking
-#     only works if WE finish and emit exit 2 before the timeout. This gate does
-#     ONLY bounded STATE.md parsing — no contract/subprocess execution — so it
-#     completes near-instantly and cannot approach the timeout. (This is why,
-#     unlike loop_eng, we do not run any external checker inside the Stop hook.)
+#     only works if WE finish and emit exit 2 before the timeout — the manifest
+#     sets 15s for this hook. That is not free: this gate runs no external
+#     checker (unlike loop_eng), but "no subprocess" is not the same as "fast",
+#     and a parse here that scales with the size of STATE.md IS a fail-open path.
+#     A pre-ship review caught exactly that: an unbounded dedupe loop took 14.7s
+#     on 18 000 machine-field lines. Every parse below is now bounded by a line
+#     cap (MAX_FIELD_LINES) that fails CLOSED when exceeded. Keep it that way:
+#     anything added here must be O(1) in the file's size, or capped.
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # Escape hatch (humans, not models): LOOP_TESTING_DISABLE_STOP_GATE=1.
@@ -95,7 +99,9 @@ else
 fi
 
 # --- read STATE.md machine fields under a small internal budget (fail closed) -
-# grep of a normal file is instant; the timeout only guards a pathological file.
+# grep of a normal file is instant; this timeout guards a pathological file. It
+# does NOT cover the parse that follows it — that one is bounded by
+# MAX_FIELD_LINES instead, because the platform's own 15s kill means ALLOW.
 GATE_BUDGET="${LOOP_TESTING_GATE_TIMEOUT:-10}"
 case "$GATE_BUDGET" in *[!0-9]*|"") GATE_BUDGET=10 ;; esac
 if command -v timeout >/dev/null 2>&1; then
@@ -197,9 +203,21 @@ fi
 # almost nothing (the grep-only and python3-only legs), and a helper that is not
 # there must never turn a TERMINAL status into an unparseable one — that would
 # block every stop in the project until the deadlock valve fires.
+#
+# BOUNDED, and the bound is load-bearing. This loop runs AFTER the grep's own
+# GATE_BUDGET, and its dedupe scans an accumulator that grows with every distinct
+# value — O(n²). The platform treats a Stop hook killed by its 15s manifest
+# timeout as exit 0 = ALLOW, so an unbounded parse here is a fail-OPEN path, the
+# very thing this gate exists to close. Measured: 18 000 distinct machine-field
+# lines (223 KB) took 14.7s against 0.21s for the position-based parse it
+# replaced. 200 is far past any honest STATE.md, which carries two such lines.
+MAX_FIELD_LINES=200
 status_vals=""; status_n=0     # "VAL|VAL|" accumulators, used only for dedupe
 round_vals="";  round_n=0
+seen_lines=0; overflow=0
 while IFS= read -r ln; do
+  seen_lines=$((seen_lines + 1))
+  if [ "$seen_lines" -gt "$MAX_FIELD_LINES" ]; then overflow=1; break; fi
   case "$ln" in
     status:*) k=status; v=${ln#status:} ;;
     round:*)  k=round;  v=${ln#round:}  ;;
@@ -220,13 +238,19 @@ done <<EOF
 $FIELDS
 EOF
 
+if [ "$overflow" = 1 ]; then
+  block "STATE.md carries more than $MAX_FIELD_LINES machine-field ('status:'/'round:') lines; refusing to parse it (fail-closed). An honest STATE.md has two." "-1"
+fi
+
 status=""; [ "$status_n" -eq 1 ] && status="${status_vals%|}"
 # An ambiguous round is reported unknown (-1) rather than guessed. -1 only
 # withholds the progress-based counter reset, so it errs toward blocking.
 cur_round=-1; [ "$round_n" -eq 1 ] && cur_round="${round_vals%|}"
 
 if [ "$status_n" -gt 1 ]; then
-  block "STATE.md carries $status_n conflicting 'status:' values (${status_vals%|}); the machine field must appear exactly once (fail-closed: treated as not converged)." "$cur_round"
+  conflict_show="${status_vals%|}"
+  [ "${#conflict_show}" -gt 80 ] && conflict_show="$(printf '%.80s' "$conflict_show")…"
+  block "STATE.md carries $status_n conflicting 'status:' values ($conflict_show); the machine field must appear exactly once (fail-closed: treated as not converged)." "$cur_round"
 fi
 
 case "$status" in
