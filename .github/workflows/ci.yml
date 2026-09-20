@@ -72,7 +72,14 @@ jobs:
           node-version: '22'
       - name: claude plugin validate
         run: |
-          npm install -g @anthropic-ai/claude-code@latest
+          # Pinned, not @latest (audit H-06). This job is a SCHEMA gate: the
+          # CLI's validator is what decides pass/fail, so an unpinned install
+          # makes the job's verdict a function of whatever was published that
+          # morning — a red run cannot be told apart from a manifest we broke,
+          # and a green one does not mean the next run is green. Bump this
+          # deliberately, in its own commit, so the validator change is the only
+          # thing under test when it moves.
+          npm install -g @anthropic-ai/claude-code@2.1.278
 
           # BOTH manifests, each named explicitly. `claude plugin validate .` on
           # this repo was a NO-OP gate: plugin.json and marketplace.json both live
