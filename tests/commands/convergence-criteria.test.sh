@@ -17,6 +17,21 @@
 #     non-consecutive rounds;
 #   - the STATE.md template does not carry a second, shorter zero-list that
 #     silently disagrees with §1 — the template is what the model instantiates.
+#
+# WHAT THESE ASSERTIONS ARE. An independent pre-ship reviewer showed the first
+# version of this suite green against four separate reverts of the rule it claims
+# to hold — including restoring the previous-round baseline and turning 归零 back
+# into 不计入, the two defects the change existed to fix. They passed because the
+# assertions matched the rule's VOCABULARY (`80%`, `cases_this_round`,
+# `runs/round-N.md`) and every revert kept that vocabulary intact.
+#
+# So each assertion below names a DISCRIMINATING phrase: one that a correct
+# statement of the rule must contain and the known-wrong statements do not, plus
+# `hasnt` for the wrong forms themselves. That is the most a text predicate over
+# a prompt document can do — it cannot tell that a rewording in different words
+# still means the rule. Rewriting §1 SHOULD fail this suite: re-derive the
+# assertions against the new text, and mutation-check them the way this header
+# was earned.
 set -u
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -62,15 +77,30 @@ done
 # FIXED_UNVERIFIED is the other half: it must be named and refused, or the model
 # has to guess whether "fixed but not replayed" counts as resolved.
 has "$S1" "FIXED_UNVERIFIED" "criterion 3 says what FIXED_UNVERIFIED means for convergence"
-has "$S1" "VERIFIED" "criterion 3 names the way out of FIXED_UNVERIFIED (replay to VERIFIED)"
+# NOT a bare `has VERIFIED`: that is satisfied by the string FIXED_UNVERIFIED
+# itself, so it stayed green with the whole exit route deleted. Name the route.
+has "$S1" "写进 \`runs/round-N.md\`" "criterion 3's exit route says WHERE the replay evidence goes"
+has "$S1" "再标 \`VERIFIED\`" "criterion 3's exit route says the replay comes BEFORE the VERIFIED mark"
 
 # --- K-06 part 1: shrunk coverage must ZERO the streak, not merely not count --
 has "$ZERO" "缩水" "a shrunk-coverage round is in the zero-the-streak list (K-06)"
+# The A/B/C hole is reopened by changing exactly one word in criterion 7 while
+# leaving the zero-line intact, which the first version of this suite allowed.
+has  "$S1" "converged_streak\` 归零" "criterion 7 itself says the streak is ZEROED (K-06)"
+hasnt "$S1" "不计入连续计数" "the 'does not count' phrasing that left A/B/C reachable is gone"
 
 # --- K-06 part 2 + K-21: a number, and one named source for it ---------------
 has "$S1" "80%" "criterion 7 states a numeric threshold, not '明显低于'"
 has "$S1" "cases_this_round" "criterion 7 names the field it compares"
 has "$S1" "runs/round-N.md" "criterion 7 names WHICH file's cases_this_round is authoritative (K-21)"
+# `80%` alone is vocabulary: it survives a revert to the previous-round baseline,
+# which is the defect that lets two shrinking rounds walk the floor down.
+has  "$S1" "此前所有轮次最大值" "the baseline is the maximum over ALL prior rounds (K-06)"
+has  "$S1" "不是上一轮" "criterion 7 says out loud that the previous round alone is not the baseline"
+hasnt "$S1" "上一轮的 80%" "the previous-round baseline is not what the rule settles on"
+# The escape must stay the one bounded, documented exception it was written as.
+has  "$S1" "唯一例外" "the shrink escape is singular and named, not a general discretion"
+hasnt "$S1" "豁免" "no blanket self-exemption clause was added to criterion 7"
 hasnt "$S1" "明显低于此前轮次" "the unfalsifiable phrasing is gone"
 
 # The other copy of the field must defer to that one rather than compete.
