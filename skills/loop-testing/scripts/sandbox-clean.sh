@@ -292,6 +292,35 @@ if [ -f "$PIDS_FILE" ]; then
       for child in $(pgrep -P "$1" 2>/dev/null); do collect_tree "$child"; done
     fi
   }
+  # This process and its ancestors are never targets, and their descendant trees
+  # are never expanded either — this process is one of those descendants, so
+  # collect_tree would put our own PID into the set and clean would signal itself
+  # at that line, before the worktree removal and before `.active` is disarmed
+  # (audit S-06). The recorded PIDs come from `lsof -t -i :PORT` / `ss -ltnp`,
+  # which report whoever holds the port: the agent session, or the unattended
+  # driver that started it, are exactly the processes that can be both an
+  # ancestor of this script and the answer to that query. A recycled PID lands in
+  # the same place.
+  #
+  # $$ and $PPID come from the shell and cannot fail. The walk above them uses
+  # `ps`, which may be missing or refuse — an incomplete chain still holds the
+  # two PIDs that matter, so nothing here depends on the walk succeeding. `ps`
+  # right-aligns its output in a fixed-width field, so the padding goes through
+  # `tr -dc '0-9'` like the six other places in this repo that read a padded
+  # count; leaving it in makes every comparison below miss silently.
+  SELF_CHAIN=" $$ $PPID "
+  _sp="$PPID"
+  _hops=0
+  while [ "$_hops" -lt 64 ]; do
+    [ "$_sp" -gt 1 ] 2>/dev/null || break
+    _spp="$(ps -o ppid= -p "$_sp" 2>/dev/null | tr -dc '0-9')"
+    case "$_spp" in ''|*[!0-9]*) break ;; esac
+    case "$SELF_CHAIN" in *" $_spp "*) break ;; esac   # a cycle cannot be walked
+    SELF_CHAIN="$SELF_CHAIN$_spp "
+    _sp="$_spp"
+    _hops=$(( _hops + 1 ))
+  done
+
   TARGETS=""
   while IFS= read -r pid; do
     case "$pid" in
@@ -311,6 +340,13 @@ if [ -f "$PIDS_FILE" ]; then
     case "$norm" in
       0|1) echo_info "refusing to signal PID $pid from .pids (0 would signal this whole process group, 1 is init)"
            continue ;;
+    esac
+    # Compare the normalized value for the same reason the 0/1 guard does: a
+    # zero-padded copy of our own parent is still our own parent.
+    case "$SELF_CHAIN" in
+      *" $norm "*)
+        echo_info "refusing to signal PID $pid from .pids (it is this cleanup's own process, or one of its ancestors — signalling it would stop the teardown before the worktree is removed)"
+        continue ;;
     esac
     kill -0 "$pid" 2>/dev/null || continue
     TARGETS="$TARGETS
