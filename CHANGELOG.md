@@ -2,6 +2,143 @@
 
 ## Unreleased
 
+Two batches, in the order they landed: a fresh-user QA pass, then the blocking list
+from a full audit of the project. The second is the larger of the two and comes first
+here because it is what decides whether this release is safe to run unattended.
+
+### Audit batch 1 — the blocking list
+
+An independent six-reviewer audit of the whole project found 101 issues, 2 of them
+rated P0, and concluded the project was a mature beta rather than production-grade.
+Its two blocking reasons were that the documented way to stop an unattended run did
+not stop it, and that a key with a trailing space or `\r` was echoed into a decision
+document verbatim. This batch is its eleven-item blocking list.
+
+Every fix here was written by one agent and then attacked by a second one that had
+not written it, and that second pass is most of what follows: **it found a defect
+inside all five of the fixes, including three regressions and one P0 that the first
+round's own tests called closed.** The pattern from the previous release repeated
+exactly — green tests prove the cases the author thought of.
+
+The finding not in the audit: **`bash tests/run-all.sh` printed `ALL GREEN` while
+running 12 of 35 suites.** The loop feeds the file list on stdin, and a suite added
+in this batch drains stdin, so it ate the rest of the list and the run ended early
+with nothing to see. All 35 pass once they actually run, so nothing was hiding — but
+every "full suite green" claim made while that was true covered a third of the tree.
+The runner now compares suites executed against files found and fails on a mismatch.
+
+Totals are now one line the runner prints and a release note can quote:
+`TOTAL: 36 suites, 1293 assertions, 0 failed`, recomputable with
+`bash tests/run-all.sh | grep '^TOTAL:'`. A suite is one file under `tests/` matching
+`*.test.*`; an assertion is one pass-or-fail decision a suite reports. Three different
+totals were quoted for this same tree earlier in the batch, which is what that line
+exists to end.
+
+**What changes for you.**
+
+1. **You can stop an unattended run.** `Ctrl-C`, `SIGTERM`, `SIGHUP` and a process-group
+   signal now stop the agent session, not just the driver, and the lock is released only
+   after the session is gone. Pressing `Ctrl-C` twice escalates to `SIGKILL` immediately
+   instead of cancelling the first stop. The driver prints what it is waiting for, so a
+   20-second wait no longer reads as a hang.
+2. **The unattended drivers run the agent with `--permission-mode bypassPermissions`
+   (Claude) and `-s danger-full-access` (Codex).** That was always true and was never
+   written down. Both READMEs now say so, and say the watchdog kill is the only boundary.
+3. **`--purge` deletes by identity, not by name.** A `qa-baseline` tag or `qa/loop-testing`
+   branch you re-pointed is kept and named. Files you left in `docs/looptesting/` are kept.
+4. **`sandbox-setup.sh` refuses an unreadable ownership marker (exit 9)** instead of
+   announcing "already initialized" with no worktree behind it.
+5. **The README's purge command works when pasted.** It printed candidate install paths
+   and bound `SKILL_DIR` to nothing, or to a truncated cache path.
+
+- **fix(driver)**: stop the child session before releasing the lock (audit D-01, P0).
+  `timeout` puts the session in its own process group, and the driver ran it as a
+  foreground subshell with no `wait`, so a signal killed the driver, freed
+  `.driver.lock`, and left a `bypassPermissions` session running — a driver started
+  afterwards then raced it for the same `STATE.md` and worktree. The session is now
+  launched in the background and awaited; the handler signals its group, polls, and
+  escalates to `SIGKILL` at a bound derived from the watchdog's own `-k 15` rather than
+  chosen. Two further holes were found by review, not by the fix: releasing the lock
+  before the session had actually exited, and a second signal arriving mid-wait finding
+  the guard variable already cleared and freeing the lock anyway — reachable by pressing
+  `Ctrl-C` twice, which is what a user does when nothing prints for 20 seconds. A
+  session that survives `SIGKILL` now keeps the lock, with the lock's pid rewritten to
+  name the survivor so the next driver refuses rather than stealing it. Known and
+  documented: a `SIGKILL`ed driver, and a grandchild that escaped via `setsid`.
+- **fix(moa)**: redact the value that is actually sent (audit M-01, P0). `collectSecrets`
+  stored the raw env value while the request sent `value.trim()`, and redaction is a
+  literal match, so a key with a trailing space or `\r` — a CRLF `.env` is enough — came
+  back from an echoing endpoint and landed in `DEC.md` and on stdout. Both forms are now
+  registered. Review then found three more paths to the same leak: a secret straddling
+  the 20000-character field cut, one escaped by `JSON.parse` round-tripping, and one
+  inside an object key at the depth cap, where serialization ran before redaction. All
+  now redact before every cut and during serialization. The length floor that briefly
+  guarded against mangling ordinary words was removed: it leaked any credential shorter
+  than four characters, and inverted the first fix for a value whose trimmed form was
+  shorter still.
+- **fix(moa)**: honor `NO_PROXY`/`no_proxy` and refuse a proxy scheme that is not `http:`
+  (audit M-02, M-03). An `https://` proxy was spoken to in plaintext with
+  `Proxy-Authorization` attached, and `socks5://` was spoken to as if it were HTTP. The
+  first attempt refused *any* non-http proxy variable, which broke the ordinary Clash and
+  v2rayA setup where `all_proxy` is socks and never selected, and turned the documented
+  exit 2 degrade into exit 1, stalling the loop instead of degrading it. Only the variable
+  an endpoint actually selects is now refused.
+- **fix(hooks)**: decide ledger writes by lexing the command (audit H-01, H-04, H-05,
+  H-07). The old predicate denied any command that merely contained an ISSUE-ID, the word
+  VERIFIED, the ledger path and any write-ish token, so a read-only
+  `grep … 2>/dev/null` was refused with an accusation of faking verification — while
+  `sed -i 's/FIXED_UNVERIFIED/VERIFIED/' ISSUES.md` passed untouched. Both are the same
+  bug: a predicate over raw command text cannot tell what role a path plays in a command,
+  so every tightening under-matched and every loosening over-matched. The gate now lexes
+  with `shlex` and compares operand tokens to the ledger path, falling back to the old
+  regex without `python3`, past a length cap, or on a lexer rejection — because a command
+  the lexer rejects is frequently still a command the shell runs. Four review rounds each
+  found another way to name a writer indirectly: `sponge`, `tee`, a lone writer fed by a
+  redirect, wrapper verbs like `command` and `env`, and `sort -o`. The header now states
+  what still gets through rather than claiming the family is closed.
+- **fix(sandbox)**: purge deletes a tag or branch only when it still resolves to the
+  recorded `BASELINE_HEAD` (audit S-03); setup validates the marker it resumes from and
+  refuses with exit 9 rather than defaulting to "we own this" (S-01); both readers strip a
+  carriage return, and only a carriage return, so a CRLF marker no longer produces a
+  CR-named worktree and a path ending in a space still resolves (S-08); re-anchoring
+  accepts a candidate only when its own `git-common-dir` matches ours, so a bare repo or
+  a `--separate-git-dir` nested inside another repository no longer builds the sandbox in
+  the wrong repository (S-02).
+- **fix(sandbox,driver)**: `--purge` removes only files the sandbox wrote, keeps and names
+  anything else, and keeps the ownership marker and `STATE.md` whenever it keeps the
+  directory — otherwise the next `--purge` refuses at exit 3 with no way to finish. That
+  combination could only arise once the driver claimed the evidence directory it created
+  (D-03), and neither half produced it alone.
+- **fix(install)**: the Codex prompt is claimed by a checksum recorded at install time,
+  never by filename (audit H-02). A prompt you wrote, or one you edited after installing,
+  is kept and named on both install and uninstall, and a symlink at that path is never
+  written through — which on macOS would have created the far end of a dangling link.
+- **fix(driver)**: `unattended-codex.sh` absolutizes a relative `--project` (audit D-02),
+  which otherwise failed every session and reported it as the no-progress circuit breaker.
+- **docs**: the `SKILL.md` fallback for "scripts not found" told the model to isolate by
+  hand, which `round-0.md` forbids and its own gate blocks — it now locates the install
+  deterministically or stops at `BLOCKED` (K-01); the `FINAL_REPORT` template told the
+  model to clean before writing the report, the reverse of the protocol (K-02); the README
+  purge command defines `SKILL_DIR` before using it, quoted so a careless paste fails
+  naming the placeholder rather than binding an empty or truncated path, and the glob's
+  plugin and skill segments are derived from the manifests so a rename cannot leave the
+  documentation stale and the test green (K-05); `issue-rules.md` no longer calls the
+  ledger gate fail-closed (K-04).
+- **test(runner)**: every suite runs, every suite reports a tally, and a suite that
+  reports none — or reports zero assertions — fails the run instead of passing quietly
+  (audit T-03, T-04). `run-all.sh` no longer uses `mapfile`, which is bash 4+, so the
+  runner starts on macOS's bash 3.2 (T-09).
+- **test(driver,sandbox)**: `agent-binary-preflight.test.sh` no longer `chmod`s the real
+  `~/.codex` (audit T-01), and `clean-pid-guard.test.sh` reaps its sentinel (T-02).
+
+Still open, deliberately: the marker's recorded `TOP` is never compared against the
+repository being purged, so a marker carried to another machine drives deletion in the
+wrong repository (audit S-14). The comparison is two lines; the rule around it is not,
+because a renamed project directory makes `TOP` legitimately stale while every other
+field stays correct. It needs a rename-tolerant rule, a message and tests of its own.
+
+### Fresh-user QA pass
+
 A fresh-user QA pass: install → use → update → self-heal → uninstall, run end to
 end in a throwaway `HOME` against the plugin as a stranger would receive it. The
 headline find is that the plugin's own skill never loaded. Claude Code registers
