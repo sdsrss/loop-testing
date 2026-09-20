@@ -133,6 +133,30 @@ fi
 LOCK_DIR="$LT/.driver.lock"
 LOCK_OWNED=0
 release_lock() { [ "$LOCK_OWNED" = 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null; LOCK_OWNED=0; }
+# Prints alive | gone | unknown for a PID. `kill -0` alone cannot answer this:
+# it fails for ESRCH (the process is gone) AND for EPERM (it is alive, owned by
+# another user), and reading the second as death stole the lock from a LIVE
+# driver — two sessions with bypassPermissions then writing the same STATE.md,
+# ISSUES.md and worktree, which is the one thing this guard exists to prevent
+# (audit D-06). A holder owned by another account is ordinary: a driver started
+# by root, by a systemd unit, or by a teammate on a shared box.
+#
+# procfs and `ps -p` answer "does this PID exist" without needing permission to
+# signal it — the question actually being asked. `ps` is already required here
+# (proc_start uses it). Where neither exists the answer is `unknown`, which this
+# path refuses, because it has always refused ambiguity rather than stealing.
+holder_state() { # pid
+  kill -0 "$1" 2>/dev/null && { printf 'alive'; return; }
+  if [ -d /proc/self ]; then
+    if [ -e "/proc/$1" ]; then printf 'alive'; else printf 'gone'; fi
+    return
+  fi
+  if command -v ps >/dev/null 2>&1; then
+    if ps -p "$1" >/dev/null 2>&1; then printf 'alive'; else printf 'gone'; fi
+    return
+  fi
+  printf 'unknown'
+}
 acquire_lock() {
   # LOCK_OWNED before the pid write at both mkdir sites (see unattended-loop.sh):
   # a signal in that window terminates, and an unset flag would leave a pid-less
@@ -145,9 +169,14 @@ acquire_lock() {
   # treated as live and refused — never steal on ambiguity. (Two drivers starting in
   # the same sub-ms window could still both steal a genuinely-stale lock; this is a
   # best-effort accidental-double-launch guard, not a hard mutex — see README.)
-  if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then
-    die "another loop-testing driver is running on this project (lock held${holder:+ by pid $holder}); refusing to run concurrently — remove $LOCK_DIR by hand only if you are sure no driver is live"
-  fi
+  hstate=alive
+  [ -n "$holder" ] && hstate="$(holder_state "$holder")"
+  case "$hstate" in
+    alive)
+      die "another loop-testing driver is running on this project (lock held${holder:+ by pid $holder}); refusing to run concurrently — remove $LOCK_DIR by hand only if you are sure no driver is live" ;;
+    unknown)
+      die "a driver lock is held by pid $holder and this host offers no way to tell whether that process is still running (no procfs, no ps); refusing to run concurrently rather than stealing a lock that may be live — remove $LOCK_DIR by hand only if you are sure no driver is live" ;;
+  esac
   rm -rf "$LOCK_DIR" 2>/dev/null   # holder PID confirmed dead (crashed driver) — steal
   if mkdir "$LOCK_DIR" 2>/dev/null; then LOCK_OWNED=1; echo "$$" > "$LOCK_DIR/pid"; return 0; fi
   die "could not acquire driver lock at $LOCK_DIR"
