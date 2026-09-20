@@ -153,4 +153,95 @@ touch -d "@$(( $(date +%s) - 200000 ))" "$WS17/$ACT"   # ~2.3 days old
 run_stop "$WS17" false; assert_rc $? 0 "stale orphan .active (no STATE.md) -> allow stop (R59)"
 assert_absent "$WS17/$ACT" "stale orphan sentinel disarmed (R59)"
 
+# S. H-03: two DIFFERENT `status:` values are ambiguous -> fail-closed block, and
+#    the sentinel survives. The old `head -1` resolved the ambiguity by position,
+#    so an example line written ABOVE the machine field disarmed the gate and
+#    deleted .active — fail-open in the destructive direction.
+WS18=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18"' EXIT
+arm "$WS18"
+cat > "$WS18/docs/looptesting/STATE.md" <<'EOF'
+# STATE
+
+示例（勿照抄）：收敛时机器字段写成
+status: CONVERGED
+
+## 机器判读字段（勿改键名）
+
+```
+round: 3
+converged_streak: 0
+status: RUNNING
+max_rounds: 12
+```
+EOF
+run_stop "$WS18" false; assert_rc $? 2 "example 'status:' above the machine field -> block (H-03)"
+assert_exists "$WS18/$ACT" "conflicting status: values leave the sentinel armed (H-03)"
+ERRTXT=$(run_stop_err "$WS18" false)
+case "$ERRTXT" in
+  *"conflicting 'status:' values"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: block reason must name the conflict — got [$ERRTXT]" >&2 ;;
+esac
+
+# T. Same ambiguity with the terminal value LAST: blocking must not depend on
+#    which value happens to come first, or the fix is just a different position rule.
+WS19=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19"' EXIT
+arm "$WS19"
+cat > "$WS19/docs/looptesting/STATE.md" <<'EOF'
+# STATE
+status: RUNNING
+
+```
+round: 4
+status: CONVERGED
+max_rounds: 12
+```
+EOF
+run_stop "$WS19" false; assert_rc $? 2 "stray 'status:' above a terminal machine field -> block (H-03)"
+assert_exists "$WS19/$ACT" "sentinel armed when the terminal value is the ambiguous one (H-03)"
+
+# U. Repeats that AGREE are not ambiguous: the gate must still parse them, or
+#    H-03's fix becomes a new false-block surface of its own.
+WS20=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19" "$WS20"' EXIT
+arm "$WS20"
+cat > "$WS20/docs/looptesting/STATE.md" <<'EOF'
+# STATE
+status: CONVERGED
+
+```
+round: 5
+status: CONVERGED
+max_rounds: 12
+```
+EOF
+run_stop "$WS20" false; assert_rc $? 0 "duplicate but identical status: values -> allow (not ambiguous)"
+assert_absent "$WS20/$ACT" "identical duplicates still disarm on a terminal status"
+
+# V. An ambiguous `round:` is reported unknown (-1), never guessed: -1 withholds
+#    the progress-based counter reset, which errs toward blocking.
+WS21=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19" "$WS20" "$WS21"' EXIT
+arm "$WS21"
+cat > "$WS21/docs/looptesting/STATE.md" <<'EOF'
+# STATE
+round: 1
+
+```
+round: 9
+status: RUNNING
+max_rounds: 12
+```
+EOF
+run_stop "$WS21" false; assert_rc $? 2 "RUNNING with an ambiguous round: -> block"
+read -r _ pr21 < "$WS21/$CF"
+assert_eq "-1" "$pr21" "ambiguous round: recorded as -1 (unknown), not the first value"
+
+# W. The H-03 parse must stay builtins-only: on the bare PATH of case K (no sort,
+#    no uniq, no wc) a TERMINAL status must still disarm. A parse that needs a
+#    helper which is not there reads as "unparseable" and blocks every stop in
+#    the project until the deadlock valve fires — fail-closed, but wrong.
+WS22=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$BINDIR" "$WS11" "$WS12" "$WS13" "$OTHER" "$WS14" "$WS15" "$BINP" "$WS16" "$WS17" "$WS18" "$WS19" "$WS20" "$WS21" "$WS22"' EXIT
+arm "$WS22"; write_state "$WS22" CONVERGED 6 2
+( cd "$WS22" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR PATH="$BINDIR" bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 0 "terminal status parses on a bare PATH (no sort/uniq/wc) -> allow"
+assert_absent "$WS22/$ACT" "terminal status disarms on a bare PATH (H-03 parse is builtins-only)"
+
 report "stop-gate.test.sh"

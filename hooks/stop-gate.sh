@@ -185,9 +185,49 @@ if [ "$rc" -eq 124 ]; then
   block "reading STATE.md exceeded the internal budget (${GATE_BUDGET}s); failing closed." "-1"
 fi
 
-# Extract fields.
-status=$(printf '%s\n' "$FIELDS" | sed -n 's/^status:[[:space:]]*//p'          | head -1 | tr -d '[:space:]')
-cur_round=$(printf '%s\n' "$FIELDS" | sed -n 's/^round:[[:space:]]*//p'          | head -1 | tr -d '[:space:]')
+# --- extract fields (ambiguity fails closed) ---------------------------------
+# A machine field that appears more than once with DIFFERENT values is ambiguous,
+# and `head -1` resolved that ambiguity by position: an example or quoted
+# `status: CONVERGED` written ABOVE the real line disarmed the gate and deleted
+# the sentinel — fail-open, and destructive with it (audit H-03). Position is not
+# evidence of which line is the machine field, so disagreement blocks instead.
+# Identical repeats are not ambiguous and still parse.
+#
+# Builtins only below (no sort/wc/uniq): this gate already runs on a PATH holding
+# almost nothing (the grep-only and python3-only legs), and a helper that is not
+# there must never turn a TERMINAL status into an unparseable one — that would
+# block every stop in the project until the deadlock valve fires.
+status_vals=""; status_n=0     # "VAL|VAL|" accumulators, used only for dedupe
+round_vals="";  round_n=0
+while IFS= read -r ln; do
+  case "$ln" in
+    status:*) k=status; v=${ln#status:} ;;
+    round:*)  k=round;  v=${ln#round:}  ;;
+    *)        continue ;;
+  esac
+  # Pattern substitution (bash 3.0+), deliberately not case-modification, which
+  # is bash 4 and dies on macOS's bash 3.2 — see tests/portability/bash3.test.sh.
+  v=${v// /}; v=${v//$'\t'/}; v=${v//$'\r'/}
+  [ -n "$v" ] || continue
+  if [ "$k" = status ]; then
+    case "|$status_vals" in *"|$v|"*) continue ;; esac
+    status_vals="$status_vals$v|"; status_n=$((status_n + 1))
+  else
+    case "|$round_vals" in *"|$v|"*) continue ;; esac
+    round_vals="$round_vals$v|"; round_n=$((round_n + 1))
+  fi
+done <<EOF
+$FIELDS
+EOF
+
+status=""; [ "$status_n" -eq 1 ] && status="${status_vals%|}"
+# An ambiguous round is reported unknown (-1) rather than guessed. -1 only
+# withholds the progress-based counter reset, so it errs toward blocking.
+cur_round=-1; [ "$round_n" -eq 1 ] && cur_round="${round_vals%|}"
+
+if [ "$status_n" -gt 1 ]; then
+  block "STATE.md carries $status_n conflicting 'status:' values (${status_vals%|}); the machine field must appear exactly once (fail-closed: treated as not converged)." "$cur_round"
+fi
 
 case "$status" in
   CONVERGED|INCOMPLETE|BLOCKED)
