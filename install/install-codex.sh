@@ -27,6 +27,11 @@
 #   - fail-closed uninstall/overwrite: only a directory carrying THIS installer's
 #     marker file is ever removed or replaced. A foreign directory at the target
 #     is never touched.
+#   - The slash-command prompt (<codex-home>/prompts/loop-testing.md) is claimed by
+#     content, not by name: the marker records its checksum at install time, and
+#     the file is overwritten or removed only when it still matches that record
+#     (or is byte-identical to the prompt this checkout ships). A user's own file
+#     at that name, or our prompt after they edited it, is left alone and named.
 #   - No git, no network, no writes outside the resolved target.
 
 set -euo pipefail
@@ -99,6 +104,30 @@ is_our_install() {
   [ -n "$dir" ] && [ "$(basename "$dir")" = "$SKILL_NAME" ] && [ -f "$dir/$MARKER" ]
 }
 
+# Content identity for the prompt file: POSIX cksum (CRC + byte count), present on
+# both Linux and macOS. Identity, not security — it only has to tell "the bytes we
+# wrote" from "bytes someone else wrote or changed".
+file_cksum() { cksum < "$1" 2>/dev/null | cut -d' ' -f1,2 | tr ' ' '-'; }
+
+# Is the prompt at $PROMPT_DEST ours to overwrite/remove (audit H-02)? True when
+# its checksum equals the one recorded in the marker given as $1 (written by the
+# install that placed it), or when it is byte-identical to the prompt this
+# checkout ships (an install whose marker predates the record). A file that is
+# neither — the user's own prompt at that name, or ours after they edited it —
+# is theirs, and this installer never `cp`s over it or `rm`s it.
+prompt_is_ours() {
+  local marker="$1" sum rec
+  [ -n "$PROMPT_DEST" ] && [ -f "$PROMPT_DEST" ] || return 1
+  sum="$(file_cksum "$PROMPT_DEST")"
+  [ -n "$sum" ] || return 1
+  if [ -n "$marker" ] && [ -f "$marker" ]; then
+    rec="$(grep -E '^prompt_cksum=' "$marker" 2>/dev/null | head -1 | cut -d= -f2-)"
+    [ -n "$rec" ] && [ "$rec" = "$sum" ] && return 0
+  fi
+  [ -f "$PROMPT_SRC" ] && [ "$sum" = "$(file_cksum "$PROMPT_SRC")" ] && return 0
+  return 1
+}
+
 # Guarded remove: only ever runs against a path that ends in /loop-testing[.bak]
 # and carries our marker (or is a marker-carrying .bak of it).
 safe_remove() {
@@ -156,6 +185,15 @@ do_install() {
     esac
   done
 
+  # Decide the prompt's fate BEFORE the swap rotates the current marker (with its
+  # prompt record) into .bak: absent -> install; ours -> refresh; foreign -> keep.
+  local prompt_action="skip"
+  if [ -n "$PROMPTS_DIR" ] && [ -f "$PROMPT_SRC" ]; then
+    if [ ! -e "$PROMPT_DEST" ]; then prompt_action="install"
+    elif prompt_is_ours "$DEST/$MARKER"; then prompt_action="install"
+    else prompt_action="foreign"; fi
+  fi
+
   action "mkdir -p $SKILLS_DIR"
   action "cp -R $SRC -> $DEST (staged, then atomically swapped in)"
   [ -e "$DEST" ] && action "backing up existing install to $DEST.bak"
@@ -199,17 +237,24 @@ do_install() {
 
   # Best-effort: also install the /loop-testing slash-command prompt (only when the
   # prompts dir is known — default / CODEX_HOME layout). A failure here must NOT fail
-  # the (already-completed) skill install.
-  if [ -n "$PROMPTS_DIR" ] && [ -f "$PROMPT_SRC" ]; then
-    action "install slash-command prompt -> $PROMPT_DEST"
-    if [ "$DRY_RUN" -eq 0 ]; then
-      if mkdir -p "$PROMPTS_DIR" 2>/dev/null && cp "$PROMPT_SRC" "$PROMPT_DEST" 2>/dev/null; then
-        log "  slash command: /$SKILL_NAME (Codex prompt at $PROMPT_DEST)"
-      else
-        log "  note: could not install the slash-command prompt at $PROMPT_DEST (skill install is unaffected)."
-      fi
-    fi
-  fi
+  # the (already-completed) skill install. A file at that path that is not ours
+  # (audit H-02) is never overwritten: it is named, and the skill install stands.
+  case "$prompt_action" in
+    install)
+      action "install slash-command prompt -> $PROMPT_DEST"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        if mkdir -p "$PROMPTS_DIR" 2>/dev/null && cp "$PROMPT_SRC" "$PROMPT_DEST" 2>/dev/null; then
+          # Record what we placed, so a later run can tell our bytes from the user's.
+          printf 'prompt=%s\nprompt_cksum=%s\n' "$PROMPT_DEST" "$(file_cksum "$PROMPT_DEST")" >> "$DEST/$MARKER"
+          log "  slash command: /$SKILL_NAME (Codex prompt at $PROMPT_DEST)"
+        else
+          log "  note: could not install the slash-command prompt at $PROMPT_DEST (skill install is unaffected)."
+        fi
+      fi ;;
+    foreign)
+      log "  note: $PROMPT_DEST exists and was not installed by loop-testing (or was edited since);"
+      log "        leaving it as is. Move it aside and re-run to get the shipped /$SKILL_NAME prompt." ;;
+  esac
 
   log ""
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -260,14 +305,21 @@ do_uninstall() {
     echo "       refusing to delete a directory this installer did not create." >&2
     exit 1
   fi
+  # Decide the prompt's fate while the marker (and its prompt record) still exists.
+  local prompt_ours=0
+  if [ -n "$PROMPT_DEST" ] && [ -f "$PROMPT_DEST" ] && [ "$(basename "$PROMPT_DEST")" = "$SKILL_NAME.md" ]; then
+    if prompt_is_ours "$DEST/$MARKER"; then prompt_ours=1; else prompt_ours=2; fi
+  fi
   safe_remove "$DEST"
   # Also clear a backup left by a prior reinstall (marker-verified, not basename).
   if [ -e "$DEST.bak" ] && [ -f "$DEST.bak/$MARKER" ]; then safe_remove "$DEST.bak"; fi
-  # Remove the slash-command prompt we installed (a single named file). Best-effort;
-  # guarded to the exact basename so it can only ever touch our own prompt.
-  if [ -n "$PROMPT_DEST" ] && [ -f "$PROMPT_DEST" ] && [ "$(basename "$PROMPT_DEST")" = "$SKILL_NAME.md" ]; then
-    if [ "$DRY_RUN" -eq 1 ]; then action "rm $PROMPT_DEST"; else rm -f "$PROMPT_DEST" && log "  removed slash-command prompt $PROMPT_DEST"; fi
-  fi
+  # Remove the slash-command prompt we installed — only when it is still the file
+  # we wrote (audit H-02); a user's own file at that name, or ours after they
+  # edited it, is kept and named. Best-effort.
+  case "$prompt_ours" in
+    1) if [ "$DRY_RUN" -eq 1 ]; then action "rm $PROMPT_DEST"; else rm -f "$PROMPT_DEST" && log "  removed slash-command prompt $PROMPT_DEST"; fi ;;
+    2) log "  note: kept $PROMPT_DEST — not installed by loop-testing (or edited since); remove it yourself if unwanted." ;;
+  esac
   if [ "$DRY_RUN" -eq 1 ]; then
     log "[dry-run] no changes made."
   else
