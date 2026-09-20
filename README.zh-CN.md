@@ -30,7 +30,8 @@
   不清空台账。
 - **机制层强化(Claude Code)。** Stop-hook 拦截未收敛的停会话——fail-closed,带有界死锁阀
   (同轮 3 次拦截后强制放行、24h 崩溃残留自动解除、`LOOP_TESTING_DISABLE_STOP_GATE=1` 退出);另一个 hook
-  抬高伪造"已验证"的成本——best-effort、可被绕过,残余靠红线纪律与人工 diff 审查兜底,并非硬拦截。
+  抬高伪造"已验证"的成本(`LOOP_TESTING_DISABLE_LEDGER_GATE=1` 退出)——best-effort、可被绕过,
+  残余靠红线纪律与人工 diff 审查兜底,并非硬拦截。
 - **一份技能,两个平台。** Claude Code 与 Codex 共用同一 `SKILL.md`,一个仓库两处安装。
 - **安全内建。** 沙箱隔离、失败即拒(fail-closed)、密钥只从环境变量读且日志脱敏、绝不
   push / 部署 / 碰生产。
@@ -219,7 +220,7 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 | qa worktree,当 `clean` 无法确认其归属时(v0.10.0 之前创建的沙箱,或归属标记不可读) | 目标仓库的同级目录 | 删除它要用 `--force`,会连同其中未提交/未跟踪的内容一起丢弃——所以 `clean` 只报出它,由你决定 |
 | `qa/loop-testing` 分支 | 目标仓库 | **承载全部修复 commit——只存在于该分支** |
 | `qa-baseline` tag | 目标仓库 | 标记跑前基线,便于 diff |
-| `~/.cache/loop-testing/latest-tag` | 用户缓存目录 | 更新检查 24h 节流(Claude Code hook),随时可删 |
+| `latest-tag` — 以插件安装时在 `${CLAUDE_PLUGIN_DATA}`(`~/.claude/plugins/data/loop-testing@…/`),否则在 `~/.cache/loop-testing/` | 插件数据目录 / 用户缓存目录 | 更新检查 24h 节流(Claude Code hook),随时可删。放在插件数据目录时 `claude plugin uninstall` 会一并清掉(`--keep-data` 可保留);`~/.cache` 兜底路径供 Codex 与 `--plugin-dir` 开发加载使用,需手动删 |
 | `~/.codex/skills/loop-testing`(重装后另有 `.bak`)、`~/.codex/prompts/loop-testing.md` | Codex 主目录 | 已安装技能;`install/install-codex.sh --uninstall` 移除 |
 
 **先收割,再清扫**——修复 commit 只在 qa 分支上:
@@ -239,8 +240,11 @@ bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge
 bash "$SKILL_DIR"/scripts/sandbox-clean.sh --purge --discard-fixes
 ```
 
-`--purge` 是**用户**动作,agent 绝不自行执行。缺 ownership marker 或 `STATE.md` 非终态
-(`CONVERGED / INCOMPLETE / BLOCKED`)时拒绝(exit 3);绝不删除当前检出的分支。也绝不删除
+`--purge` 是**用户**动作,agent 绝不自行执行。缺 ownership marker、marker **读不出来**、
+或 `STATE.md` 非终态(`CONVERGED / INCOMPLETE / BLOCKED`)时拒绝(exit 3);绝不删除当前检出的分支。
+marker 存在但被截断 / 损坏时,视为比"缺失"更不可知:purge 会指出该文件并且什么都不删,
+而不是推断出"本次什么都没创建"。purge 跑完但不得不留下一个 worktree 时退出码为 `4`
+(`purge incomplete`)——先处理那个 worktree,再重跑 purge。也绝不删除
 只是"采纳"的 ref——经 `clean` → 重新 `setup` 后,qa 分支与基线标记属于复用而非本次创建,
 marker 记为 adopted,purge 只报不删,`--discard-fixes` 对它们不生效。证据目录同理,以下四种情况
 purge 只报不删:
@@ -259,7 +263,8 @@ git branch -D qa/loop-testing && git tag -d qa-baseline
 # 仅当 docs/looptesting/ 完全属于沙箱时才执行下一行。purge 保留该目录,恰恰是因为
 # 它可能不完全属于沙箱——执行前先看一眼;里面你自己的未跟踪文件删掉就找不回来了。
 rm -rf docs/looptesting
-rm -rf ~/.cache/loop-testing     # 可选:Claude Code 更新检查缓存
+rm -rf ~/.cache/loop-testing     # 可选:更新检查节流文件,仅 Codex / --plugin-dir 会用到
+                                 #(插件安装走 ${CLAUDE_PLUGIN_DATA},`claude plugin uninstall` 已清）
 ```
 
 ---

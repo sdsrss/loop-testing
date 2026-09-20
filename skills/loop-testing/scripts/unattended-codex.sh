@@ -251,6 +251,12 @@ if [ -z "$TIMEOUT_BIN" ]; then
   fi
 fi
 
+# Same preflight as unattended-loop.sh: an absent or misspelled $CODEX_BIN used to
+# run the whole session loop and surface as the no-progress circuit breaker, which
+# blames the loop for a missing executable.
+command -v "$CODEX_BIN" >/dev/null 2>&1 \
+  || die "codex binary not found: '$CODEX_BIN' is neither an executable path nor a command on PATH — install Codex CLI or pass --codex-bin <path>"
+
 while true; do
   st="$(state_field status)"
   case "$st" in

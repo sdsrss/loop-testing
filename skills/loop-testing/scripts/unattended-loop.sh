@@ -207,6 +207,14 @@ if [ -z "$TIMEOUT_BIN" ]; then
   fi
 fi
 
+# The agent binary gets the same treatment as the watchdog: check it BEFORE the
+# loop, not by launching it. An absent or misspelled $CLAUDE_BIN used to run the
+# full session loop, produce no STATE.md, and surface as the no-progress circuit
+# breaker — "agent likely failed before round 0" — which blames the loop for a
+# missing executable and sends the user looking in the wrong place.
+command -v "$CLAUDE_BIN" >/dev/null 2>&1 \
+  || die "claude binary not found: '$CLAUDE_BIN' is neither an executable path nor a command on PATH — install Claude Code or pass --claude-bin <path>"
+
 while true; do
   # 1. Terminal? (STATE must exist AND status be a terminal value.)
   st="$(state_field status)"

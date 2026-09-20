@@ -9,6 +9,35 @@ description: Autonomous QA self-test / self-fix / self-iterate loop. Use after a
 
 一切进度以 `<目标项目>/docs/looptesting/` 下的文件为准，不依赖记忆。**每轮开始先重读状态文件**。
 
+## 入口与参数分诊（先读这一节）
+
+本技能既是 `/loop-testing` 斜杠命令的落点，也是触发词（自测 / 验收 / QA 循环 / self-test loop…）的落点。
+参数：`$ARGUMENTS`（为空 → 启动 / 续跑；`status` → 只报进度；`report` → 只打印最终报告）。
+**先按参数分诊，再决定要不要跑循环**：
+
+- **空参数 — 启动 / 续跑 (start / resume)。** 在当前项目上跑完整的自测 / 自修 / 自迭代循环。
+  若 `docs/looptesting/STATE.md` 已存在则**续跑**：从其「下一动作」继续，**禁止重置轮数 (do NOT
+  reset the round count)**、禁止清空总账；否则**从第 0 轮开始 (start from round 0)**。照本技能执行
+  （第 0 轮盘点 → 五步轮循环 → 收敛退出），红线与机制层 hook 同样生效。
+
+- **`status` — 只报进度，禁止开跑 (do NOT start a run)。** 读 `docs/looptesting/STATE.md`，汇报
+  `round`、`converged_streak`、`status`、最后 / 下一动作、阻塞项；再读 `docs/looptesting/ISSUES.md`，
+  按 P0–P3 给出未决 / 已验证条目数。若 `docs/looptesting/` 不存在，就说明本项目尚未跑过，并提示
+  `/loop-testing` 可以启动它。
+
+- **`report` — 只打印最终报告，禁止开跑 (do NOT start a run)。** 若
+  `docs/looptesting/FINAL_REPORT.md` 存在，打印并总结它（最终状态、覆盖摘要、问题↔提交对照、
+  未决 / 待确认项、盲区）。若它不存在但有运行中的 run，说明这一点并改为给出 `status` 的汇总。
+
+- **其他任意参数 — 启动 / 续跑的可选范围提示。** 只收窄本次运行，省略时默认行为不变。两类可叠加：
+  - **focus**（自由文本，如 `只测 X` / `focus on the CLI`）：第 0 轮盘点照做，但场景设计与轮循环
+    优先覆盖指定区域，并把收窄后的范围写进 `PLAN.md`，保证覆盖率诚实——**未覆盖区域不得报为已覆盖**。
+  - **轮次上限**（如 `最多 3 轮` / `at most 3 rounds`）：**启动**时（尚无 `STATE.md`）把
+    `max_rounds: N` 写入 `STATE.md` 取代默认的 12；**续跑**时保留已记录值，除非用户重申，且
+    **永远不得低于当前 `round:`**。它只下调失控上限——收敛仍会更早停止（`converged_streak` 达 2
+    → `CONVERGED`）；达上限仍未收敛则写 `status: INCOMPLETE`（既有退出语义见
+    `references/exit-and-report.md`）。
+
 ## 双重身份（交替代入）
 
 - **使用产品时 = 真实用户，不是开发者**。两个交替画像：① 第一次接触、不看文档瞎摸索的**小白**；② 每天重度使用、追求效率、**脾气不好的老手**。用真实感数据（真实风格姓名、中英混排、emoji、长文本），会手滑、输错、中途反悔、不按套路出牌。
@@ -64,4 +93,5 @@ description: Autonomous QA self-test / self-fix / self-iterate loop. Use after a
 - **Claude Code**：stop-gate hook 在机制层强制续跑（未收敛禁止停止），红线是第二道防线。
 - **Codex（无 hook）**：每轮末尾**强制自检退出条件**，未满足则显式声明「继续第 N+1 轮」并进入下一轮；中断后重新触发技能即从 `STATE.md` 续跑。
 
-现在开始：先执行第 0 轮（`references/round-0.md`），建立基线与完整功能矩阵，然后自主进入循环。
+现在开始：按上方「入口与参数分诊」先看 `$ARGUMENTS`。`status` / `report` 只读不跑；否则执行第 0 轮
+（`references/round-0.md`），建立基线与完整功能矩阵，然后自主进入循环。

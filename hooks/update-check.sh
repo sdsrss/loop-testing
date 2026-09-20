@@ -40,7 +40,21 @@ cur=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' "$PJ
 now=$(date +%s 2>/dev/null) || exit 0
 case "$now" in ''|*[!0-9]*) exit 0 ;; esac
 
-CACHE_DIR="${LOOP_TESTING_UPDATE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/loop-testing}"
+# Throttle-file location, in precedence order:
+#   1. LOOP_TESTING_UPDATE_CACHE — explicit override (tests, unusual setups)
+#   2. $CLAUDE_PLUGIN_DATA       — Claude Code's per-plugin persistent dir
+#      (~/.claude/plugins/data/<id>/). It survives plugin updates AND
+#      `claude plugin uninstall` reaps it, so uninstalling leaves nothing behind;
+#      `--keep-data` preserves it. Only set for an installed plugin.
+#   3. XDG cache                 — the fallback for everywhere the var does not
+#      exist: Codex, and `--plugin-dir` dev loads.
+if [ -n "${LOOP_TESTING_UPDATE_CACHE:-}" ]; then
+  CACHE_DIR="$LOOP_TESTING_UPDATE_CACHE"
+elif [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+  CACHE_DIR="$CLAUDE_PLUGIN_DATA"
+else
+  CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/loop-testing"
+fi
 CACHE_FILE="$CACHE_DIR/latest-tag"
 TTL="${LOOP_TESTING_UPDATE_TTL:-86400}"
 case "$TTL" in ''|*[!0-9]*) TTL=86400 ;; esac

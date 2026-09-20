@@ -1,5 +1,120 @@
 # Changelog
 
+## Unreleased
+
+A fresh-user QA pass: install → use → update → self-heal → uninstall, run end to
+end in a throwaway `HOME` against the plugin as a stranger would receive it. The
+headline find is that the plugin's own skill never loaded. Claude Code registers
+`commands/*.md` as flat **skills**, in the same namespace as `skills/*/SKILL.md`
+— so `commands/loop-testing.md` and `skills/loop-testing/` both claimed the name
+`loop-testing`, the `commands/` copy won, and `SKILL.md` was unreachable through
+the slash command *and* the trigger phrases. The command's body said "invoke the
+`loop-testing` skill", which resolved back to itself. Confirmed by sentinel
+probes in a live session, not by reading: replacing each file's body with a
+distinct token and invoking `/loop-testing`, `/loop-testing:loop-testing` and
+`自测` returned the `commands/` token every time, and a variant instructed to
+reach the skill via the Skill tool looped on itself and never reached it.
+`claude plugin details` reported `Skills (2) loop-testing, loop-testing` before
+the fix and `Skills (1)` after, with always-on context dropping ~248 → ~177 tok.
+The rest of the batch is what the same pass turned up around it. Full suite
+`ALL GREEN`: 586 shell assertions across 24 suites → 670 across 28 (both trees
+measured the same way — summing each suite's own reported pass count; moa
+unchanged at 41 node tests). Every new assertion is mutation-checked: the
+collision guard goes red when `commands/loop-testing.md` is restored, and the
+manifest guards go red when `${CLAUDE_PLUGIN_ROOT}` is dropped from a hook
+command, when a hook points at a script that does not ship, and on a version
+desync.
+
+**What changes for you.**
+
+1. **`/loop-testing` now reaches the real skill.** The slash command keeps its
+   name and its four modes (`status`, `report`, focus, round cap) — the dispatch
+   moved into `SKILL.md`, where `$ARGUMENTS` substitutes the same way. Verified
+   live: `/loop-testing status` on a project that never ran reports that it never
+   ran and starts nothing.
+2. **`sandbox-clean.sh --purge` refuses an unreadable ownership marker** instead
+   of concluding it owned nothing. If you scripted around a `purge done.` exit 0
+   that was really a no-op, it now exits 3 and names the file.
+3. **`sandbox-setup.sh` and `sandbox-clean.sh` answer `--help`/`-h`**, printing
+   their usage and exit codes. `--help` wins over `--purge` on the same line.
+4. **The update-check throttle moved to `${CLAUDE_PLUGIN_DATA}`** for plugin
+   installs, so `claude plugin uninstall` removes it (`--keep-data` keeps it).
+   Codex and `--plugin-dir` loads still use `~/.cache/loop-testing/`.
+
+- **fix(skill)**: remove `commands/loop-testing.md` and fold its four-mode
+  dispatch into `skills/loop-testing/SKILL.md`. The two files registered the same
+  skill name, so `commands/` shadowed the skill and nothing in `SKILL.md` — the
+  round protocol, the red lines, the script locations, the dual persona — ever
+  loaded through either documented entry point.
+- **fix(sandbox)**: `sandbox-clean.sh` validates the ownership marker before
+  acting on it. Every field is read with a `grep '^KEY=' | cut` helper, so a
+  truncated or corrupted marker returned empty for *every* key — indistinguishable
+  from "this run created nothing". `--purge` printed `purge done.` and exited 0
+  over a sandbox whose qa branch, baseline tag, worktree and evidence dir were all
+  still on disk. A marker must now carry `SANDBOX_VERSION` (numeric), `MODE` and
+  `TOP` — the three keys every marker has written since v0.1.2, so v1 markers are
+  unaffected — or it is treated as less knowable than a missing one: exit 3 under
+  `--purge`, deleting nothing, naming the file.
+- **fix(driver)**: `unattended-loop.sh` / `unattended-codex.sh` preflight the
+  agent binary. Both checked `timeout`/`gtimeout` carefully and never checked
+  `$CLAUDE_BIN` / `$CODEX_BIN`, so a missing or misspelled binary burned two
+  session slots and surfaced as `NO_PROGRESS: … agent likely failed before round
+  0` — blaming the loop for an executable that was not there. Now exit 2 before
+  the first session, naming the binary.
+- **fix(sandbox)**: `--help` / `-h` on `sandbox-setup.sh` and `sandbox-clean.sh`,
+  rendered from each script's own header block so usage and exit codes cannot
+  drift from the comment documenting them. These are the two scripts the README
+  tells a user to run by hand, including the destructive `--purge`; both used to
+  answer `unknown argument: --help` and exit 2.
+- **fix(hooks)**: `update-check.sh` writes its 24h throttle to
+  `${CLAUDE_PLUGIN_DATA}` when set, falling back to `${XDG_CACHE_HOME}`. The
+  explicit `LOOP_TESTING_UPDATE_CACHE` override still outranks both. Verified
+  that Claude Code exports the variable to hook processes and that
+  `claude plugin uninstall` reaps that directory.
+- **fix(ci)**: the `plugin-validate` job was a no-op gate. `claude plugin validate .`
+  resolves to the *marketplace* manifest (both manifests live in `.claude-plugin/`),
+  reported `"contents": []` and exited 0 without ever reading `plugin.json`, the
+  skill, or the hooks — so a broken plugin manifest would have shipped green. It
+  now validates both manifests by name and asserts `.manifest.type == "plugin"`,
+  which is the failure itself: a marketplace-typed report means the plugin was
+  never inspected, whatever the exit code says. Deliberately not
+  `.contents | length > 0` — `contents` lists files *with findings*, so that would
+  assert a warning exists and would break the day the one warning is resolved.
+  The plugin target runs non-strict: its only warning is the repo-root `CLAUDE.md`
+  (contributor/agent guidance, which Claude Code strips from the install payload),
+  and warnings are printed rather than fatal.
+- **test(manifest)**: new `tests/manifest/plugin-manifest.test.sh` — nothing
+  covered `hooks/hooks.json` or `.claude-plugin/*.json`, and the CI step that
+  looks like it does, does not: `claude plugin validate .` resolves to the
+  *marketplace* manifest (both manifests live in `.claude-plugin/`), reports
+  `"contents": []` and exits 0 without reading `plugin.json`, the skill, or the
+  hooks. Asserts manifest validity, kebab-case name, the three-field version sync,
+  that every hook command resolves through `${CLAUDE_PLUGIN_ROOT}` and points at a
+  script that ships, that each hook declares a timeout, and that no absolute or
+  `../` path appears in the hook wiring.
+- **test(command)**: `tests/commands/loop-testing.test.sh` retargeted from the
+  deleted `commands/loop-testing.md` to `SKILL.md`, and gained
+  `component_names_unique` — the regression guard for the collision itself, which
+  fails when any two of `skills/*/` and `commands/*.md` share a name. Parity with
+  the Codex prompt is now asserted per semantic element in each file's own
+  language, since `SKILL.md` is Chinese and `prompts/loop-testing.md` is English.
+- **test(sandbox)**: new `clean-marker-integrity.test.sh` (corrupted, truncated
+  and empty markers; v1-marker backward compatibility; the documented `exit 4`
+  `purge incomplete` path) and `script-help.test.sh` (`--help` output, inertness,
+  and that an unknown flag is still a usage error).
+- **test(driver)**: new `agent-binary-preflight.test.sh` — missing binary path and
+  missing PATH name for both drivers, zero sessions started, and a control proving
+  the preflight does not reject a binary that is present.
+- **test(hooks)**: `update-check.test.sh` gains three cases for the throttle
+  location — `CLAUDE_PLUGIN_DATA` set (file lands there, XDG untouched), unset
+  (XDG fallback unchanged), and the explicit `LOOP_TESTING_UPDATE_CACHE` override
+  outranking both.
+- **docs(readme)**: the `--purge` contract now states that an unreadable marker
+  refuses like a missing one and documents `exit 4`; the mechanism-layer bullet
+  names `LOOP_TESTING_DISABLE_LEDGER_GATE=1`, which was implemented and reachable
+  but documented only inside `hooks.json`; the cleanup table reflects the new
+  throttle location. Both READMEs.
+
 ## 0.10.0 — 2026-09-19
 
 Minor: the sandbox stops claiming things by name. `sandbox-clean.sh` used to

@@ -73,4 +73,33 @@ jobs:
       - name: claude plugin validate
         run: |
           npm install -g @anthropic-ai/claude-code@latest
-          claude plugin validate .
+
+          # BOTH manifests, each named explicitly. `claude plugin validate .` on
+          # this repo was a NO-OP gate: plugin.json and marketplace.json both live
+          # in .claude-plugin/, the marketplace manifest wins the path resolution,
+          # and the run reported "contents": [] and exited 0 having never read
+          # plugin.json, the skill, or the hooks.
+          claude plugin validate .claude-plugin/marketplace.json --strict
+
+          # The plugin manifest is a separate target. Not --strict: the only
+          # warning it raises is the repo-root CLAUDE.md ("not loaded as project
+          # context"), which is this repo's guidance for contributors and agents,
+          # and which Claude Code strips from the install payload anyway. Errors
+          # still fail the job.
+          claude plugin validate .claude-plugin/plugin.json --json > pv.json
+          jq . pv.json
+
+          # Anti-vacuous guard: assert the CLI actually resolved the PLUGIN
+          # manifest. This is the exact failure above — a marketplace-typed report
+          # means the plugin was never inspected, whatever the exit code says.
+          # (Not `.contents | length > 0`: contents lists files WITH FINDINGS, so
+          # that would assert a warning exists and would break the day the
+          # CLAUDE.md warning is resolved.)
+          jq -e '.manifest.type == "plugin"' pv.json > /dev/null \
+            || { echo "::error::validate did not resolve the plugin manifest (type=$(jq -r '.manifest.type' pv.json)) — the gate checked nothing"; exit 1; }
+          jq -e '(.manifest.errors | length) == 0' pv.json > /dev/null \
+            || { echo "::error::plugin.json has validation errors"; exit 1; }
+
+          # Warnings are reported, not fatal — visible in the log without red CI.
+          w=$(jq '[.manifest.warnings[], (.contents[]?.warnings[]?)] | length' pv.json)
+          echo "plugin manifest: type=plugin, 0 errors, ${w} warning(s)"

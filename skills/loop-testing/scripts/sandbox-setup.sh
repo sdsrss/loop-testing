@@ -73,6 +73,17 @@ die() {
 
 # Value-taking flags fail closed on a missing value (audit DR-10) — a dangling
 # trailing flag must never silently fall back to the computed default and proceed.
+# Print the header block as the help text (same mechanism as install-codex.sh):
+# one source of truth, so usage and exit codes cannot drift from the comment that
+# documents them.
+usage() { sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+# --help is handled in its own pass, BEFORE the parse loop: it must win over any
+# other flag on the line and never reach the filesystem.
+for _a in "$@"; do
+  case "$_a" in -h|--help) usage; exit 0 ;; esac
+done
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode)          [ $# -ge 2 ] || die "missing value for --mode" 2;          MODE="$2"; shift; shift ;;

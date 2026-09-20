@@ -35,6 +35,17 @@ echo_info() { echo "sandbox-clean: $*"; }
 
 PURGE=0
 DISCARD_FIXES=0
+# Print the header block as the help text (same mechanism as install-codex.sh):
+# one source of truth, so usage and exit codes cannot drift from the comment that
+# documents them.
+usage() { sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+# --help is handled in its own pass, BEFORE the parse loop, so it wins over
+# --purge on the same line and can never reach the destructive path.
+for _a in "$@"; do
+  case "$_a" in -h|--help) usage; exit 0 ;; esac
+done
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --purge)         PURGE=1; shift ;;
@@ -78,6 +89,35 @@ if [ ! -f "$MARKER" ]; then
     exit 3
   fi
   echo_info "no ownership marker at $MARKER — fail-closed: deleting nothing."
+  exit 0
+fi
+
+# Present is not the same as readable. Every field below is read with `mval`
+# (grep '^KEY=' | cut), so a truncated or corrupted marker returns EMPTY for every
+# key — and empty CREATED_BRANCH / CREATED_TAG / CREATED_WORKTREE is
+# indistinguishable from "this run created nothing". That made --purge print
+# "purge done." and exit 0 over a sandbox whose branch, tag, worktree and evidence
+# dir were all still there. An unreadable marker is strictly LESS knowable than a
+# missing one, so it refuses at least as loudly.
+#
+# Validity = the three keys every marker version has written since v0.1.2:
+# SANDBOX_VERSION (numeric), MODE and TOP. Deliberately not a whole-file schema —
+# v1 markers legitimately lack ADOPTED_*/UNCLAIMED_WORKTREE/WORKTREE_STAMP, and
+# rejecting those would strand every sandbox created before v0.10.0.
+marker_key() { grep -aE "^$1=[^[:space:]]" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-; }
+M_VER="$(marker_key SANDBOX_VERSION)"
+M_MODE="$(marker_key MODE)"
+M_TOP="$(marker_key TOP)"
+marker_bad=""
+case "$M_VER" in ''|*[!0-9]*) marker_bad="SANDBOX_VERSION" ;; esac
+[ -n "$M_MODE" ] || marker_bad="${marker_bad:+$marker_bad, }MODE"
+[ -n "$M_TOP" ]  || marker_bad="${marker_bad:+$marker_bad, }TOP"
+if [ -n "$marker_bad" ]; then
+  if [ "$PURGE" = 1 ]; then
+    echo_info "--purge refused: the ownership marker at $MARKER is unreadable (missing or malformed: $marker_bad) — this run cannot tell what it owns, so it is deleting nothing. Inspect that file; if the sandbox is finished and you recognise the leftovers, remove them by hand per the README cleanup section."
+    exit 3
+  fi
+  echo_info "the ownership marker at $MARKER is unreadable (missing or malformed: $marker_bad) — fail-closed: deleting nothing."
   exit 0
 fi
 

@@ -95,4 +95,39 @@ out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 LOOP_TESTING_UPDATE_CA
 assert_empty "$out" "no curl on PATH -> silent"
 if [ "$rc" -eq 0 ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: no-curl branch must exit 0, got $rc" >&2; fi
 
+# ── 10-12. cache location: ${CLAUDE_PLUGIN_DATA} is the plugin's persistent dir ─
+# It survives updates AND `claude plugin uninstall` reaps it (with --keep-data to
+# opt out). The throttle file used to live only in ~/.cache/loop-testing, which
+# uninstall cannot see — one file left behind on every removal. XDG stays the
+# fallback for the paths where the var does not exist: Codex, and --plugin-dir
+# dev loads.
+r=$(mkroot 0.2.6 c9); t=$(mktags c9 0.9.9)
+DATA="$WS/plugindata"
+out=$(CLAUDE_PLUGIN_ROOT="$r" CLAUDE_PLUGIN_DATA="$DATA" LOOP_TESTING_UPDATE_FORCE=1 \
+      XDG_CACHE_HOME="$WS/xdg-should-not-be-used" \
+      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>/dev/null)
+assert_has "$out" '0.2.6 -> 0.9.9' "CLAUDE_PLUGIN_DATA set -> still notifies"
+if [ -f "$DATA/latest-tag" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: throttle file must live under \$CLAUDE_PLUGIN_DATA" >&2; fi
+if [ -e "$WS/xdg-should-not-be-used/loop-testing" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: XDG cache must not be used when CLAUDE_PLUGIN_DATA is set" >&2
+else PASS=$((PASS+1)); fi
+
+# 11. No CLAUDE_PLUGIN_DATA -> XDG fallback, unchanged behavior (Codex / dev loads)
+r=$(mkroot 0.2.6 c10); t=$(mktags c10 0.9.9)
+XDG="$WS/xdg-fallback"
+out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 XDG_CACHE_HOME="$XDG" \
+      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" env -u CLAUDE_PLUGIN_DATA bash "$UPDATE" 2>/dev/null)
+assert_has "$out" '0.2.6 -> 0.9.9' "no CLAUDE_PLUGIN_DATA -> still notifies"
+if [ -f "$XDG/loop-testing/latest-tag" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: without CLAUDE_PLUGIN_DATA the throttle must fall back to XDG cache" >&2; fi
+
+# 12. The explicit test override still wins over both (ordering guard).
+r=$(mkroot 0.2.6 c11); t=$(mktags c11 0.9.9)
+OVR="$WS/explicit-override"
+out=$(CLAUDE_PLUGIN_ROOT="$r" CLAUDE_PLUGIN_DATA="$WS/data-loses" LOOP_TESTING_UPDATE_FORCE=1 \
+      LOOP_TESTING_UPDATE_CACHE="$OVR" LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>/dev/null)
+if [ -f "$OVR/latest-tag" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: LOOP_TESTING_UPDATE_CACHE must outrank CLAUDE_PLUGIN_DATA" >&2; fi
+
 report "update-check.test.sh"
