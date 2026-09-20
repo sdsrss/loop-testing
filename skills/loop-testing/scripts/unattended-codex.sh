@@ -309,96 +309,6 @@ release_lock_or_hold() {
   fi
   release_lock
 }
-# One shutdown at a time, and a SECOND signal must not cancel the first (see the
-# same block in unattended-loop.sh: `CHILD` used to serve as both the
-# re-entrancy and the idempotency flag, so a second Ctrl-C mid-wait released the
-# lock out from under a live danger-full-access session). The nested call
-# neither releases nor exits — it collapses the deadline, so a second press
-# means "escalate to SIGKILL now" while the first handler keeps the sequence.
-shutdown_handler() { # [exit-code]
-  if [ "$STOPPING" = 1 ]; then
-    STOP_DEADLINE=0
-    echo "unattended-codex: second stop signal — escalating to SIGKILL now." >&2
-    return 0
-  fi
-  [ "$STOP_DONE" = 1 ] && return 0
-  STOPPING=1
-  stop_child
-  cleanup
-  # Whatever the CURRENT session left: the loop removes each session's file once
-  # it has been logged, so at most one is outstanding here. No `.part` sibling to
-  # clean — the redirect writes the file directly. Inlined rather than calling
-  # session_err_close: the traps are installed above that definition, and a
-  # handler must not depend on a function that may not exist yet.
-  [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR"
-  SESSION_ERR=""
-  STOP_DONE=1
-  STOPPING=0
-  # EXIT passes no code: exiting from the EXIT trap would re-enter it.
-  [ $# -ge 1 ] && [ -n "$1" ] && exit "$1"
-  return 0
-}
-# EXIT routes through the same stop-then-restore-then-release sequence: a
-# terminating path outside INT/TERM/HUP/QUIT must not free the lock and orphan
-# the session.
-trap 'shutdown_handler' EXIT
-trap 'shutdown_handler 130' INT
-trap 'shutdown_handler 143' TERM
-trap 'shutdown_handler 129' HUP
-trap 'shutdown_handler 131' QUIT
-acquire_lock
-if [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
-  # Arm the restore BEFORE the chmod, not after: the INT/TERM handlers now exit,
-  # so a signal delivered while `chmod -R` is still walking the tree would reach
-  # cleanup with DID_PROTECT=0, skip the restore, and leave the installed skill
-  # dir read-only for good. Setting it first can only over-restore (a no-op
-  # chmod +w on a dir we never took write off).
-  DID_PROTECT=1
-  # Snapshot what was already read-only BEFORE clearing anything, so the restore
-  # can be faithful instead of blanket. Absent mktemp -> skip the fidelity half,
-  # never the restore itself.
-  RO_SNAPSHOT="$(mktemp "${TMPDIR:-/tmp}/loop-testing-ro.XXXXXX" 2>/dev/null || echo "")"
-  [ -n "$RO_SNAPSHOT" ] && find "$SKILL_DIR" ! -perm -u+w -print0 > "$RO_SNAPSHOT" 2>/dev/null
-  # `u-w`, not `a-w`: the session runs as THIS user, and POSIX checks the owner
-  # bits for the owner, so clearing owner-write is what actually blocks it. `a-w`
-  # additionally cleared group/other write, which the `u+w` restore cannot give
-  # back — silently downgrading a shared, group-writable install on every run.
-  chmod -R u-w "$SKILL_DIR" 2>/dev/null || true
-fi
-
-RESUME_PROMPT='使用 loop-testing 技能：读取 docs/looptesting/STATE.md，从断点继续执行自测循环（若 STATE 不存在则从第 0 轮开始）。若需从第 0 轮建沙箱：必须经 sandbox-setup.sh 用 worktree 模式隔离，禁止手动 git switch/checkout/branch 或以任何方式切换用户主工作树所在分支（改代码前先核验 docs/looptesting/.sandbox/ownership.env 存在且主树仍在原分支）。在当前会话内联执行整个循环，不要把循环委派给别的 agent 或 Task 工具。本会话尽量多完成整轮（选场景→像真实用户使用→发现即立案/复现/分级→修复+回归→复验+轮末结算），每轮末更新 STATE.md 的机器判读字段（round/converged_streak/status）。若已满足收敛判据（连续2轮收敛低风险轮）或保险停止条件，按 references/exit-and-report.md 写入终态（CONVERGED/INCOMPLETE/BLOCKED）并停止；否则显式声明「继续第 N+1 轮」。'
-
-state_field() { grep -aE "^$1:" "$STATE" 2>/dev/null | head -1 | sed "s/^$1:[[:space:]]*//" | tr -d '[:space:]'; }
-# First integer RUN in `round:`, not "every non-digit stripped" — the latter glued
-# `round: 3 of 12` into 312, a round that never existed. Kept identical to unattended-loop.sh.
-round_of()  { local r; r=$(state_field round | sed -n 's/^[^0-9-]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p'); [ -n "$r" ] && echo "$r" || echo -1; }
-issue_count() { [ -f "$ISSUES" ] && { grep -acE '^### ISSUE-' "$ISSUES" 2>/dev/null || true; } || echo 0; }
-runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth signal
-  local d="$LT/runs" n b
-  [ -d "$d" ] || { echo "0:0"; return; }
-  n=$(find "$d" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
-  # Byte total via wc on the PATHS (a stat, not a full content read — audit DR-8;
-  # `cat | wc -c` re-read every evidence byte each session). Multi-file output
-  # ends with a "total" line, single-file has none: take the last line's leading
-  # number either way; empty (glob no-match) -> 0.
-  b=$(wc -c "$d"/*.md 2>/dev/null | tail -1 | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
-  [ -n "$b" ] || b=0
-  echo "$n:$b"
-}
-bootstrap_sig() { # bytes of round-0 artifacts (PLAN + FEATURE_MATRIX)
-  # Round 0 fills PLAN.md + FEATURE_MATRIX.md BEFORE any runs/round-N.md exists, so
-  # without this a round 0 that spans sessions on a large target fingerprints as
-  # static (round/issues/streak/runs all 0) and false-trips NO_PROGRESS (audit PL-2).
-  local b
-  b=$(wc -c "$LT/PLAN.md" "$LT/FEATURE_MATRIX.md" 2>/dev/null | tail -1 | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
-  [ -n "$b" ] || b=0
-  echo "$b"
-}
-progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB|bootstrapB
-  local s; s="$(state_field converged_streak)"; [ -n "$s" ] || s=-1
-  printf '%s|%s|%s|%s|%s' "$(round_of)" "$(issue_count)" "$s" "$(runs_sig)" "$(bootstrap_sig)"
-}
-
 log() { echo "$*" >> "$DLOG"; }
 
 # --- session stderr capture (audit D-05, second attempt) ---------------------
@@ -439,6 +349,39 @@ session_err_open() {
 }
 session_err_close() {
   [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR"
+  SESSION_ERR=""
+  return 0
+}
+# What shutdown_handler does with whatever the CURRENT session left. The loop
+# removes each session's file once it has been logged, so at most one is
+# outstanding here; there is no `.part` sibling to clean, because the redirect
+# writes the file directly.
+#
+# Called AFTER release_lock_or_hold, and conditional on what it decided. On the
+# CHILD_SURVIVED path that function deliberately KEEPS the lock and tells the
+# user to go stop a full-permission session that outlived SIGKILL — and this
+# capture is the only description of what that session was doing. Deleting it
+# there deletes the evidence at the moment it is asked for, so it is kept and
+# named instead. Its bytes are NOT redacted: redaction happens on the way into
+# driver.log, not into this file, which is why the message says so.
+#
+# A FUNCTION, not an inline block, and the reason is testability rather than
+# tidiness. Inlined it was unreachable from the suite — session_err_close clears
+# SESSION_ERR before any normal exit reaches the handler, so both arms are dead
+# on every path a test can drive, and review inverted the whole condition with
+# the suite staying green. It cannot be reached by a fixture either: `kill` is a
+# shell builtin so no PATH shim intercepts the liveness check, a `ps` shim sits
+# on a branch that never runs, and the zombie route was measured and disproved.
+# Extracting it by surrounding TEXT was tried and rejected — this block's own
+# comments quote the anchors around it, so renaming the real call still matched,
+# inside a comment, and the harness silently tested the wrong region. A named
+# function is an anchor that cannot drift that way.
+session_err_dispose() {
+  if [ -n "$CHILD_SURVIVED" ] && [ -n "$SESSION_ERR" ]; then
+    echo "unattended-codex: keeping that session's stderr capture at $SESSION_ERR — it is the only record of what pid $CHILD_SURVIVED was doing, and it is NOT redacted. Delete it once you are done." >&2
+  elif [ -n "$SESSION_ERR" ]; then
+    rm -f "$SESSION_ERR"
+  fi
   SESSION_ERR=""
   return 0
 }
@@ -571,6 +514,91 @@ session_err_log() { # <session-number>
   fi
   return 0
 }
+
+# One shutdown at a time, and a SECOND signal must not cancel the first (see the
+# same block in unattended-loop.sh: `CHILD` used to serve as both the
+# re-entrancy and the idempotency flag, so a second Ctrl-C mid-wait released the
+# lock out from under a live danger-full-access session). The nested call
+# neither releases nor exits — it collapses the deadline, so a second press
+# means "escalate to SIGKILL now" while the first handler keeps the sequence.
+shutdown_handler() { # [exit-code]
+  if [ "$STOPPING" = 1 ]; then
+    STOP_DEADLINE=0
+    echo "unattended-codex: second stop signal — escalating to SIGKILL now." >&2
+    return 0
+  fi
+  [ "$STOP_DONE" = 1 ] && return 0
+  STOPPING=1
+  stop_child
+  cleanup
+  session_err_dispose
+  STOP_DONE=1
+  STOPPING=0
+  # EXIT passes no code: exiting from the EXIT trap would re-enter it.
+  [ $# -ge 1 ] && [ -n "$1" ] && exit "$1"
+  return 0
+}
+# EXIT routes through the same stop-then-restore-then-release sequence: a
+# terminating path outside INT/TERM/HUP/QUIT must not free the lock and orphan
+# the session.
+trap 'shutdown_handler' EXIT
+trap 'shutdown_handler 130' INT
+trap 'shutdown_handler 143' TERM
+trap 'shutdown_handler 129' HUP
+trap 'shutdown_handler 131' QUIT
+acquire_lock
+if [ "$PROTECT" = "1" ] && [ -d "$SKILL_DIR" ]; then
+  # Arm the restore BEFORE the chmod, not after: the INT/TERM handlers now exit,
+  # so a signal delivered while `chmod -R` is still walking the tree would reach
+  # cleanup with DID_PROTECT=0, skip the restore, and leave the installed skill
+  # dir read-only for good. Setting it first can only over-restore (a no-op
+  # chmod +w on a dir we never took write off).
+  DID_PROTECT=1
+  # Snapshot what was already read-only BEFORE clearing anything, so the restore
+  # can be faithful instead of blanket. Absent mktemp -> skip the fidelity half,
+  # never the restore itself.
+  RO_SNAPSHOT="$(mktemp "${TMPDIR:-/tmp}/loop-testing-ro.XXXXXX" 2>/dev/null || echo "")"
+  [ -n "$RO_SNAPSHOT" ] && find "$SKILL_DIR" ! -perm -u+w -print0 > "$RO_SNAPSHOT" 2>/dev/null
+  # `u-w`, not `a-w`: the session runs as THIS user, and POSIX checks the owner
+  # bits for the owner, so clearing owner-write is what actually blocks it. `a-w`
+  # additionally cleared group/other write, which the `u+w` restore cannot give
+  # back — silently downgrading a shared, group-writable install on every run.
+  chmod -R u-w "$SKILL_DIR" 2>/dev/null || true
+fi
+
+RESUME_PROMPT='使用 loop-testing 技能：读取 docs/looptesting/STATE.md，从断点继续执行自测循环（若 STATE 不存在则从第 0 轮开始）。若需从第 0 轮建沙箱：必须经 sandbox-setup.sh 用 worktree 模式隔离，禁止手动 git switch/checkout/branch 或以任何方式切换用户主工作树所在分支（改代码前先核验 docs/looptesting/.sandbox/ownership.env 存在且主树仍在原分支）。在当前会话内联执行整个循环，不要把循环委派给别的 agent 或 Task 工具。本会话尽量多完成整轮（选场景→像真实用户使用→发现即立案/复现/分级→修复+回归→复验+轮末结算），每轮末更新 STATE.md 的机器判读字段（round/converged_streak/status）。若已满足收敛判据（连续2轮收敛低风险轮）或保险停止条件，按 references/exit-and-report.md 写入终态（CONVERGED/INCOMPLETE/BLOCKED）并停止；否则显式声明「继续第 N+1 轮」。'
+
+state_field() { grep -aE "^$1:" "$STATE" 2>/dev/null | head -1 | sed "s/^$1:[[:space:]]*//" | tr -d '[:space:]'; }
+# First integer RUN in `round:`, not "every non-digit stripped" — the latter glued
+# `round: 3 of 12` into 312, a round that never existed. Kept identical to unattended-loop.sh.
+round_of()  { local r; r=$(state_field round | sed -n 's/^[^0-9-]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p'); [ -n "$r" ] && echo "$r" || echo -1; }
+issue_count() { [ -f "$ISSUES" ] && { grep -acE '^### ISSUE-' "$ISSUES" 2>/dev/null || true; } || echo 0; }
+runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth signal
+  local d="$LT/runs" n b
+  [ -d "$d" ] || { echo "0:0"; return; }
+  n=$(find "$d" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+  # Byte total via wc on the PATHS (a stat, not a full content read — audit DR-8;
+  # `cat | wc -c` re-read every evidence byte each session). Multi-file output
+  # ends with a "total" line, single-file has none: take the last line's leading
+  # number either way; empty (glob no-match) -> 0.
+  b=$(wc -c "$d"/*.md 2>/dev/null | tail -1 | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+  [ -n "$b" ] || b=0
+  echo "$n:$b"
+}
+bootstrap_sig() { # bytes of round-0 artifacts (PLAN + FEATURE_MATRIX)
+  # Round 0 fills PLAN.md + FEATURE_MATRIX.md BEFORE any runs/round-N.md exists, so
+  # without this a round 0 that spans sessions on a large target fingerprints as
+  # static (round/issues/streak/runs all 0) and false-trips NO_PROGRESS (audit PL-2).
+  local b
+  b=$(wc -c "$LT/PLAN.md" "$LT/FEATURE_MATRIX.md" 2>/dev/null | tail -1 | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+  [ -n "$b" ] || b=0
+  echo "$b"
+}
+progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB|bootstrapB
+  local s; s="$(state_field converged_streak)"; [ -n "$s" ] || s=-1
+  printf '%s|%s|%s|%s|%s' "$(round_of)" "$(issue_count)" "$s" "$(runs_sig)" "$(bootstrap_sig)"
+}
+
 
 START=$(date +%s)
 DEADLINE=$(( START + MAX_MINUTES * 60 ))

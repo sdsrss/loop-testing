@@ -282,139 +282,6 @@ child_alive() { # pid start-time
   [ "$st" = "$2" ] || return 1
   return 0
 }
-stop_child() {
-  [ -n "$CHILD" ] || return 0
-  local c start pg grp kdeadline left
-  c="$CHILD"; start="$CHILD_START"
-  # Address the session's process group only when the child actually LEADS one
-  # (it does whenever a watchdog wraps it). Without a watchdog the agent is a
-  # direct child in the driver's own group, and `-<pid>` could name some
-  # unrelated group — identity first, never a bare name.
-  pg="$(ps -o pgid= -p "$c" 2>/dev/null | tr -d ' ')"
-  if [ "$pg" = "$c" ]; then grp=1; else grp=0; fi
-  if [ "$grp" = 1 ]; then kill -TERM -- -"$c" 2>/dev/null; else kill -TERM "$c" 2>/dev/null; fi
-  # Say so. A silent wait of up to 20 s after a Ctrl-C reads as a hang, and the
-  # user's next move is another Ctrl-C — which is precisely the signal this
-  # handler must survive, so tell them what it will do.
-  echo "unattended-loop: stopping session pid $c — waiting up to ${STOP_GRACE}s for it to exit, then SIGKILL. Signal again to escalate now." >&2
-  STOP_DEADLINE=$(( $(date +%s) + STOP_GRACE ))
-  while child_alive "$c" "$start"; do
-    [ "$(date +%s)" -ge "$STOP_DEADLINE" ] && break
-    poll_sleep
-  done
-  if child_alive "$c" "$start"; then
-    if [ "$grp" = 1 ]; then kill -KILL -- -"$c" 2>/dev/null; else kill -KILL "$c" 2>/dev/null; fi
-    # Deliberately a LOCAL deadline: a third signal must not be able to cut the
-    # post-SIGKILL settle short and have a session that was 0.2 s from death
-    # recorded as a survivor.
-    kdeadline=$(( $(date +%s) + STOP_KILL_GRACE ))
-    while child_alive "$c" "$start"; do
-      [ "$(date +%s)" -ge "$kdeadline" ] && break
-      poll_sleep
-    done
-  fi
-  if child_alive "$c" "$start"; then
-    CHILD_SURVIVED="$c"
-    CHILD=""; CHILD_START=""
-    return 1
-  fi
-  # The session is down. Decide on the session pid alone: a straggler left in
-  # the group is a grandchild, which cannot advance STATE.md or hold the
-  # worktree as the session — name it, do not hold the project hostage to it.
-  # Only the group is searched, so a grandchild that escaped via setsid() is
-  # neither stopped nor named here (see Known limits in the header).
-  if [ "$grp" = 1 ]; then
-    left="$(pgrep -g "$c" 2>/dev/null | tr '\n' ' ')"
-    [ -n "$left" ] && log_line "shutdown: session $c stopped; still in its process group (grandchildren, not the session): $left"
-  fi
-  CHILD=""; CHILD_START=""
-  return 0
-}
-LOCK_HOLD_WARNED=0
-release_lock_or_hold() {
-  if [ -n "$CHILD_SURVIVED" ]; then
-    if [ "$LOCK_HOLD_WARNED" = 0 ]; then
-      LOCK_HOLD_WARNED=1
-      # acquire_lock steals a lock whose holder pid is dead — and this driver's
-      # pid is about to be. Hand the lock to the process that IS still running,
-      # so the next driver's existing fail-closed check reads a live holder and
-      # refuses, instead of stealing the lock and starting a second session on
-      # the same STATE.md.
-      [ "$LOCK_OWNED" = 1 ] && echo "$CHILD_SURVIVED" > "$LOCK_DIR/pid" 2>/dev/null
-      echo "unattended-loop: session pid $CHILD_SURVIVED outlived SIGTERM and SIGKILL — KEEPING the driver lock $LOCK_DIR (now naming that pid) so no second driver starts on this project. Stop that process, then remove the lock dir." >&2
-      log_line "shutdown: session $CHILD_SURVIVED survived SIGKILL; lock kept and holder rewritten to $CHILD_SURVIVED"
-    fi
-    return 0
-  fi
-  release_lock
-}
-# One shutdown at a time, and a SECOND signal must not cancel the first.
-# `CHILD` used to carry both duties: stop_child cleared it on entry, so a signal
-# arriving while the first handler was still waiting found it empty, returned
-# at once, released the lock and exited — out from under a session that was
-# still alive. That is reachable by an ordinary impatient Ctrl-C, not just by an
-# adversary, which is why the two duties are now separate flags:
-#   STOPPING  — a handler is inside the wait (re-entrancy)
-#   STOP_DONE — a handler finished (idempotency, for the EXIT trap)
-# The nested call neither releases nor exits. It collapses the deadline instead,
-# so pressing the stop key twice means "escalate to SIGKILL now" — which is what
-# the user is asking for — and the FIRST handler still owns the sequence.
-shutdown_handler() { # [exit-code]
-  if [ "$STOPPING" = 1 ]; then
-    STOP_DEADLINE=0
-    echo "unattended-loop: second stop signal — escalating to SIGKILL now." >&2
-    return 0
-  fi
-  [ "$STOP_DONE" = 1 ] && return 0
-  STOPPING=1
-  stop_child
-  release_lock_or_hold
-  # Whatever the CURRENT session left: the loop removes each session's file once
-  # it has been logged, so at most one is outstanding here. There is no `.part`
-  # sibling to clean — the redirect writes the file directly, which is what makes
-  # the opt-out a plain /dev/null. Inlined rather than calling session_err_close:
-  # the traps are installed above that definition, and a handler must not depend
-  # on a function that may not exist yet when a signal arrives early.
-  #
-  # AFTER release_lock_or_hold, and conditional on what it decided. On the
-  # CHILD_SURVIVED path that function deliberately KEEPS the lock and tells the
-  # user to go stop a full-permission session that outlived SIGKILL — and this
-  # capture is the only description of what that session was doing. Deleting it
-  # there deletes the evidence at the moment it is asked for, so it is kept and
-  # named instead. (Its bytes are not redacted: redaction happens on the way into
-  # driver.log, not into this file.)
-  if [ -n "$CHILD_SURVIVED" ] && [ -n "$SESSION_ERR" ]; then
-    echo "unattended-loop: keeping that session's stderr capture at $SESSION_ERR — it is the only record of what pid $CHILD_SURVIVED was doing, and it is NOT redacted. Delete it once you are done." >&2
-  elif [ -n "$SESSION_ERR" ]; then
-    rm -f "$SESSION_ERR"
-  fi
-  SESSION_ERR=""
-  STOP_DONE=1
-  STOPPING=0
-  # EXIT passes no code: exiting from the EXIT trap would re-enter it.
-  [ $# -ge 1 ] && [ -n "$1" ] && exit "$1"
-  return 0
-}
-# EXIT routes through the same stop-then-release sequence: a terminating path
-# outside INT/TERM/HUP/QUIT must not free the lock and orphan the session.
-trap 'shutdown_handler' EXIT
-trap 'shutdown_handler 130' INT
-trap 'shutdown_handler 143' TERM
-trap 'shutdown_handler 129' HUP
-trap 'shutdown_handler 131' QUIT
-acquire_lock
-
-START_EPOCH=$(date +%s)
-DEADLINE=$(( START_EPOCH + MAX_MINUTES * 60 ))
-
-TIMEOUT_BIN=""
-if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
-elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
-
-session=0
-no_progress=0
-prev_sig="$(progress_sig)"
-
 log_line() { printf '%s\n' "$1" >> "$DRIVER_LOG"; }
 
 # --- session stderr capture (audit D-05, second attempt) ---------------------
@@ -475,6 +342,39 @@ session_err_open() {
 }
 session_err_close() {
   [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR"
+  SESSION_ERR=""
+  return 0
+}
+# What shutdown_handler does with whatever the CURRENT session left. The loop
+# removes each session's file once it has been logged, so at most one is
+# outstanding here; there is no `.part` sibling to clean, because the redirect
+# writes the file directly.
+#
+# Called AFTER release_lock_or_hold, and conditional on what it decided. On the
+# CHILD_SURVIVED path that function deliberately KEEPS the lock and tells the
+# user to go stop a full-permission session that outlived SIGKILL — and this
+# capture is the only description of what that session was doing. Deleting it
+# there deletes the evidence at the moment it is asked for, so it is kept and
+# named instead. Its bytes are NOT redacted: redaction happens on the way into
+# driver.log, not into this file, which is why the message says so.
+#
+# A FUNCTION, not an inline block, and the reason is testability rather than
+# tidiness. Inlined it was unreachable from the suite — session_err_close clears
+# SESSION_ERR before any normal exit reaches the handler, so both arms are dead
+# on every path a test can drive, and review inverted the whole condition with
+# the suite staying green. It cannot be reached by a fixture either: `kill` is a
+# shell builtin so no PATH shim intercepts the liveness check, a `ps` shim sits
+# on a branch that never runs, and the zombie route was measured and disproved.
+# Extracting it by surrounding TEXT was tried and rejected — this block's own
+# comments quote the anchors around it, so renaming the real call still matched,
+# inside a comment, and the harness silently tested the wrong region. A named
+# function is an anchor that cannot drift that way.
+session_err_dispose() {
+  if [ -n "$CHILD_SURVIVED" ] && [ -n "$SESSION_ERR" ]; then
+    echo "unattended-loop: keeping that session's stderr capture at $SESSION_ERR — it is the only record of what pid $CHILD_SURVIVED was doing, and it is NOT redacted. Delete it once you are done." >&2
+  elif [ -n "$SESSION_ERR" ]; then
+    rm -f "$SESSION_ERR"
+  fi
   SESSION_ERR=""
   return 0
 }
@@ -607,6 +507,120 @@ session_err_log() { # <session-number>
   fi
   return 0
 }
+
+stop_child() {
+  [ -n "$CHILD" ] || return 0
+  local c start pg grp kdeadline left
+  c="$CHILD"; start="$CHILD_START"
+  # Address the session's process group only when the child actually LEADS one
+  # (it does whenever a watchdog wraps it). Without a watchdog the agent is a
+  # direct child in the driver's own group, and `-<pid>` could name some
+  # unrelated group — identity first, never a bare name.
+  pg="$(ps -o pgid= -p "$c" 2>/dev/null | tr -d ' ')"
+  if [ "$pg" = "$c" ]; then grp=1; else grp=0; fi
+  if [ "$grp" = 1 ]; then kill -TERM -- -"$c" 2>/dev/null; else kill -TERM "$c" 2>/dev/null; fi
+  # Say so. A silent wait of up to 20 s after a Ctrl-C reads as a hang, and the
+  # user's next move is another Ctrl-C — which is precisely the signal this
+  # handler must survive, so tell them what it will do.
+  echo "unattended-loop: stopping session pid $c — waiting up to ${STOP_GRACE}s for it to exit, then SIGKILL. Signal again to escalate now." >&2
+  STOP_DEADLINE=$(( $(date +%s) + STOP_GRACE ))
+  while child_alive "$c" "$start"; do
+    [ "$(date +%s)" -ge "$STOP_DEADLINE" ] && break
+    poll_sleep
+  done
+  if child_alive "$c" "$start"; then
+    if [ "$grp" = 1 ]; then kill -KILL -- -"$c" 2>/dev/null; else kill -KILL "$c" 2>/dev/null; fi
+    # Deliberately a LOCAL deadline: a third signal must not be able to cut the
+    # post-SIGKILL settle short and have a session that was 0.2 s from death
+    # recorded as a survivor.
+    kdeadline=$(( $(date +%s) + STOP_KILL_GRACE ))
+    while child_alive "$c" "$start"; do
+      [ "$(date +%s)" -ge "$kdeadline" ] && break
+      poll_sleep
+    done
+  fi
+  if child_alive "$c" "$start"; then
+    CHILD_SURVIVED="$c"
+    CHILD=""; CHILD_START=""
+    return 1
+  fi
+  # The session is down. Decide on the session pid alone: a straggler left in
+  # the group is a grandchild, which cannot advance STATE.md or hold the
+  # worktree as the session — name it, do not hold the project hostage to it.
+  # Only the group is searched, so a grandchild that escaped via setsid() is
+  # neither stopped nor named here (see Known limits in the header).
+  if [ "$grp" = 1 ]; then
+    left="$(pgrep -g "$c" 2>/dev/null | tr '\n' ' ')"
+    [ -n "$left" ] && log_line "shutdown: session $c stopped; still in its process group (grandchildren, not the session): $left"
+  fi
+  CHILD=""; CHILD_START=""
+  return 0
+}
+LOCK_HOLD_WARNED=0
+release_lock_or_hold() {
+  if [ -n "$CHILD_SURVIVED" ]; then
+    if [ "$LOCK_HOLD_WARNED" = 0 ]; then
+      LOCK_HOLD_WARNED=1
+      # acquire_lock steals a lock whose holder pid is dead — and this driver's
+      # pid is about to be. Hand the lock to the process that IS still running,
+      # so the next driver's existing fail-closed check reads a live holder and
+      # refuses, instead of stealing the lock and starting a second session on
+      # the same STATE.md.
+      [ "$LOCK_OWNED" = 1 ] && echo "$CHILD_SURVIVED" > "$LOCK_DIR/pid" 2>/dev/null
+      echo "unattended-loop: session pid $CHILD_SURVIVED outlived SIGTERM and SIGKILL — KEEPING the driver lock $LOCK_DIR (now naming that pid) so no second driver starts on this project. Stop that process, then remove the lock dir." >&2
+      log_line "shutdown: session $CHILD_SURVIVED survived SIGKILL; lock kept and holder rewritten to $CHILD_SURVIVED"
+    fi
+    return 0
+  fi
+  release_lock
+}
+# One shutdown at a time, and a SECOND signal must not cancel the first.
+# `CHILD` used to carry both duties: stop_child cleared it on entry, so a signal
+# arriving while the first handler was still waiting found it empty, returned
+# at once, released the lock and exited — out from under a session that was
+# still alive. That is reachable by an ordinary impatient Ctrl-C, not just by an
+# adversary, which is why the two duties are now separate flags:
+#   STOPPING  — a handler is inside the wait (re-entrancy)
+#   STOP_DONE — a handler finished (idempotency, for the EXIT trap)
+# The nested call neither releases nor exits. It collapses the deadline instead,
+# so pressing the stop key twice means "escalate to SIGKILL now" — which is what
+# the user is asking for — and the FIRST handler still owns the sequence.
+shutdown_handler() { # [exit-code]
+  if [ "$STOPPING" = 1 ]; then
+    STOP_DEADLINE=0
+    echo "unattended-loop: second stop signal — escalating to SIGKILL now." >&2
+    return 0
+  fi
+  [ "$STOP_DONE" = 1 ] && return 0
+  STOPPING=1
+  stop_child
+  release_lock_or_hold
+  session_err_dispose
+  STOP_DONE=1
+  STOPPING=0
+  # EXIT passes no code: exiting from the EXIT trap would re-enter it.
+  [ $# -ge 1 ] && [ -n "$1" ] && exit "$1"
+  return 0
+}
+# EXIT routes through the same stop-then-release sequence: a terminating path
+# outside INT/TERM/HUP/QUIT must not free the lock and orphan the session.
+trap 'shutdown_handler' EXIT
+trap 'shutdown_handler 130' INT
+trap 'shutdown_handler 143' TERM
+trap 'shutdown_handler 129' HUP
+trap 'shutdown_handler 131' QUIT
+acquire_lock
+
+START_EPOCH=$(date +%s)
+DEADLINE=$(( START_EPOCH + MAX_MINUTES * 60 ))
+
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
+
+session=0
+no_progress=0
+prev_sig="$(progress_sig)"
 
 summary_exit() { # code, verdict
   # round via round_of (normalized), not the raw field — parity with unattended-codex.sh

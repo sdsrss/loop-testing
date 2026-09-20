@@ -238,4 +238,50 @@ STUB_STDERR_BLANK=1 STUB_EXIT=1 \
 assert_file_contains "$WS20/$LOG" "no printable line"   "a blank capture says what actually happened"
 assert_file_lacks    "$WS20/$LOG" "one line longer than" "and does not claim a cause it never checked"
 
+# O. THE DISPOSAL BRANCH, which no end-to-end fixture can reach. `session_err_close`
+#    clears SESSION_ERR before any normal exit reaches shutdown_handler, so both
+#    arms are dead on every path the driver can be driven down — review inverted
+#    the whole condition and this suite stayed green. It cannot be staged either:
+#    `kill` is a shell builtin so no PATH shim intercepts the liveness check, a
+#    `ps` shim sits on a branch that never runs (child_alive does `kill -0`
+#    first), and the zombie route was measured and disproved. An env var that
+#    forces the verdict was rejected as disproportionate: faking liveness is the
+#    safety property the whole D-01 design rests on.
+#
+#    So it is extracted and exercised directly. The anchor is the function's own
+#    definition line — NOT surrounding prose, which was tried and rejected: the
+#    block's comments quote the code around it, so renaming the real anchor still
+#    matched inside a comment and the harness silently tested the wrong region.
+#    The first assertion is the rot guard: if the function is renamed or reshaped,
+#    the extraction stops looking like a function and this fails loudly instead of
+#    passing against nothing.
+DISP=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-cxdisp.XXXXXX"); CLEAN="$CLEAN $DISP"
+{ echo '#!/usr/bin/env bash'
+  echo 'set -u'
+  echo 'CHILD_SURVIVED="${CHILD_SURVIVED:-}"; SESSION_ERR="${SESSION_ERR:-}"'
+  awk '/^session_err_dispose\(\) \{/,/^\}/' "$REPO_ROOT/skills/loop-testing/scripts/unattended-codex.sh"
+  echo 'session_err_dispose'
+} > "$DISP/dispose.sh"
+if grep -qF 'session_err_dispose() {' "$DISP/dispose.sh" && grep -qF 'rm -f' "$DISP/dispose.sh"; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: session_err_dispose could not be extracted — this case is testing nothing" >&2
+fi
+
+# survivor arm: the file is the only record of what the unkillable session was
+# doing, so it is kept and its path is named.
+: > "$DISP/keep.err"
+CHILD_SURVIVED=999999 SESSION_ERR="$DISP/keep.err" bash "$DISP/dispose.sh" 2>"$DISP/keep.stderr"
+[ -f "$DISP/keep.err" ] && PASS=$((PASS+1)) \
+  || { FAIL=$((FAIL+1)); echo "  FAIL: a session that outlived SIGKILL had its stderr capture deleted" >&2; }
+assert_file_contains "$DISP/keep.stderr" "$DISP/keep.err" "and the kept capture's path is named on stderr"
+assert_file_contains "$DISP/keep.stderr" "NOT redacted"   "and the message says the kept file is not redacted"
+
+# normal arm: nothing survived, so nothing is kept.
+: > "$DISP/drop.err"
+CHILD_SURVIVED="" SESSION_ERR="$DISP/drop.err" bash "$DISP/dispose.sh" 2>"$DISP/drop.stderr"
+[ -f "$DISP/drop.err" ] \
+  && { FAIL=$((FAIL+1)); echo "  FAIL: a normal stop left its stderr capture behind" >&2; } \
+  || PASS=$((PASS+1))
+
 report "codex-session-stderr.test.sh"
