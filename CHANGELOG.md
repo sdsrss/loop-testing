@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 — 2026-09-20
+
+### What a crash leaves behind, and what a failed session says
+
+Two things, and they are the same thing seen from either side of a failure. The
+skill now knows what to do with the four crash-adjacent situations it can find on
+disk, instead of leaving them to the model; and a failed unattended session says
+why it failed, instead of reporting `exit=N` and nothing more. Suite: 37 suites /
+1389 assertions → 40 suites / 1548 assertions, both measured from a clean tree
+with `bash tests/run-all.sh | grep '^TOTAL:'` — the first from a detached
+worktree at `v0.12.0`, not recalled.
+
+**Upgrading from 0.12.0.** No file format changed and no flag was removed. Three
+defaults behave differently and are worth knowing before your next run: a project
+whose `STATE.md` already holds a terminal status **reports instead of starting a
+new round** when the skill is re-triggered with no arguments; a `FINAL_REPORT.md`
+sitting next to `status: RUNNING` is now diagnosed rather than trusted; and the
+unattended drivers **write a redacted tail of each session's stderr into
+`driver.log`** — set `LOOP_TESTING_DISABLE_SESSION_STDERR=1` to keep that on
+`/dev/null`. The whole release reverts by pinning the previous version —
+`/plugin install loop-testing@loop-testing --version 0.12.0` for Claude Code, or
+re-running `install/install-codex.sh` from a `v0.12.0` checkout for Codex.
+
+**This release took five review rounds across two independent reviewers, and
+three of the five found defects in the repair rather than in the original.** That
+is recorded in the per-change notes below rather than smoothed over, because it
+is the second release in a row where it happened and it is the reason D-05 needed
+a second attempt at all.
 
 ### Audit batch A — what happens after a crash, and the two read-only modes
 
