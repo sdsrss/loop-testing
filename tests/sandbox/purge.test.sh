@@ -178,7 +178,13 @@ MARK9="$REPO9/docs/looptesting/.sandbox/ownership.env"
 # re-claiming deletion rights.
 assert_file_contains "$MARK9" "ADOPTED_BRANCH=qa/loop-testing" "rebuilt marker adopts the branch"
 assert_file_contains "$MARK9" "ADOPTED_TAG=qa-baseline" "rebuilt marker adopts the tag"
-assert_file_contains "$MARK9" "CREATED_BRANCH=" "rebuilt marker does not re-claim branch ownership"
+# The claim is that the value is EMPTY, so the predicate has to be about the
+# value. `grep -F "CREATED_BRANCH="` matches `CREATED_BRANCH=qa/loop-testing`
+# just as happily, and every marker carries the key — so it passed whether or not
+# the rebuild re-claimed ownership, which is the one thing it exists to detect
+# (audit T-05). Anchored, and the value side must be empty to the end of line.
+if grep -qE '^CREATED_BRANCH=[[:space:]]*$' "$MARK9"; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: rebuilt marker re-claimed branch ownership — got: $(grep -a '^CREATED_BRANCH=' "$MARK9")" >&2; fi
 mark_terminal "$REPO9"
 OUT9=$( cd "$REPO9" && bash "$CLEAN" --purge 2>&1 )
 assert_ok $? "--purge after a rebuild exits 0"
