@@ -54,6 +54,26 @@ wrong sentence:
 All three predate this batch: the same 24 and 25 are measurable at `v0.14.1`.
 Every suite this batch touched is green under both shapes. Filed, not fixed.
 
+**A fourth, surfaced by the new arms line and filed with it.** On a host with
+neither `timeout` nor `gtimeout`, the two driver suites are not runnable — not
+because of a defect, but because the driver correctly refuses to start without
+a watchdog binary unless `--no-watchdog` is passed, and most cases do not pass
+it. Measured: `driver-limits` 14 passed / 21 failed, `codex-limits` 27 / 17,
+first failure in both `expected rc 5 got 2`, which is that refusal. Nothing in
+the output says this is expected, and the TOTAL line now advertises the arm, so
+a reader who sets it up meets 38 failures with no explanation. Two reviewers
+reached the same recommendation independently — a suite-level precondition,
+not a per-case skip — and that is left for a release of its own rather than
+added at the tail of this one.
+
+While measuring it, one more: `codex-limits`'s process-group shutdown case
+counts **two** assertions when the driver starts (it stopped, and the skill dir
+it protected was restored) and **one** when the driver never reaches that state.
+Its assertion count therefore varies with the arm, invisibly, behind no premise
+guard — which is why the binary-less total is 44 rather than the 45 predicted
+from the guarded block alone. Pre-existing: at `v0.14.1` the same case already
+counted 2 against 1. Filed.
+
 An independent review round HAS now been run over this batch, and it found more
 defects inside these seven fixes than the CHANGELOG first admitted. What it
 found, and what was wrong in the first draft of these notes, is in *The review
