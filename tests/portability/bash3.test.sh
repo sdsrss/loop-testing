@@ -155,7 +155,7 @@ LIB_A="tests/driver/lib.sh"; LIB_B="tests/driver/codex-lib.sh"
 # counters and the unsets, none of which escape it.
 fn_dump() { ( . "$1" >/dev/null 2>&1 && declare -f "$2" ) 2>/dev/null; }
 fn_drift=""; fn_empty=""
-for fn in test_wait_budget wait_lock_pid wait_pid_gone; do
+for fn in test_wait_budget wait_lock_pid wait_pid_gone bounded; do
   a=$(fn_dump "$LIB_A" "$fn"); b=$(fn_dump "$LIB_B" "$fn")
   # Self-probe, inline: two EMPTY dumps compare equal, which is how this check
   # would pass forever if a function were renamed away or the source failed.

@@ -37,15 +37,15 @@ assert_rc $? 2 "missing --project -> exit 2"
 
 # E. value-taking flag as the LAST token must fail-closed (exit 2), never hang.
 # (Regression guard: `shift 2` on a 1-arg tail is a no-op -> infinite loop.)
-timeout 10 bash "$DRIVER" --project >/dev/null 2>&1
+bounded 10 bash "$DRIVER" --project >/dev/null 2>&1
 assert_rc $? 2 "trailing --project -> exit 2 (no hang)"
-timeout 10 bash "$DRIVER" --project "$WS3" --max-turns >/dev/null 2>&1
+bounded 10 bash "$DRIVER" --project "$WS3" --max-turns >/dev/null 2>&1
 assert_rc $? 2 "trailing --max-turns -> exit 2 (no hang)"
 
 # E2. the validation error must name the REAL flag (--max-sessions), not the
 # internal variable lowercased (--max_sessions) — a user copy-pasting the name
 # out of the message gets "unknown argument".
-OUT=$(timeout 10 bash "$DRIVER" --project "$WS3" --max-sessions abc 2>&1)
+OUT=$(bounded 10 bash "$DRIVER" --project "$WS3" --max-sessions abc 2>&1)
 case "$OUT" in
   *"--max-sessions"*) PASS=$((PASS+1)) ;;
   *) FAIL=$((FAIL+1)); echo "  FAIL: validation error must name --max-sessions — got: $OUT" >&2 ;;

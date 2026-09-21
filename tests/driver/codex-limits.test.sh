@@ -47,9 +47,9 @@ esac
 
 # F. value-taking flag as the LAST token must fail-closed (exit 2), never hang.
 # (Regression guard: `shift 2` on a 1-arg tail is a no-op -> infinite loop.)
-timeout 10 bash "$CODEX_DRIVER" --project >/dev/null 2>&1
+bounded 10 bash "$CODEX_DRIVER" --project >/dev/null 2>&1
 assert_rc $? 2 "trailing --project -> exit 2 (no hang)"
-timeout 10 bash "$CODEX_DRIVER" --project "$WS4" --max-sessions >/dev/null 2>&1
+bounded 10 bash "$CODEX_DRIVER" --project "$WS4" --max-sessions >/dev/null 2>&1
 assert_rc $? 2 "trailing --max-sessions -> exit 2 (no hang)"
 
 # F2. That line used to pass `--project /tmp` — a real host directory handed to a

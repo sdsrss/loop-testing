@@ -20,6 +20,32 @@ export CODEX_DRIVER
 PASS=0
 FAIL=0
 
+# --- wall-clock bound for the harness's own no-hang guards (delta review T-D) -
+# Resolved the same way the driver resolves its watchdog (unattended-codex.sh):
+# stock macOS ships no `timeout`, and homebrew coreutils installs it as
+# `gtimeout`. That is not a hypothetical host — it is the exact one the driver's
+# own fallback exists to serve, and the one the portability gate treats as
+# supported. The harness was calling bare `timeout` at five sites, so on that
+# host the no-hang guards died at 127 and the suites reported 35/3 and 46/2
+# while the PRODUCT was fine. The failures were the harness's, attributed to the
+# driver.
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
+
+# The call sites are regression guards against an infinite loop, so falling back
+# to running UNBOUNDED would turn a caught hang into a hung suite — strictly
+# worse than a reported failure. With neither binary present this says which
+# precondition is missing instead of failing as though the driver misbehaved.
+bounded() { # secs cmd...
+  local secs="$1"; shift
+  if [ -z "$TIMEOUT_BIN" ]; then
+    echo "  FAIL: precondition — no timeout/gtimeout on PATH, so the no-hang guards cannot run" >&2
+    return 127
+  fi
+  "$TIMEOUT_BIN" "$secs" "$@"
+}
+
 mk_proj() {
   local ws
   # Unchecked, an empty $ws turns the mkdir below into `mkdir -p /docs/…` and
