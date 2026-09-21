@@ -55,39 +55,82 @@ EOF
 # one consumer behind at tests/driver/shutdown.test.sh, where the loop that
 # kills stray processes before `rm -rf` went from ~30 fixtures to 1.
 #
-# The ERE matches only the bare form: the array form is written `${WS_ALL[@]}`,
-# where `$` is followed by `{`, so `\$WS_ALL` cannot match it.
+# THREE spellings, one defect, and the first version of this gate saw one of
+# them (delta review T-A). `$WS_ALL` and `${WS_ALL}` each expand to element 0
+# alone; an UNQUOTED `${WS_ALL[@]}` expands to every element re-split on
+# whitespace, which is the leak the array conversion existed to stop. Measured:
+# unquoting one cleanup under a $TMPDIR containing a space leaves 8 fixture
+# directories behind while the old gate reported 7 passed, 0 failed — the same
+# eight the conversion commit cites as the bug it fixed.
+#
+# So the check is subtractive rather than a list of bad shapes: blank out the
+# two forms that ARE correct — `"${WS_ALL[@]}"` and `"${#WS_ALL[@]}"`, quotes
+# included — and anything still expanding WS_ALL is a hit. Assignments
+# (`WS_ALL=()`, `WS_ALL+=(…)`) never match: no `$` precedes the name.
+#
 # This file is excluded by path, not by pattern: it necessarily contains the
-# construct it hunts for — in the grep above, in the self-probe below, and in
+# constructs it hunts for — in the sed above, in the self-probe below, and in
 # the failure message. A gate in this tree that reads source text and forgets to
 # exempt itself fails the fix instead of the bug, which has happened here before
 # (the comment-scanning half of the portability suite, audit round 16).
-bare_hits=$(grep -rnE -- '\$WS_ALL' tests/ 2>/dev/null \
+ws_scan() {
+  sed 's/"\${#\{0,1\}WS_ALL\[[@*]\]}"/<OK>/g' "$1" | grep -cE '\$\{?WS_ALL'
+}
+bare_hits=$(grep -rn -- 'WS_ALL' tests/ 2>/dev/null \
   | grep -v '^tests/portability/bash3\.test\.sh:' \
-  | grep -v '^[^:]*:[0-9]*:[[:space:]]*#')
+  | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' \
+  | sed 's/"\${#\{0,1\}WS_ALL\[[@*]\]}"/<OK>/g' \
+  | grep -E '\$\{?WS_ALL')
 if [ -z "$bare_hits" ]; then
   PASS=$((PASS+1))
 else
   FAIL=$((FAIL+1))
-  echo "  FAIL: bare \$WS_ALL in a suite where WS_ALL is an array — expands to element 0 only" >&2
+  echo "  FAIL: WS_ALL expanded without the quoted array form — element 0 only, or re-split on whitespace" >&2
   printf '%s\n' "$bare_hits" | sed 's/^/    /' >&2
 fi
 
-# Self-probe for the check above, same reasoning as the one below it: a pattern
-# that stopped matching would report green forever. Prove it fires on the exact
-# construct it exists to catch, and does NOT fire on the correct array form.
+# Self-probe, widened with the gate (T-A): the previous one asserted only that
+# the bare form matched, which is exactly the blind spot it failed to reveal.
+# Every defective spelling must be caught and every correct one must be let
+# through, or this gate is green for a reason nobody checked.
 bprobe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-arrprobe.XXXXXX")
-printf 'for ws in $WS_ALL; do :; done\n' > "$bprobe"
-bp_bad=$(grep -cE -- '\$WS_ALL' "$bprobe")
-printf 'rm -rf -- "${WS_ALL[@]}"\n' > "$bprobe"
-bp_good=$(grep -cE -- '\$WS_ALL' "$bprobe")
-if [ "$bp_bad" = 1 ] && [ "$bp_good" = 0 ]; then
+bp_ok=1
+for bad in 'for ws in $WS_ALL; do :; done' 'for ws in ${WS_ALL}; do :; done' \
+           'rm -rf -- ${WS_ALL[@]}' 'echo ${WS_ALL[*]}'; do
+  printf '%s\n' "$bad" > "$bprobe"
+  [ "$(ws_scan "$bprobe")" -ge 1 ] || { bp_ok=0; echo "  probe: MISSED [$bad]" >&2; }
+done
+for good in 'rm -rf -- "${WS_ALL[@]}"' 'if [ "${#WS_ALL[@]}" -gt 0 ]; then :; fi' \
+            'WS_ALL=()' 'track_ws() { WS_ALL+=("$1"); }'; do
+  printf '%s\n' "$good" > "$bprobe"
+  [ "$(ws_scan "$bprobe")" -eq 0 ] || { bp_ok=0; echo "  probe: FALSE HIT on [$good]" >&2; }
+done
+if [ "$bp_ok" = 1 ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: self-probe — the WS_ALL scan no longer separates the defective spellings from the correct ones" >&2
+fi
+rm -f "$bprobe"
+
+# --- a suite that runs `git init` must neutralise an inherited GIT_DIR (T-B) --
+# The T-2 repair put `unset GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES` in
+# the four shared libs, which covered every suite that sources one — and missed
+# the two under tests/commands/, which source none. With GIT_DIR exported,
+# `git init -q "$dir"` returns 0 and creates nothing, so such a suite operates
+# on, and commits into, whatever repository the variable names. Measured on
+# isolation-gate: 21 passed, 0 failed, and two commits in an unrelated repo.
+git_init_unguarded=""
+for f in $(grep -rl 'git init' tests/ --include='*.test.sh' 2>/dev/null | sort); do
+  grep -q 'unset GIT_DIR' "$f" && continue
+  grep -qE '^\. "\$\(cd .*lib\.sh"$' "$f" && continue
+  git_init_unguarded="$git_init_unguarded $f"
+done
+if [ -z "$git_init_unguarded" ]; then
   PASS=$((PASS+1))
 else
   FAIL=$((FAIL+1))
-  echo "  FAIL: self-probe — the bare-\$WS_ALL pattern must match the bare form ($bp_bad) and not the array form ($bp_good)" >&2
+  echo "  FAIL: suite runs 'git init' with no unset GIT_DIR and no lib that does:$git_init_unguarded" >&2
 fi
-rm -f "$bprobe"
 
 # --- the two driver libs must not drift apart (review T-7) -------------------
 # tests/driver/lib.sh and tests/driver/codex-lib.sh are independent copies, not

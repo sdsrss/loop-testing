@@ -22,6 +22,13 @@
 # Chinese product voice, the Codex prompt is English), so parity is asserted over
 # the semantic elements each must carry, in its own spelling — not over identical
 # English strings.
+# This suite runs `git init` and sources no shared lib, so it carries its own
+# copy of the guard the four libs got in the T-2 repair (delta review T-B). With
+# GIT_DIR exported — git sets it for its own hooks, for `rebase --exec` and for
+# `bisect run` — `git init -q "$dir"` returns 0 having created nothing, and every
+# later git call in the fixture addresses, and commits into, that other repo.
+unset GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES
+
 set -u
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
