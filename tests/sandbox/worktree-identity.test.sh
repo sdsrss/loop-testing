@@ -361,13 +361,34 @@ GD20=$( cd "$WT20" && git rev-parse --absolute-git-dir 2>/dev/null )
 chmod 000 "$GD20/loop-testing-owner" 2>/dev/null || true
 ( cd "$WS20/proj" && bash "$CLEAN" ) > "$WS20/clean.out" 2>&1
 assert_ok $? "clean exits 0 on an unreadable worktree"
-if [ "$(id -u)" = 0 ]; then
-  PASS=$((PASS+2))   # root reads the stamp regardless; the arm is unreachable here
+# Root reads a chmod 000 file regardless, so this fixture cannot reach the arm
+# there. It used to hand out `PASS=$((PASS+2))` in that case — two passes for two
+# assertions that never ran, which is a green tally reporting coverage it does
+# not have (audit T-11). Say it was skipped, count nothing, and let case 20b —
+# which does not depend on file permissions — carry the arm on every host.
+if [ "$(id -u 2>/dev/null)" = 0 ]; then
+  echo "  skip: running as root, an unreadable stamp is still readable — case 20b covers the unknown arm here"
 else
   assert_exists "$WT20/keepme.txt" "an unidentifiable worktree is not force-removed"
   assert_file_contains "$WS20/clean.out" "could not confirm" "clean says it could not confirm ownership"
 fi
 chmod 600 "$GD20/loop-testing-owner" 2>/dev/null || true
+
+# --- case 20b: the same verdict, reached without relying on permissions -------
+# `unknown` has a second route that no privilege level can read past: the
+# worktree's own git dir cannot be resolved at all. A `.git` file pointing
+# nowhere is exactly that — the path is still registered in the main repo, the
+# directory is still there, and wt_gitdir_of comes back empty. Same arm, same
+# requirement (touch nothing), and it runs as any user.
+WS20B=$(mk_ws); WS_ALL="$WS_ALL $WS20B"; WT20B="$WS20B/proj-qa-loop"
+( cd "$WS20B/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? "setup for the unresolvable-git-dir case"
+echo "untracked work" > "$WT20B/keepme.txt"
+printf 'gitdir: /nonexistent/broken\n' > "$WT20B/.git"
+( cd "$WS20B/proj" && bash "$CLEAN" ) > "$WS20B/clean.out" 2>&1
+assert_ok $? "clean exits 0 when the worktree's git dir cannot be resolved"
+assert_exists "$WT20B/keepme.txt" "a worktree whose git dir is unresolvable is not force-removed"
+assert_file_contains "$WS20B/clean.out" "could not confirm" "clean says it could not confirm ownership"
 
 # --- case 21: the stale rebuild path must not force-remove anything -----------
 WS21=$(mk_ws); WS_ALL="$WS_ALL $WS21"; WT21="$WS21/proj-qa-loop"
@@ -470,7 +491,12 @@ if [ -d "$WT26" ]; then
   assert_exists "$WS26/proj/docs/looptesting/.sandbox/ownership.env" \
     "and keeps the marker that still records it"
 else
-  PASS=$((PASS+2))   # git managed to remove it after all; nothing was orphaned
+  # The chmod did not stop git (root ignores it), so the partial arm is
+  # unreachable on this host. Assert what MUST hold in the world that actually
+  # happened instead of awarding two passes for two assertions that did not run
+  # (audit T-11): a worktree that really was removed is a purge that completed.
+  assert_eq "0" "$purge26_rc" "a purge that did remove the worktree reports success"
+  assert_absent "$WS26/proj/docs/looptesting" "and the evidence dir goes with it"
 fi
 
 # --- case 27: a path segment containing a glob must not be expanded ----------
