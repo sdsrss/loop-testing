@@ -164,9 +164,11 @@ round* below.
 
 Four independent reviewers over `v0.14.1..HEAD`, none of them the author. They
 found **nine defects inside these seven fixes**, four of them High, and two of
-those would have shipped as harm rather than noise. Every one below was
-reproduced by the author before being acted on; two reviewer claims were
-retracted after that check, and both retractions came from the reviewer.
+those would have shipped as harm rather than noise. Every one below was checked
+against the tree before being acted on — but that check is not the same thing
+as a failing test first, and the paragraph below says where the two part
+company. Two reviewer claims did not survive the check and were retracted; both
+retractions came from the reviewer.
 
 **The two that blocked.**
 
@@ -194,8 +196,10 @@ line said otherwise: a failing-test-first repair is possible where a behaviour
 changed — F1, F2, the anchor pair, the fixture probes — and is not where the
 change was a comment, a message string, or a gate whose target is already
 correct in the tree. Those carry a positive control instead: the defect is
-injected into a working-tree copy and the check is shown to go red. Where
-neither was done, the commit says so.
+injected into a working-tree copy and the check is shown to go red. Not all of
+them carry even that: the repairs in `334da3b` have neither, and that commit
+does not say so — it closes on six green suite counts. This sentence is the
+disclosure; there is no second one waiting in a commit message.
 
 **Corrections to the first draft of these notes**, which is the part a reader
 of the batch acted on. The commit messages are left as written — the repair
