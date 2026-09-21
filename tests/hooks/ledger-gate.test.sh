@@ -35,7 +35,7 @@ run_ledger "$WS5" "$json"; assert_rc $? 0 "VERIFIED in runs/ file (not ledger) -
 # 6. Escape hatch env -> allow even the cheat write
 WS6=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6"' EXIT
 json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$WS6")\",\"new_string\":\"### ISSUE-007 | P0 | VERIFIED | x\"}}"
-( cd "$WS6" && LOOP_TESTING_DISABLE_LEDGER_GATE=1 printf '%s' "$json" | LOOP_TESTING_DISABLE_LEDGER_GATE=1 bash "$LEDGER" ) >/dev/null 2>&1
+( cd "$WS6" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR LOOP_TESTING_DISABLE_LEDGER_GATE=1 bash "$LEDGER" ) >/dev/null 2>&1
 assert_rc $? 0 "escape hatch disables gate -> allow"
 
 # 7. Unparseable stdin -> fail open (allow)

@@ -110,8 +110,8 @@ BINDIR=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-nobin.XXXXXX"); track_ws "$BIND
 for b in bash grep sed head tr cat rm date stat timeout mktemp printf; do
   p=$(command -v "$b" 2>/dev/null) && ln -sf "$p" "$BINDIR/$b"
 done
-( cd "$WS10" && printf '{"stop_hook_active": false}' | PATH="$BINDIR" bash "$STOP" ) >/dev/null 2>&1
-( cd "$WS10" && printf '{"stop_hook_active": false}' | PATH="$BINDIR" bash "$STOP" ) >/dev/null 2>&1
+( cd "$WS10" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR PATH="$BINDIR" bash "$STOP" ) >/dev/null 2>&1
+( cd "$WS10" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR PATH="$BINDIR" bash "$STOP" ) >/dev/null 2>&1
 read -r kc _ < "$WS10/$CF"
 assert_eq "1" "$kc" "grep-fallback resets counter on each fresh stop (no jq/python3)"
 
@@ -132,7 +132,7 @@ assert_eq "1" "$lc" "jq path resets counter on each fresh stop (HK-1)"
 WS12=$(mk_lt); track_ws "$WS12"
 arm "$WS12"; write_state "$WS12" RUNNING 2
 touch -d "@$(( $(date +%s) - 200000 ))" "$WS12/docs/looptesting/STATE.md"   # ~2.3 days old
-( cd "$WS12" && printf '{"stop_hook_active": false}' | LOOP_TESTING_GATE_STALE_SECONDS=0 bash "$STOP" ) >/dev/null 2>&1
+( cd "$WS12" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR LOOP_TESTING_GATE_STALE_SECONDS=0 bash "$STOP" ) >/dev/null 2>&1
 assert_rc $? 2 "GATE_STALE_SECONDS=0 disables disarm: old RUNNING remnant still blocks"
 assert_exists "$WS12/$ACT" "sentinel NOT disarmed when staleness is disabled"
 

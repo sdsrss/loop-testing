@@ -12,6 +12,18 @@ STOP="$REPO_ROOT/hooks/stop-gate.sh"
 LEDGER="$REPO_ROOT/hooks/ledger-gate.sh"
 export STOP LEDGER
 
+# The hooks anchor on $CLAUDE_PROJECT_DIR before anything else, and Claude Code
+# sets it for every hook it runs — so a suite run from inside a session inherits
+# it and every case that does not override it anchors the hook at the REAL
+# project instead of its fixture (audit T-16). Measured before this line existed:
+# `CLAUDE_PROJECT_DIR=<this repo> bash tests/hooks/stop-gate.test.sh` died at the
+# counter read with `kc: unbound variable`, having tested nothing after case K.
+# Unset it once, here, rather than per invocation: the per-case `env -u` below
+# are kept as documentation, but a new case that forgets one is the normal
+# outcome and this is what makes forgetting harmless. Cases that WANT the anchor
+# set it explicitly on the command line, which still overrides.
+unset CLAUDE_PROJECT_DIR
+
 PASS=0
 FAIL=0
 

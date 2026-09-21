@@ -32,7 +32,23 @@ assert_contains "$out" "no loop-testing install" "explains there is nothing inst
 
 # 5. Offline / unreachable GitHub (real-curl branch, no SELFTEST override) -> graceful
 #    degrade: exit 0 with the "could not reach" message, NOT a bare set -e hard-fail.
-out=$(LOOP_TESTING_UPDATE_TAGS_URL="https://127.0.0.1:1/nope" LOOP_TESTING_UPDATE_TIMEOUT=2 \
+#
+#    The proxy variables are stripped, and that is the case and not housekeeping
+#    (audit T-16). Whether this request is even ATTEMPTED against 127.0.0.1:1 is
+#    decided by the host's proxy configuration, not by this file: measured with
+#    `curl -v`, a host whose no_proxy does not cover 127.0.0.1 dials the proxy
+#    ("Establish HTTP proxy tunnel to 127.0.0.1:1") and what comes back is then
+#    whatever that proxy says. This machine's no_proxy happens to list 127.0.0.1,
+#    so the case passed here for a reason it does not carry to another host — a
+#    proxy that answers CONNECT would put the installer on a different branch
+#    than the one named above, with the assertions still green.
+#
+#    Residual, stated rather than closed: nothing here proves the strip worked.
+#    Doing that needs a CONNECT-capable proxy in the fixture; what is asserted is
+#    the branch's own output, which is why the message assertions below matter
+#    more than the exit code.
+out=$(env -u https_proxy -u HTTPS_PROXY -u http_proxy -u HTTP_PROXY -u all_proxy -u ALL_PROXY \
+  LOOP_TESTING_UPDATE_TAGS_URL="https://127.0.0.1:1/nope" LOOP_TESTING_UPDATE_TIMEOUT=2 \
   bash "$INSTALLER" --target "$SB" --check-update 2>&1); rc=$?
 assert_eq "$rc" 0 "check-update degrades to exit 0 when GitHub is unreachable"
 assert_contains "$out" "could not reach GitHub" "prints the offline/rate-limited notice"
