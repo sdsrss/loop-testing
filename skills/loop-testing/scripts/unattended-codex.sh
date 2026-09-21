@@ -146,13 +146,34 @@ release_lock() { [ "$LOCK_OWNED" = 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null; LOCK_O
 # (proc_start uses it). Where neither exists the answer is `unknown`, which this
 # path refuses, because it has always refused ambiguity rather than stealing.
 holder_state() { # pid
+  # Test seam. Never set in normal use; it exists because on Linux `[ -d /proc/self ]`
+  # is always true, so the `ps` arm below — the ONLY liveness path on macOS — can
+  # otherwise never be reached by any test this project can run (CI is ubuntu-only).
+  local procfs="${LOOP_TESTING_PROCFS:-/proc}"
   kill -0 "$1" 2>/dev/null && { printf 'alive'; return; }
-  if [ -d /proc/self ]; then
-    if [ -e "/proc/$1" ]; then printf 'alive'; else printf 'gone'; fi
+  # `kill -0` just failed, which is ESRCH (gone) or EPERM (alive, owned by
+  # someone else) — indistinguishable from the shell, which is why the probes
+  # below exist. Each must prove it COULD have answered before its negative
+  # answer is believed: `gone` is the verdict that authorises stealing the lock,
+  # so a probe that cannot see the process says `unknown`, not `gone`.
+  if [ -d "$procfs/self" ]; then
+    if [ -e "$procfs/$1" ]; then printf 'alive'; return; fi
+    # Absent from procfs means "gone" only if this procfs shows us other
+    # accounts' processes at all. Under hidepid=2 — ordinary hardening on a
+    # shared box, which is the very case this fix names — it does not, and a live
+    # holder owned by another account is simply invisible. PID 1 always exists,
+    # so it is the canary: an invisible canary means the probe is blind, not that
+    # the holder died.
+    if [ -e "$procfs/1" ]; then printf 'gone'; else printf 'unknown'; fi
     return
   fi
   if command -v ps >/dev/null 2>&1; then
-    if ps -p "$1" >/dev/null 2>&1; then printf 'alive'; else printf 'gone'; fi
+    if ps -p "$1" >/dev/null 2>&1; then printf 'alive'; return; fi
+    # Same rule, same reason: `ps -p` exits non-zero both for "no such process"
+    # and for a `ps` that could not answer at all — and `ps -o ppid= -p 999999`
+    # even prints nothing while exiting 0, so status alone is not a signal here.
+    # Our own PID must be visible to us, so it is this probe's canary.
+    if ps -p "$$" >/dev/null 2>&1; then printf 'gone'; else printf 'unknown'; fi
     return
   fi
   printf 'unknown'
@@ -170,11 +191,19 @@ acquire_lock() {
   # the same sub-ms window could still both steal a genuinely-stale lock; this is a
   # best-effort accidental-double-launch guard, not a hard mutex — see README.)
   [ -n "$holder" ] && hstate="$(holder_state "$holder")"
+  # Matched-to-steal, not matched-to-refuse. The earlier form listed the two
+  # refusals and let everything else fall through to the `rm -rf` below, so any
+  # verdict the list did not anticipate — including an empty one, if the
+  # command substitution above died from a signal — authorised the steal by
+  # default. The destructive branch is the one that has to be named.
   case "$hstate" in
+    gone) : ;;   # the only verdict that authorises the steal below
     alive)
       die "another loop-testing driver is running on this project (lock held${holder:+ by pid $holder}); refusing to run concurrently — remove $LOCK_DIR by hand only if you are sure no driver is live" ;;
     unknown)
-      die "a driver lock is held by pid $holder and this host offers no way to tell whether that process is still running (no procfs, no ps); refusing to run concurrently rather than stealing a lock that may be live — remove $LOCK_DIR by hand only if you are sure no driver is live" ;;
+      die "a driver lock is held by pid $holder and this host gives no way to tell whether that process is still running (no procfs, no usable ps, or a procfs that hides other accounts' processes); refusing to run concurrently rather than stealing a lock that may be live — remove $LOCK_DIR by hand only if you are sure no driver is live" ;;
+    *)
+      die "the lock holder check returned an unrecognised verdict ('$hstate') for pid $holder; refusing to run rather than stealing a lock on an answer this script does not understand — remove $LOCK_DIR by hand only if you are sure no driver is live" ;;
   esac
   rm -rf "$LOCK_DIR" 2>/dev/null   # holder PID confirmed dead (crashed driver) — steal
   if mkdir "$LOCK_DIR" 2>/dev/null; then LOCK_OWNED=1; echo "$$" > "$LOCK_DIR/pid"; return 0; fi
