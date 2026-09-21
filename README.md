@@ -321,7 +321,7 @@ A finished run (after `sandbox-clean.sh`) **deliberately keeps** these artifacts
 
 ```bash
 # 1. Harvest: review and take the fixes (run in the target repo;
-#    FINAL_REPORT.md §4 maps each ISSUE to its commit hash)
+#    FINAL_REPORT.md §3 maps each ISSUE to its commit hash)
 git log qa-baseline..qa/loop-testing --oneline
 git merge qa/loop-testing            # or cherry-pick selected hashes
 ```

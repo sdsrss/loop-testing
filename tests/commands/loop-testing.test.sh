@@ -426,6 +426,25 @@ has "$SKILL" 'force / amend / rebase' "SKILL.md still carries the red line the t
 has "$REF" '既有/环境问题' "exit-and-report.md still requires the pre-existing/environment section"
 has "$REF" '验证清单' "exit-and-report.md still requires the verification checklist"
 
+# Both READMEs send the user to a numbered section of FINAL_REPORT.md to find
+# the ISSUE -> commit table during harvest, and both named §4, which is the
+# unresolved-issues section; the table is in §3. A cross-reference into a
+# document whose sections get renumbered cannot be asserted by hardcoding the
+# number here — that just moves the same staleness into the test — so read the
+# number out of the template and require the READMEs to agree with it.
+_fixsec=$(grep -aE '^## [0-9]+\. 已修复问题' "$TEMPLATE" | head -1 | sed 's/^## \([0-9]*\)\..*/\1/')
+if [ -n "$_fixsec" ]; then
+  pass "the template still has a numbered 已修复问题 section to point at"
+else fail "the template has no numbered 已修复问题 section — the README cross-reference cannot be checked"; fi
+for _rm in "$REPO_ROOT/README.md" "$REPO_ROOT/README.zh-CN.md"; do
+  _rn="${_rm##*/}"
+  if grep -qF "FINAL_REPORT.md §$_fixsec" "$_rm"; then
+    pass "$_rn points at the section that actually holds the ISSUE-to-commit table (§$_fixsec)"
+  else
+    fail "$_rn cites the wrong FINAL_REPORT.md section — the table is in §$_fixsec, it says $(grep -oF 'FINAL_REPORT.md §' -A0 "$_rm" >/dev/null 2>&1; grep -o 'FINAL_REPORT.md §[0-9]*' "$_rm" | head -1)"
+  fi
+done
+
 # K-13: the target has to be a git repository — sandbox-setup.sh exits 3 without
 # one and round-0's isolation gate then stops the run as BLOCKED. The README never
 # said so, in either language, so the first thing a user learned about the

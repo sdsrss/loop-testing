@@ -274,7 +274,7 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 
 ```bash
 # 1. 收割:审阅并合入修复(在目标仓库执行;
-#    FINAL_REPORT.md §4 有 ISSUE ↔ commit 哈希对照表)
+#    FINAL_REPORT.md §3 有 ISSUE ↔ commit 哈希对照表)
 git log qa-baseline..qa/loop-testing --oneline
 git merge qa/loop-testing            # 或 cherry-pick 选定哈希
 ```
