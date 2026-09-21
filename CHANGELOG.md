@@ -2,9 +2,21 @@
 
 ## Unreleased
 
-Seven items from the 2026-09-20 audit's open list, each with its own commit and
-its own before-the-fix measurement. Suite 43 suites / 1739 assertions -> 43 /
-1762, 0 failed. No independent review round has been run over this batch yet.
+Four items from the 2026-09-20 audit's open list — D-07, K-14, T-16, T-08 —
+plus three found in passing, each with its own commit. Five of the seven carry
+a before-the-fix measurement; T-08 is a shape removed rather than a flake
+reproduced, and the `--project /tmp` item had no defect to measure and carries
+positive controls instead.
+
+Suite 43 suites / 1739 assertions -> 43 / 1762, 0 failed **on a space-free
+`$TMPDIR`**. That qualifier is load-bearing: under a `$TMPDIR` whose path
+contains a space, `purge-ref-identity` is 38/6 and a destructive path fails —
+see *Found, not fixed* at the end of this section.
+
+An independent review round HAS now been run over this batch, and it found more
+defects inside these seven fixes than the CHANGELOG first admitted. What it
+found, and what was wrong in the first draft of these notes, is in *The review
+round* below.
 
 ### What changes for you
 
@@ -15,8 +27,12 @@ its own before-the-fix measurement. Suite 43 suites / 1739 assertions -> 43 /
   session budget, `exit=124` in `driver.log`. Passing it where it cannot apply
   now says so on stderr and in the log instead of being accepted in silence, and
   the refusal message and both READMEs no longer read as a general offer of
-  unbounded sessions. Behaviour is deliberately unchanged: making the flag
-  disable the watchdog, or renaming it, would change a published CLI contract.
+  unbounded sessions. **Only the messages change** — what the flag does is
+  deliberately untouched, since making it disable the watchdog, or renaming it,
+  would change a published CLI contract. Note the new lines are real output: a
+  `--no-watchdog` run on a watchdog-equipped host now writes one line to stderr
+  and one to `driver.log` that were not there before, which matters if you
+  scrape either.
 - **Neither gate loses the evidence directory in a monorepo (K-14).** They
   anchor on `$CLAUDE_PROJECT_DIR`, the directory your session started in;
   `sandbox-setup.sh` creates `docs/looptesting/` at the git toplevel. Start a
@@ -41,9 +57,15 @@ its own before-the-fix measurement. Suite 43 suites / 1739 assertions -> 43 /
 - **T-16, cases that inherited the environment they were testing.** Four hook
   cases did not override `$CLAUDE_PROJECT_DIR`, which Claude Code sets for every
   hook — so running the suite from inside a session anchored the hook at the real
-  project. Measured: `CLAUDE_PROJECT_DIR=<repo> bash tests/hooks/stop-gate.test.sh`
-  died at `kc: unbound variable`, having tested nothing past case K. Fixed at the
-  call sites and, for whatever is written next, once in the shared lib. Separately,
+  project. Four sites, but not four defects, and the first draft of this entry
+  invited that reading: case K's pair produces the abort below, case M produces
+  one failed assertion, and the ledger-gate site produces nothing at all — it
+  sets `LOOP_TESTING_DISABLE_LEDGER_GATE=1`, which the hook checks before it
+  reads the anchor, so its result cannot depend on one. Hygiene there, a defect
+  in the other three. Measured: `CLAUDE_PROJECT_DIR=<repo> bash
+  tests/hooks/stop-gate.test.sh` died at `kc: unbound variable`, having tested
+  nothing past case K. Fixed at the call sites and, for whatever is written
+  next, once in the shared lib. Separately,
   `check-update`'s offline case reaches the branch it names only when the host's
   proxy settings leave `127.0.0.1` alone: measured with `curl -v`, a host whose
   `no_proxy` does not cover it dials the proxy instead. The proxy variables are
@@ -56,26 +78,93 @@ its own before-the-fix measurement. Suite 43 suites / 1739 assertions -> 43 /
 - **Three usage-error cases pointed a full-permission driver at the host's real
   `/tmp`**, safe only while argument validation keeps running first. Aimed at a
   throwaway project now, and that ordering is asserted rather than assumed.
-- **T-08, the setsid waits.** An iteration count is not a time budget, and on
-  expiry the message blamed the driver ("never wrote its lock pid") for what was
-  only this harness failing to observe. Now a wall-clock deadline, 10s -> 30s,
-  overridable with `LOOP_TESTING_TEST_WAIT`. **Not a reproduction:** the flake is
-  intermittent, the audit did not reproduce it and neither did this round. The
-  shape is removed and the budget widened; that is all this claims.
+- **T-08, the three setsid waits the audit names.** An iteration count is not a
+  time budget, and on expiry the message blamed the driver ("never wrote its
+  lock pid") for what was only this harness failing to observe. Now a wall-clock
+  deadline, overridable with `LOOP_TESTING_TEST_WAIT`. The old bounds were 10s
+  for four of the six loops and 15s and 20s for case 19's pair — not a uniform
+  "10s" as first written here; all six are 30s now. The cost is not zero and no
+  count shows it: on a host that never reaches the state, those six waits go
+  from 35s and 40s to 90s each, and the host that pays is the loaded one T-08 is
+  about. **Not a reproduction:** the flake is intermittent, the audit did not
+  reproduce it and neither did this round. The shape is removed and the budget
+  widened; that is all this claims. `tests/driver/shutdown.test.sh` still uses
+  the iteration-count shape in twelve more loops, and has its own `wait_lock_pid`
+  that shadows the shared one — untouched here, so read the heading as the three
+  cases named, not as "the setsid waits" in general.
 
 ### Ledger
 
-- **K-15 was already closed** and never credited. `930a20f`, a K-05 follow-up,
-  gave `SKILL.md` the deterministic locate command, the note that
-  `${CLAUDE_PLUGIN_ROOT}` is guaranteed only to hook processes, the warning not
-  to pick a plugin-cache directory by name, and the `BLOCKED` exit when nothing
-  is found. Verified against the file, not inferred from the diff.
+- **K-15 was already closed** and never credited. All four things the audit said
+  were missing are in `skills/loop-testing/SKILL.md` today — the deterministic
+  locate command, the note that `${CLAUDE_PLUGIN_ROOT}` is guaranteed only to
+  hook processes, the warning not to pick a plugin-cache directory by name, and
+  the `BLOCKED` exit when nothing is found.
+
+  The credit is a chain, not one commit, and the first draft of this entry gave
+  all four to `930a20f`. Three predate it: the hook-process note came from
+  `9674e5a`, the don't-pick-by-name warning from `63c3dd7`, and `BLOCKED` first
+  appears at `085eac8` (v0.5.0). `930a20f` contributed the *deterministic form*
+  of a locate command that already existed as `ls -d`. The method first cited
+  for this — "verified against the file, not inferred from the diff" — can
+  establish that all four are present and can never establish which commit added
+  one; it was offered as support for exactly the half it cannot support.
 - **Found, not fixed:** under a `$TMPDIR` whose path contains a space,
   `sandbox-clean --purge` deletes a branch still holding unharvested fix commits
   and then orphans the marker its own recommended follow-up needs (6 assertions,
   identical before and after the accumulator change, so not caused by it). A
   destructive path failing on a path shape. Out of this batch's scope and
   recorded rather than quietly repaired.
+
+### The review round
+
+Four independent reviewers over `v0.14.1..HEAD`, none of them the author. They
+found **nine defects inside these seven fixes**, four of them High, and two of
+those would have shipped as harm rather than noise. Every one below was
+reproduced by the author before being acted on; two reviewer claims were
+retracted after that check, and both retractions came from the reviewer.
+
+**The two that blocked.**
+
+- **F1 — the refusal my own advice leaned on.** dd09b85 replaced a paste-ready
+  `--force` with plain `git worktree remove`, on the claim that git refuses
+  while anything uncommitted or untracked is there. git does not refuse over
+  IGNORED files, and a finished loop sandbox is exactly that state. So the
+  repair told the user a guard would catch them in the one case where no guard
+  fires. The old advice was dangerous and honest; that one was worse.
+- **F2 — a new false deny.** K-14's walk-up moved cwd to the toplevel, which
+  turned on the bare-basename rule, which made every path ending in `ISSUES.md`
+  the ledger from any subdirectory — a false deny carrying an accusation, in
+  the topology K-14 was written for. Fixing one direction of H-01 while opening
+  the other is the specific thing that change set out to avoid.
+
+**The rest:** a fixture self-probe that could not fail (it asserted the git
+toplevel was *non-empty* rather than that it was the fixture's own repo, so an
+inherited `GIT_DIR` sent the case at an unrelated repository); a consumer of
+`WS_ALL` left reading it bare, so a 30-fixture process sweep covered one; an
+unresolved anchor gaining authority it never had; a `|| :` that swallowed a
+timeout and then blamed the driver for it; two cases whose own titles named a
+premise they did not check; and five comments that no longer described their
+code. All repaired above, each with its own commit and its own RED.
+
+**Corrections to the first draft of these notes**, which is the part a reader
+of the batch acted on. The commit messages are left as written — the repair
+commits cite them by sha, and rewriting would dangle those citations — so the
+corrections live here:
+
+- `796af26` says "+7 assertions (stop-gate 72 -> 73, ledger-gate 161 -> 163)".
+  Measured at `796af26^`: **67 -> 73 and 158 -> 163, +11**. The 72 and 162 are
+  that commit's own *mutated-run* pass counts, quoted correctly two paragraphs
+  further down and misread as baselines at the top. Same error in `5712345`:
+  "driver-limits 35 -> 36" is **33 -> 36**; its codex-limits figure is right and
+  the +6 total is right.
+- The shape behind both: a RED run already contains the new test code, so it is
+  not the baseline. Recorded because it produced two false numbers in one batch.
+- `85dbb80`'s "roughly 5x margin" assumes a 10s old bound; case 19's was 15s, so
+  7.5x — and a single probe on an idle host bounds latency on that host only,
+  which is the property an intermittent bug is about.
+- `c5f2943`'s "with one site's `env -u` also reverted, the abort comes straight
+  back" holds for case K's pair, not for all four sites.
 
 ## 0.14.1 — 2026-09-21
 
