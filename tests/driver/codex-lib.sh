@@ -181,7 +181,10 @@ sessions_in_log() {
 # the figure was struck rather than restated (delta review D-6). What is
 # checkable is checked: tests/portability/bash3.test.sh compares the function
 # bodies via `declare -f`, which is bash's own parse — comments discarded, body
-# re-printed canonically, so what it compares is what will run.
+# re-printed canonically, so what it compares is what will run. Reformatting a
+# copy, or editing a note inside a function, is therefore NOT drift and stays
+# green on purpose; changed behaviour is drift. `bounded`, near the top of this
+# file, is watched by the same gate.
 # This file is a separate lib, not a wrapper around tests/driver/lib.sh, so a
 # helper added on one side does not exist on the other. Adding these there
 # first and running the codex suites is what said so:

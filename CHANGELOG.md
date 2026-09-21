@@ -235,6 +235,19 @@ corrections live here:
   section called it "worse than the `--force` it replaced". Corrected above. It
   is the v0.14.0 shape — notes claiming what the code does not do — occurring
   inside the round convened to catch it, and it was a reviewer who found it.
+- `fb5d3e4`'s T-2 precondition says "**with one inherited**, `git init -q
+  "$MONO"` returns 0 having created no repository at $MONO, and every later git
+  call addresses the inherited repo", and then shows a table with
+  `toplevel seen: …/outer` against `MONO: …/outer/mono.…`. The first clause is
+  true with one; the table is not. Measured on git 2.53.0 against one fixture:
+  with `GIT_DIR` alone, `git init` is still a silent no-op, but
+  `git rev-parse --show-toplevel` from inside MONO returns **MONO itself**, so
+  the identity probe passes and the table's discriminating row does not exist.
+  It reproduces row for row only with `GIT_DIR` **and** `GIT_WORK_TREE` set.
+  The fix and its RED are unaffected — stop-gate 71/2 and ledger-gate 164/2
+  reproduce with the probe present and the `unset` removed — but the sentence
+  is the reason a reader believes the `unset` needs all three names, so the
+  word matters.
 
 ## 0.14.1 — 2026-09-21
 
