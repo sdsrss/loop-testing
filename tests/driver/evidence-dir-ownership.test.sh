@@ -22,8 +22,9 @@ set -u
 DRIVER="$REPO_ROOT/skills/loop-testing/scripts/unattended-loop.sh"
 CODEX_DRIVER="$REPO_ROOT/skills/loop-testing/scripts/unattended-codex.sh"
 
-WS_ALL=""
-cleanup_all() { [ -n "$WS_ALL" ] && rm -rf $WS_ALL; return 0; }   # word-split on purpose
+WS_ALL=()
+track_ws() { WS_ALL+=("$1"); }
+cleanup_all() { if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi; return 0; }
 trap cleanup_all EXIT
 
 # The agent's round 0, then a terminal STATE so the driver exits 0 after one session.
@@ -47,7 +48,7 @@ run_driver() { # kind proj stub
 
 for kind in claude codex; do
   # --- 1. fresh project: the driver makes docs/looptesting -> purge removes it ---
-  ws=$(mk_ws); WS_ALL="$WS_ALL $ws"; proj="$ws/proj"
+  ws=$(mk_ws); track_ws "$ws"; proj="$ws/proj"
   stub=$(write_setup_stub "$ws")
   assert_absent "$proj/docs/looptesting" "$kind: fixture starts without an evidence dir"
   run_driver "$kind" "$proj" "$stub" >/dev/null 2>&1
@@ -64,7 +65,7 @@ for kind in claude codex; do
   else PASS=$((PASS+1)); fi
 
   # --- 2. mutation guard: a dir the USER had before the driver stays theirs ------
-  ws2=$(mk_ws); WS_ALL="$WS_ALL $ws2"; proj2="$ws2/proj"
+  ws2=$(mk_ws); track_ws "$ws2"; proj2="$ws2/proj"
   stub2=$(write_setup_stub "$ws2")
   mkdir -p "$proj2/docs/looptesting"
   echo "user ADR" > "$proj2/docs/looptesting/adr-1.md"
@@ -80,7 +81,7 @@ for kind in claude codex; do
   # Owning the DIRECTORY is not owning everything later put inside it. Making a
   # headless run's evidence dir purgeable at all (case 1) turns this branch into
   # `rm -rf` over exactly that case, and an untracked file is gone for good.
-  ws3b=$(mk_ws); WS_ALL="$WS_ALL $ws3b"; proj3b="$ws3b/proj"
+  ws3b=$(mk_ws); track_ws "$ws3b"; proj3b="$ws3b/proj"
   stub3b=$(write_setup_stub "$ws3b")
   run_driver "$kind" "$proj3b" "$stub3b" >/dev/null 2>&1
   assert_eq 0 "$?" "$kind: headless run converges before the user adds a file"
@@ -108,7 +109,7 @@ for kind in claude codex; do
   # to rmdir — stranding the next purge on the no-marker exit 3 with residue still
   # there. An agent that linked into a worktree `clean` later removed leaves
   # exactly this.
-  ws3c=$(mk_ws); WS_ALL="$WS_ALL $ws3c"; proj3c="$ws3c/proj"
+  ws3c=$(mk_ws); track_ws "$ws3c"; proj3c="$ws3c/proj"
   stub3c=$(write_setup_stub "$ws3c")
   run_driver "$kind" "$proj3c" "$stub3c" >/dev/null 2>&1
   assert_eq 0 "$?" "$kind: headless run converges before the dangling link appears"
@@ -124,7 +125,7 @@ for kind in claude codex; do
   assert_eq 0 "$?" "$kind: a second purge after a dangling link still works (exit 0, not 3)"
 
   # --- 3. the driver never overwrites an existing breadcrumb ---------------------
-  ws3=$(mk_ws); WS_ALL="$WS_ALL $ws3"; proj3="$ws3/proj"
+  ws3=$(mk_ws); track_ws "$ws3"; proj3="$ws3/proj"
   stub3=$(write_setup_stub "$ws3")
   mkdir -p "$proj3/docs/looptesting/.sandbox"
   printf 'MADE_LOOPTESTING_DIR=0\n' > "$proj3/docs/looptesting/.sandbox/created-dirs.env"
@@ -139,7 +140,7 @@ done
 # created docs/looptesting and written its breadcrumb), the user drops a file in
 # that directory, a later run completes normally, and the user purges. The
 # breadcrumb correctly says the DIRECTORY is the tool's; the file in it is not.
-ws5=$(mk_ws); WS_ALL="$WS_ALL $ws5"; proj5="$ws5/proj"
+ws5=$(mk_ws); track_ws "$ws5"; proj5="$ws5/proj"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$ws5/dead-stub.sh"   # dies before setup
 chmod +x "$ws5/dead-stub.sh"
 bash "$DRIVER" --project "$proj5" --claude-bin "$ws5/dead-stub.sh" --max-sessions 2 >/dev/null 2>&1

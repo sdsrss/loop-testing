@@ -15,15 +15,16 @@
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
-WS_ALL=""
-cleanup_all() { [ -n "$WS_ALL" ] && rm -rf $WS_ALL; }   # word-split on purpose
+WS_ALL=()
+track_ws() { WS_ALL+=("$1"); }
+cleanup_all() { if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi; }
 trap cleanup_all EXIT
 
 # Sets NEW_WS rather than echoing it: the caller would need $( ), and a command
 # substitution runs in a subshell, so the WS_ALL registration would be discarded
 # and the EXIT trap would clean nothing — every fixture would leak into TMPDIR.
 NEW_WS=""
-new_ws() { local ws; ws=$(mk_ws) || return 1; WS_ALL="$WS_ALL $ws"; NEW_WS="$ws"; }
+new_ws() { local ws; ws=$(mk_ws) || return 1; track_ws "$ws"; NEW_WS="$ws"; }
 
 terminal_state() { sed -i.bak 's/^status: .*/status: CONVERGED/' "$1/docs/looptesting/STATE.md" \
                    && rm -f "$1/docs/looptesting/STATE.md.bak"; }

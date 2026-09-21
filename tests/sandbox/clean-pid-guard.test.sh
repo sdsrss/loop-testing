@@ -20,8 +20,9 @@
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
-WS_ALL=""
-cleanup_all() { [ -n "$WS_ALL" ] && rm -rf $WS_ALL; }   # word-split on purpose
+WS_ALL=()
+track_ws() { WS_ALL+=("$1"); }
+cleanup_all() { if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi; }
 trap cleanup_all EXIT
 
 # Sets NEW_REPO (a fresh repo with a sandbox already set up) rather than echoing
@@ -32,7 +33,7 @@ NEW_REPO=""
 new_repo() {
   local ws
   ws=$(mk_ws) || return 1
-  WS_ALL="$WS_ALL $ws"
+  track_ws "$ws"
   ( cd "$ws/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1 || return 1
   NEW_REPO="$ws/proj"
 }

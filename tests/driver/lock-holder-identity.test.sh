@@ -20,8 +20,9 @@
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
-WS_ALL=""
-cleanup_all() { [ -n "$WS_ALL" ] && rm -rf $WS_ALL; }   # word-split on purpose
+WS_ALL=()
+track_ws() { WS_ALL+=("$1"); }
+cleanup_all() { if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi; }
 trap cleanup_all EXIT
 
 if [ "$(id -u 2>/dev/null)" = "0" ]; then
@@ -29,7 +30,7 @@ if [ "$(id -u 2>/dev/null)" = "0" ]; then
 fi
 
 # --- case 1: a holder that exists but cannot be signalled is NOT stolen -------
-WS1=$(mk_proj); WS_ALL="$WS_ALL $WS1"
+WS1=$(mk_proj); track_ws "$WS1"
 mkdir -p "$WS1/docs/looptesting/.driver.lock"
 echo "1" > "$WS1/docs/looptesting/.driver.lock/pid"
 stub=$(write_stub "$WS1"); write_state "$WS1" RUNNING 0
@@ -46,7 +47,7 @@ if grep -qx 1 "$WS1/docs/looptesting/.driver.lock/pid" 2>/dev/null; then PASS=$(
 # Case 1 passes for a driver that never steals any lock, which would lock a
 # project out after every crash. The dead PID is a just-exited child; a
 # background job would inherit the EXIT trap and delete the workspace mid-test.
-WS2=$(mk_proj); WS_ALL="$WS_ALL $WS2"
+WS2=$(mk_proj); track_ws "$WS2"
 mkdir -p "$WS2/docs/looptesting/.driver.lock"
 echo "$(bash -c 'echo $$')" > "$WS2/docs/looptesting/.driver.lock/pid"
 stub=$(write_stub "$WS2"); write_state "$WS2" RUNNING 0
@@ -58,7 +59,7 @@ if [ -e "$WS2/docs/looptesting/.driver.lock" ]; then
 # --- case 3: the refusal names the pid it refused for ------------------------
 # The user's only route out of a lock held by an account they cannot signal is to
 # remove it by hand, so the message has to say which pid it is talking about.
-WS3=$(mk_proj); WS_ALL="$WS_ALL $WS3"
+WS3=$(mk_proj); track_ws "$WS3"
 mkdir -p "$WS3/docs/looptesting/.driver.lock"
 echo "1" > "$WS3/docs/looptesting/.driver.lock/pid"
 stub=$(write_stub "$WS3"); write_state "$WS3" RUNNING 0
@@ -91,7 +92,7 @@ else
   # `self` is present (the probe is selected) but PID 1 is not visible, which is
   # what hidepid=2 shows a non-root reader. The holder must read as unknown, not
   # gone: it is PID 1, it is alive, and it is simply invisible here.
-  WS4=$(mk_proj); WS_ALL="$WS_ALL $WS4"
+  WS4=$(mk_proj); track_ws "$WS4"
   mkdir -p "$WS4/docs/looptesting/.driver.lock" "$WS4/fakeproc/self"
   echo "1" > "$WS4/docs/looptesting/.driver.lock/pid"
   # The fixture must be the condition it claims: self visible, PID 1 not.
@@ -109,7 +110,7 @@ else
   # --- case 5: control — a procfs that CAN answer still reports gone ---------
   # Without this, case 4 would also pass for a canary that reports every holder
   # as unknown, which would lock a project out after every crash.
-  WS5=$(mk_proj); WS_ALL="$WS_ALL $WS5"
+  WS5=$(mk_proj); track_ws "$WS5"
   mkdir -p "$WS5/docs/looptesting/.driver.lock" "$WS5/fakeproc/self" "$WS5/fakeproc/1"
   DEAD5="$(bash -c 'echo $$')"
   echo "$DEAD5" > "$WS5/docs/looptesting/.driver.lock/pid"
@@ -124,7 +125,7 @@ else
   # Procfs is pointed at a path that does not exist, so the ps arm is selected.
   # The shim fails `ps -p` for EVERY pid, modelling a ps that cannot answer at
   # all; its self-test on our own pid then fails too, so the verdict is unknown.
-  WS6=$(mk_proj); WS_ALL="$WS_ALL $WS6"
+  WS6=$(mk_proj); track_ws "$WS6"
   mkdir -p "$WS6/docs/looptesting/.driver.lock" "$WS6/shim"
   echo "1" > "$WS6/docs/looptesting/.driver.lock/pid"
   REAL_PS6="$(command -v ps)"
@@ -157,7 +158,7 @@ else
   # restricted to the caller's own processes answers about `$$` and refuses
   # about everyone else. A `$$` canary succeeds exactly when the probe is blind,
   # which is the failure it was supposed to detect.
-  WS7=$(mk_proj); WS_ALL="$WS_ALL $WS7"
+  WS7=$(mk_proj); track_ws "$WS7"
   mkdir -p "$WS7/docs/looptesting/.driver.lock" "$WS7/shim"
   echo "1" > "$WS7/docs/looptesting/.driver.lock/pid"
   REAL_PS7="$(command -v ps)"

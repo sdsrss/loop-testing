@@ -9,8 +9,9 @@
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/codex-lib.sh"
 
-WS_ALL=""
-cleanup_all() { [ -n "$WS_ALL" ] && rm -rf $WS_ALL; }   # word-split on purpose
+WS_ALL=()
+track_ws() { WS_ALL+=("$1"); }
+cleanup_all() { if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi; }
 trap cleanup_all EXIT
 
 if [ "$(id -u 2>/dev/null)" = "0" ]; then
@@ -18,7 +19,7 @@ if [ "$(id -u 2>/dev/null)" = "0" ]; then
 fi
 
 # --- case 1: a holder that exists but cannot be signalled is NOT stolen -------
-WS1=$(mk_proj); WS_ALL="$WS_ALL $WS1"
+WS1=$(mk_proj); track_ws "$WS1"
 mkdir -p "$WS1/docs/looptesting/.driver.lock"
 echo "1" > "$WS1/docs/looptesting/.driver.lock/pid"
 stub=$(write_stub "$WS1"); write_state "$WS1" RUNNING 0
@@ -32,7 +33,7 @@ if grep -qx 1 "$WS1/docs/looptesting/.driver.lock/pid" 2>/dev/null; then PASS=$(
   FAIL=$((FAIL+1)); echo "  FAIL: the refused run replaced the other holder's pid file with its own" >&2; fi
 
 # --- case 2: control — a genuinely dead holder is still stolen ----------------
-WS2=$(mk_proj); WS_ALL="$WS_ALL $WS2"
+WS2=$(mk_proj); track_ws "$WS2"
 mkdir -p "$WS2/docs/looptesting/.driver.lock"
 echo "$(bash -c 'echo $$')" > "$WS2/docs/looptesting/.driver.lock/pid"
 stub=$(write_stub "$WS2"); write_state "$WS2" RUNNING 0
@@ -42,7 +43,7 @@ if [ -e "$WS2/docs/looptesting/.driver.lock" ]; then
   FAIL=$((FAIL+1)); echo "  FAIL: lock not released on normal exit" >&2; else PASS=$((PASS+1)); fi
 
 # --- case 3: the refusal names the pid it refused for ------------------------
-WS3=$(mk_proj); WS_ALL="$WS_ALL $WS3"
+WS3=$(mk_proj); track_ws "$WS3"
 mkdir -p "$WS3/docs/looptesting/.driver.lock"
 echo "1" > "$WS3/docs/looptesting/.driver.lock/pid"
 stub=$(write_stub "$WS3"); write_state "$WS3" RUNNING 0
@@ -68,7 +69,7 @@ if kill -0 1 2>/dev/null; then
   echo "  note: 'kill -0 1' succeeds here, so cases 4 and 6 cannot reach the probes they test; skipped"
 else
   # --- case 4: a procfs that hides other accounts' processes (hidepid=2) ------
-  WS4=$(mk_proj); WS_ALL="$WS_ALL $WS4"
+  WS4=$(mk_proj); track_ws "$WS4"
   mkdir -p "$WS4/docs/looptesting/.driver.lock" "$WS4/fakeproc/self"
   echo "1" > "$WS4/docs/looptesting/.driver.lock/pid"
   if [ -d "$WS4/fakeproc/self" ] && [ ! -e "$WS4/fakeproc/1" ]; then PASS=$((PASS+1)); else
@@ -83,7 +84,7 @@ else
     FAIL=$((FAIL+1)); echo "  FAIL: the live holder's lock was stolen through a blind procfs" >&2; fi
 
   # --- case 5: control — a procfs that CAN answer still reports gone ---------
-  WS5=$(mk_proj); WS_ALL="$WS_ALL $WS5"
+  WS5=$(mk_proj); track_ws "$WS5"
   mkdir -p "$WS5/docs/looptesting/.driver.lock" "$WS5/fakeproc/self" "$WS5/fakeproc/1"
   DEAD5="$(bash -c 'echo $$')"
   echo "$DEAD5" > "$WS5/docs/looptesting/.driver.lock/pid"
@@ -95,7 +96,7 @@ else
   assert_rc $? 0 "a procfs that can see PID 1 still reports a genuinely dead holder as gone"
 
   # --- case 6: the ps arm, the only liveness path on macOS -------------------
-  WS6=$(mk_proj); WS_ALL="$WS_ALL $WS6"
+  WS6=$(mk_proj); track_ws "$WS6"
   mkdir -p "$WS6/docs/looptesting/.driver.lock" "$WS6/shim"
   echo "1" > "$WS6/docs/looptesting/.driver.lock/pid"
   REAL_PS6="$(command -v ps)"
@@ -126,7 +127,7 @@ else
   # restricted to the caller's own processes answers about `$$` and refuses
   # about everyone else. A `$$` canary succeeds exactly when the probe is blind,
   # which is the failure it was supposed to detect.
-  WS7=$(mk_proj); WS_ALL="$WS_ALL $WS7"
+  WS7=$(mk_proj); track_ws "$WS7"
   mkdir -p "$WS7/docs/looptesting/.driver.lock" "$WS7/shim"
   echo "1" > "$WS7/docs/looptesting/.driver.lock/pid"
   REAL_PS7="$(command -v ps)"

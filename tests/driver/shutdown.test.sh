@@ -35,7 +35,8 @@ exec </dev/null
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 CODEX_DRIVER="$REPO_ROOT/skills/loop-testing/scripts/unattended-codex.sh"
 
-WS_ALL=""
+WS_ALL=()
+track_ws() { WS_ALL+=("$1"); }
 KILL_ON_EXIT=""
 cleanup_all() {
   # Kill anything still beating in a fixture before removing it.
@@ -47,7 +48,7 @@ cleanup_all() {
     done
   done
   for p in $KILL_ON_EXIT; do kill -KILL "$p" 2>/dev/null; done
-  [ -n "$WS_ALL" ] && rm -rf $WS_ALL   # word-split on purpose
+  if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi
   return 0
 }
 trap cleanup_all EXIT
@@ -109,7 +110,7 @@ session_pid() { # driver-pid
 run_case() {
   local label="$1" kind="$2" method="$3" stubkind="${4:-normal}"
   local ws stub drv sess pgid n1 n2 lock saw_gone raced
-  ws=$(mk_proj); WS_ALL="$WS_ALL $ws"
+  ws=$(mk_proj); track_ws "$ws"
   if [ "$stubkind" = stubborn ]; then stub=$(write_stubborn_stub "$ws"); else stub=$(write_heartbeat_stub "$ws"); fi
   write_state "$ws" RUNNING 0
   lock="$ws/docs/looptesting/.driver.lock"
@@ -205,7 +206,7 @@ run_case() {
 run_double() {
   local label="$1" kind="$2" first="$3" second="$4"
   local ws stub drv sess lock pgid saw raced t0 tdead
-  ws=$(mk_proj); WS_ALL="$WS_ALL $ws"
+  ws=$(mk_proj); track_ws "$ws"
   stub=$(write_stubborn_stub "$ws")
   write_state "$ws" RUNNING 0
   lock="$ws/docs/looptesting/.driver.lock"
@@ -279,7 +280,7 @@ run_double() {
 run_broken_ps() {
   local label="$1" kind="$2" behavior="$3"
   local ws stub drv sess lock pgid shim saw raced
-  ws=$(mk_proj); WS_ALL="$WS_ALL $ws"
+  ws=$(mk_proj); track_ws "$ws"
   stub=$(write_stubborn_stub "$ws")
   write_state "$ws" RUNNING 0
   lock="$ws/docs/looptesting/.driver.lock"
@@ -417,7 +418,7 @@ done
 # "loop ended" (0) or "limits" (3-5). The elapsed bound is what discriminates:
 # the old driver also exited 143 — after the 60 s watchdog had ended the session
 # for it — so a heartbeat check here would pass on the unfixed driver too.
-WS=$(mk_proj); WS_ALL="$WS_ALL $WS"
+WS=$(mk_proj); track_ws "$WS"
 stub=$(write_heartbeat_stub "$WS"); write_state "$WS" RUNNING 0
 ( pid=""; for _ in $(seq 1 60); do
     [ -f "$WS/docs/looptesting/.driver.lock/pid" ] && read -r pid < "$WS/docs/looptesting/.driver.lock/pid" 2>/dev/null
@@ -468,7 +469,7 @@ done
 # The state a held lock leaves behind: the lock dir names a LIVE pid (there, the
 # surviving session; here, a process this test owns). The next driver must
 # refuse rather than steal it — which is what makes holding worth doing.
-WSH=$(mk_proj); WS_ALL="$WS_ALL $WSH"
+WSH=$(mk_proj); track_ws "$WSH"
 # Started inside a subshell so it is not a job of THIS shell: a job would print
 # bash's own "Killed" notice into the test output when it is reaped.
 SURV=$( ( sleep 30 >/dev/null 2>&1 & echo $! ) ); KILL_ON_EXIT="$KILL_ON_EXIT $SURV"

@@ -19,8 +19,9 @@
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
-WS_ALL=""
-cleanup_all() { [ -n "$WS_ALL" ] && rm -rf $WS_ALL; }   # word-split on purpose
+WS_ALL=()
+track_ws() { WS_ALL+=("$1"); }
+cleanup_all() { if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi; }
 trap cleanup_all EXIT
 
 # A repo whose sandbox was set up at a user-chosen worktree path and then
@@ -31,7 +32,7 @@ trap cleanup_all EXIT
 FOREIGN_WS=""
 foreign_worktree_repo() {   # user worktree left standing at $FOREIGN_WS/shared-wt
   local ws
-  ws=$(mk_ws); WS_ALL="$WS_ALL $ws"
+  ws=$(mk_ws); track_ws "$ws"
   ( cd "$ws/proj" && bash "$SETUP" --mode worktree --worktree-path "$ws/shared-wt" ) >/dev/null 2>&1 || return 1
   ( cd "$ws/proj" && bash "$CLEAN" ) >/dev/null 2>&1 || return 1
   ( cd "$ws/proj" && git worktree add -q -b my-feature "$ws/shared-wt" ) >/dev/null 2>&1 || return 1
@@ -69,7 +70,7 @@ if ( cd "$WS2/shared-wt" && [ "$(git branch --show-current)" = "my-feature" ] );
 # --- case 3 (mutation guard): the sandbox's OWN worktree is still cleaned -----
 # A fix that simply stopped removing worktrees would pass cases 1-2 and break the
 # actual job. Same for setup: a live, genuine sandbox must still short-circuit.
-WS3=$(mk_ws); WS_ALL="$WS_ALL $WS3"
+WS3=$(mk_ws); track_ws "$WS3"
 ( cd "$WS3/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "genuine sandbox setup"
 ( cd "$WS3/proj" && bash "$SETUP" --mode worktree ) > "$WS3/setup2.out" 2>&1
@@ -83,7 +84,7 @@ assert_absent "$WS3/proj-qa-loop" "the sandbox's own worktree is still removed"
 # Mirrors the branch-mode precedent: with no SANDBOX_BRANCH recorded the
 # sandbox's identity is unknown, so guessing and refusing would break a valid
 # custom-branch sandbox. Unknown identity must not become a new refusal.
-WS4=$(mk_ws); WS_ALL="$WS_ALL $WS4"
+WS4=$(mk_ws); track_ws "$WS4"
 ( cd "$WS4/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the legacy-marker case"
 MK="$WS4/proj/docs/looptesting/.sandbox/ownership.env"
@@ -97,7 +98,7 @@ assert_absent "$WS4/proj-qa-loop" "legacy marker (no recorded branch) still clea
 # sandbox detaches HEAD. Identity must not be "the branch name matches" — our own
 # worktree stops matching that the moment the loop rebases, and abandoning it
 # leaves an orphan the tool can no longer clean up.
-WS5=$(mk_ws); WS_ALL="$WS_ALL $WS5"; WT5="$WS5/proj-qa-loop"
+WS5=$(mk_ws); track_ws "$WS5"; WT5="$WS5/proj-qa-loop"
 ( cd "$WS5/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the detached-HEAD case"
 ( cd "$WT5" && git checkout -q --detach HEAD )
@@ -108,7 +109,7 @@ assert_file_contains "$WS5/setup.out" "already initialized" "a detached sandbox 
 assert_absent "$WT5" "clean removes our own worktree even when its HEAD is detached"
 
 # --- case 6: OUR OWN worktree whose branch was renamed is still ours ----------
-WS6=$(mk_ws); WS_ALL="$WS_ALL $WS6"; WT6="$WS6/proj-qa-loop"
+WS6=$(mk_ws); track_ws "$WS6"; WT6="$WS6/proj-qa-loop"
 ( cd "$WS6/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the renamed-branch case"
 ( cd "$WS6/proj" && git branch -m qa/loop-testing qa/renamed )
@@ -134,7 +135,7 @@ if ( cd "$WS8/shared-wt" && [ "$(git branch --show-current)" = "my-feature" ] );
 # so "no identity recorded" must mean "do not touch", not "assume it is ours".
 # The cost is one manual step per pre-existing sandbox; after it the rebuilt
 # marker carries a stamp and the sandbox behaves normally forever.
-WS9=$(mk_ws); WS_ALL="$WS_ALL $WS9"; WT9="$WS9/proj-qa-loop"
+WS9=$(mk_ws); track_ws "$WS9"; WT9="$WS9/proj-qa-loop"
 ( cd "$WS9/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the legacy-stamp case"
 MK9="$WS9/proj/docs/looptesting/.sandbox/ownership.env"
@@ -207,7 +208,7 @@ assert_exists "$WS10/shared-wt/feature.txt" "the user's worktree and its work ar
 # one case where ownership is not in doubt for the reason that matters: there is
 # nothing on disk to lose. Calling it "cannot tell, keep it" strands a phantom
 # registration, and the next setup then fails because the branch is still held.
-WS11=$(mk_ws); WS_ALL="$WS_ALL $WS11"; WT11="$WS11/proj-qa-loop"
+WS11=$(mk_ws); track_ws "$WS11"; WT11="$WS11/proj-qa-loop"
 ( cd "$WS11/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the deleted-directory case"
 rm -rf "${WT11:?}"
@@ -227,7 +228,7 @@ assert_ok $? "setup works again after the phantom registration is cleared"
 # missing awk read as "not ours". Replacing awk with `cat` moved the same hole
 # rather than closing it: any external command in this path can fail and be
 # mistaken for a verdict.
-WS12=$(mk_ws); WS_ALL="$WS_ALL $WS12"; WT12="$WS12/proj-qa-loop"
+WS12=$(mk_ws); track_ws "$WS12"; WT12="$WS12/proj-qa-loop"
 ( cd "$WS12/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the broken-cat case"
 mkdir -p "$WS12/bin"
@@ -245,7 +246,7 @@ assert_absent "$WT12" "clean still removes its own worktree with cat and awk bro
 # verbatim means every membership test misses, so the sandbox's own live worktree
 # reads as `absent`: clean reports "already gone" and silently leaks it, and the
 # marker points at a path that resolves differently depending on cwd.
-WS13=$(mk_ws); WS_ALL="$WS_ALL $WS13"
+WS13=$(mk_ws); track_ws "$WS13"
 ( cd "$WS13/proj" && bash "$SETUP" --mode worktree --worktree-path ../rel-wt ) >/dev/null 2>&1
 assert_ok $? "setup accepts a relative --worktree-path"
 assert_exists "$WS13/rel-wt" "the worktree was created where the relative path points"
@@ -261,7 +262,7 @@ if grep -qF "already gone" "$WS13/clean.out"; then
 else PASS=$((PASS+1)); fi
 
 # --- case 14: a malformed SANDBOX_VERSION must not leak shell noise -----------
-WS14=$(mk_ws); WS_ALL="$WS_ALL $WS14"
+WS14=$(mk_ws); track_ws "$WS14"
 ( cd "$WS14/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 MK14="$WS14/proj/docs/looptesting/.sandbox/ownership.env"
 sed -e 's/^SANDBOX_VERSION=.*/SANDBOX_VERSION=99999999999999999999999999/' "$MK14" > "$MK14.tmp"
@@ -303,7 +304,7 @@ assert_exists "$WS15/proj/docs/looptesting/.sandbox/ownership.env" \
 # own message tells the user to harvest them. Doing that means adding a worktree
 # on THAT branch — and the previous fixture used 'my-feature', so no case covered
 # the one branch a user is actually likely to check out at that path.
-WS16=$(mk_ws); WS_ALL="$WS_ALL $WS16"; WT16="$WS16/proj-qa-loop"
+WS16=$(mk_ws); track_ws "$WS16"; WT16="$WS16/proj-qa-loop"
 ( cd "$WS16/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the harvest case"
 ( cd "$WT16" && echo fix > fix.txt && git add -A && git commit -qm "fix: something" ) >/dev/null 2>&1
@@ -321,7 +322,7 @@ assert_file_contains "$WS16/clean.out" "does not match" "clean says the stamp di
 # drives only sandbox-clean.sh. A branch-name fallback restored in the setup copy
 # alone would pass all of them while setup adopts the user's harvest worktree and
 # the loop commits its fixes into that checkout.
-WS16B=$(mk_ws); WS_ALL="$WS_ALL $WS16B"; WT16B="$WS16B/proj-qa-loop"
+WS16B=$(mk_ws); track_ws "$WS16B"; WT16B="$WS16B/proj-qa-loop"
 ( cd "$WS16B/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the setup-side harvest case"
 ( cd "$WT16B" && echo fix > fix.txt && git add -A && git commit -qm "fix: x" ) >/dev/null 2>&1
@@ -335,7 +336,7 @@ else PASS=$((PASS+1)); fi
 assert_exists "$WT16B/NOTES.md" "setup left the harvest worktree's contents alone"
 
 # --- case 17: a symlinked --worktree-path must still be recognized later ------
-WS17=$(mk_ws); WS_ALL="$WS_ALL $WS17"
+WS17=$(mk_ws); track_ws "$WS17"
 mkdir -p "$WS17/real-parent"; ln -s "$WS17/real-parent" "$WS17/link-parent"
 ( cd "$WS17/proj" && bash "$SETUP" --mode worktree --worktree-path "$WS17/link-parent/wt" ) >/dev/null 2>&1
 assert_ok $? "setup accepts a symlinked --worktree-path"
@@ -348,13 +349,13 @@ else PASS=$((PASS+1)); fi
 # --- case 18: a --worktree-path whose parent does not exist yet --------------
 # This worked before canonicalization was added; refusing it would be a new
 # refusal invented by the fix, not by the bug.
-WS18=$(mk_ws); WS_ALL="$WS_ALL $WS18"
+WS18=$(mk_ws); track_ws "$WS18"
 ( cd "$WS18/proj" && bash "$SETUP" --mode worktree --worktree-path ../not-yet/wt ) > "$WS18/setup.out" 2>&1
 assert_ok $? "setup still accepts a path whose parent does not exist"
 assert_exists "$WS18/not-yet/wt" "the worktree was created under the new parent"
 
 # --- case 19: a leading-dash path must not leak coreutils usage text ----------
-WS19=$(mk_ws); WS_ALL="$WS_ALL $WS19"
+WS19=$(mk_ws); track_ws "$WS19"
 ( cd "$WS19/proj" && bash "$SETUP" --mode worktree --worktree-path -dashy ) > "$WS19/setup.out" 2>&1
 if grep -qiE 'usage: dirname|usage: basename|try .* --help' "$WS19/setup.out"; then
   FAIL=$((FAIL+1)); echo "  FAIL: raw coreutils usage text leaked" >&2
@@ -363,7 +364,7 @@ else PASS=$((PASS+1)); fi
 
 # --- case 20: the `unknown` verdict never deletes -----------------------------
 # Its entire purpose is "cannot tell, so do not touch", and nothing covered it.
-WS20=$(mk_ws); WS_ALL="$WS_ALL $WS20"; WT20="$WS20/proj-qa-loop"
+WS20=$(mk_ws); track_ws "$WS20"; WT20="$WS20/proj-qa-loop"
 ( cd "$WS20/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the unknown-verdict case"
 echo "untracked work" > "$WT20/keepme.txt"
@@ -395,7 +396,7 @@ chmod 600 "$GD20/loop-testing-owner" 2>/dev/null || true
 # nowhere is exactly that — the path is still registered in the main repo, the
 # directory is still there, and wt_gitdir_of comes back empty. Same arm, same
 # requirement (touch nothing), and it runs as any user.
-WS20B=$(mk_ws); WS_ALL="$WS_ALL $WS20B"; WT20B="$WS20B/proj-qa-loop"
+WS20B=$(mk_ws); track_ws "$WS20B"; WT20B="$WS20B/proj-qa-loop"
 ( cd "$WS20B/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the unresolvable-git-dir case"
 echo "untracked work" > "$WT20B/keepme.txt"
@@ -406,7 +407,7 @@ assert_exists "$WT20B/keepme.txt" "a worktree whose git dir is unresolvable is n
 assert_file_contains "$WS20B/clean.out" "could not confirm" "clean says it could not confirm ownership"
 
 # --- case 21: the stale rebuild path must not force-remove anything -----------
-WS21=$(mk_ws); WS_ALL="$WS_ALL $WS21"; WT21="$WS21/proj-qa-loop"
+WS21=$(mk_ws); track_ws "$WS21"; WT21="$WS21/proj-qa-loop"
 ( cd "$WS21/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the stale-rebuild case"
 rm -rf "${WT21:?}"                        # directory gone, registration remains
@@ -423,7 +424,7 @@ if ( cd "$WS21/proj" && git worktree list --porcelain | grep -c "worktree $WT21"
 # repo-wide remedy to a per-path verdict, and a user who relocated their own
 # worktree with plain `mv` — the state `git worktree repair` exists to fix —
 # loses its admin dir and can no longer repair it.
-WS22=$(mk_ws); WS_ALL="$WS_ALL $WS22"
+WS22=$(mk_ws); track_ws "$WS22"
 ( cd "$WS22/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the other-worktrees case"
 ( cd "$WS22/proj" && git worktree add -q "$WS22/user-wt" -b feature/mine )
@@ -441,7 +442,7 @@ if ( cd "$WS22/proj" && git worktree list --porcelain | grep -qxF "worktree $WS2
 else PASS=$((PASS+1)); fi
 
 # --- case 23: a locked stale worktree must not be reported as cleared ---------
-WS23=$(mk_ws); WS_ALL="$WS_ALL $WS23"; WT23="$WS23/proj-qa-loop"
+WS23=$(mk_ws); track_ws "$WS23"; WT23="$WS23/proj-qa-loop"
 ( cd "$WS23/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$WS23/proj" && git worktree lock "$WT23" ) >/dev/null 2>&1
 rm -rf "${WT23:?}"
@@ -458,7 +459,7 @@ else PASS=$((PASS+1)); fi   # it did clear it — then the claim was true
 # --- case 24: a resolved path must not keep .. in it -------------------------
 # `git worktree list` prints resolved paths, so a recorded path containing ..
 # never matches and the sandbox leaks its own worktree.
-WS24=$(mk_ws); WS_ALL="$WS_ALL $WS24"
+WS24=$(mk_ws); track_ws "$WS24"
 ( cd "$WS24/proj" && bash "$SETUP" --mode worktree --worktree-path "$WS24/proj/../wt24" ) >/dev/null 2>&1
 assert_ok $? "setup accepts a path containing .."
 MK24="$WS24/proj/docs/looptesting/.sandbox/ownership.env"
@@ -474,7 +475,7 @@ assert_absent "$WS24/wt24" "clean removes a worktree created through a .. path"
 # 22 drives only sandbox-clean.sh. Case 16b made exactly this argument about
 # wt_ownership; nobody applied it here, so half of the blocker's fix was guarded
 # by nothing.
-WS25=$(mk_ws); WS_ALL="$WS_ALL $WS25"
+WS25=$(mk_ws); track_ws "$WS25"
 ( cd "$WS25/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the setup-side scoping case"
 ( cd "$WS25/proj" && git worktree add -q "$WS25/user-wt" -b feature/mine )
@@ -493,7 +494,7 @@ if ( cd "$WS25/user-wt-moved" && git worktree repair >/dev/null 2>&1 ); then
 # The `ours`-but-removal-failed branch did not, so purge deleted the marker,
 # printed "purge done." and exited 0 with a worktree this tool created still on
 # disk — the orphan the partial-purge reporting exists to prevent.
-WS26=$(mk_ws); WS_ALL="$WS_ALL $WS26"; WT26="$WS26/proj-qa-loop"
+WS26=$(mk_ws); track_ws "$WS26"; WT26="$WS26/proj-qa-loop"
 ( cd "$WS26/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 mkdir -p "$WT26/.cache/x"; echo d > "$WT26/.cache/x/f"; chmod 500 "$WT26/.cache/x"
 sed -i.bak 's/^status: .*/status: CONVERGED/' "$WS26/proj/docs/looptesting/STATE.md"
@@ -518,7 +519,7 @@ fi
 # The .. folding loop splits an unquoted expansion on IFS=/ — which is also
 # subject to pathname expansion, so a segment like * would be replaced by
 # whatever happens to sit in the current directory.
-WS27=$(mk_ws); WS_ALL="$WS_ALL $WS27"
+WS27=$(mk_ws); track_ws "$WS27"
 # The pattern must be able to MATCH something, or bash leaves it alone and the
 # bug stays invisible. setup runs with the repo as cwd, and the fixture repo
 # contains README.md, so a `READ*` segment is what an accidental expansion would
@@ -535,7 +536,7 @@ assert_file_contains "$MK27" "CREATED_WORKTREE=$WS27/READ*/wt" "the marker recor
 # --- case 28: .. after a component that does not exist must still be folded ---
 # Case 24's path had an existing component before the .., so pwd -P resolved it
 # and the lexical folding block was never reached.
-WS28=$(mk_ws); WS_ALL="$WS_ALL $WS28"
+WS28=$(mk_ws); track_ws "$WS28"
 ( cd "$WS28/proj" && bash "$SETUP" --mode worktree --worktree-path "$WS28/nope/../wt28" ) >/dev/null 2>&1
 assert_ok $? "setup accepts .. after a missing component"
 MK28="$WS28/proj/docs/looptesting/.sandbox/ownership.env"
@@ -567,7 +568,7 @@ else PASS=$((PASS+1)); fi
 # real git, resolved before the shim goes on PATH so it cannot recurse into
 # itself. A blanket "git is broken" fixture would prove nothing — the script
 # would fail at its first rev-parse and never reach the ownership question.
-WS29=$(mk_ws); WS_ALL="$WS_ALL $WS29"
+WS29=$(mk_ws); track_ws "$WS29"
 ( cd "$WS29/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? 'fixture: setup for the failing worktree-list case'
 assert_exists "$WS29/proj-qa-loop" "fixture: the worktree really is there"
@@ -671,7 +672,7 @@ else PASS=$((PASS+1)); fi
 # `.git/worktrees` and a missing `gitdir` file. It must be `-f` and not `-e`: a
 # plain `git init` repo parked at the freed path has `.git` as a DIRECTORY, and
 # that one really is absent as far as this sandbox is concerned.
-WS32=$(mk_ws); WS_ALL="$WS_ALL $WS32"
+WS32=$(mk_ws); track_ws "$WS32"
 ( cd "$WS32/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? 'fixture: setup for the silently-omitted worktree case'
 assert_exists "$WS32/proj-qa-loop" "fixture: the worktree really is there"
@@ -737,7 +738,7 @@ fi
 # sandbox into a permanent exit 4 — "could not identify the worktree", forever,
 # over something that is not a worktree at all. That is the failure mode the
 # widened guard would have introduced, so it gets an assertion of its own.
-WS33=$(mk_ws); WS_ALL="$WS_ALL $WS33"
+WS33=$(mk_ws); track_ws "$WS33"
 ( cd "$WS33/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? 'fixture: setup for the reused-path case'
 ( cd "$WS33/proj" && git worktree remove --force "$WS33/proj-qa-loop" ) >/dev/null 2>&1
@@ -768,7 +769,7 @@ assert_exists "$WS33/proj-qa-loop/.git" "the user's own repository at that path 
 # destructive operation and then asks the user to run it by hand, on a worktree
 # it has just said it cannot identify, discarding whatever uncommitted or
 # untracked QA work is in there.
-WS34=$(mk_ws); WS_ALL="$WS_ALL $WS34"
+WS34=$(mk_ws); track_ws "$WS34"
 ( cd "$WS34/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? 'fixture: setup for the unresolvable-registry advice case'
 if [ "$(id -u 2>/dev/null)" = 0 ]; then
@@ -808,7 +809,7 @@ fi
 # diagnosis ("the registry could not be read") that is false, and removal advice
 # aimed at the user's repo. What makes a `.git` file OURS is that its `gitdir:`
 # points into this repo's own .git/worktrees/.
-WS35=$(mk_ws); WS_ALL="$WS_ALL $WS35"
+WS35=$(mk_ws); track_ws "$WS35"
 ( cd "$WS35/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? 'fixture: setup for the separate-git-dir case'
 ( cd "$WS35/proj" && git worktree remove --force "$WS35/proj-qa-loop" ) >/dev/null 2>&1
