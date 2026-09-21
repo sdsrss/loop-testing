@@ -43,6 +43,16 @@ afails=0
 # hand over whichever suites happened to print a number (audit T-04).
 _ra_out="$(mktemp "${TMPDIR:-/tmp}/loop-runall.XXXXXX")" || { echo "FAILED: mktemp"; exit 1; }
 trap 'rm -f "$_ra_out"' EXIT INT TERM HUP
+# Fixture-leak gate. Every suite builds its workspaces under $TMPDIR and removes
+# them in an EXIT trap. A trap that misses one leaks silently: the suite is green,
+# the tally is right, and the only evidence is a directory nobody looks at — one
+# suite left six per run for months (audit T-10). Counted per suite so the report
+# names the file to fix. Counts, not names: only growth is a failure, so a
+# concurrent run of another copy cannot turn this into a false accusation, though
+# it can mask one.
+_ra_tmp="${TMPDIR:-/tmp}"
+_leak_n() { find "$_ra_tmp" -maxdepth 1 -name 'loop-testing-*' 2>/dev/null | wc -l | tr -d ' '; }
+_leak_before=$(_leak_n)
 while IFS= read -r -d '' t; do
   tests_found=1
   suites=$((suites + 1))
@@ -52,6 +62,22 @@ while IFS= read -r -d '' t; do
   if bash "$t" </dev/null >"$_ra_out" 2>&1; then rc=0; else rc=1; fi
   cat "$_ra_out"
   if [ "$rc" -eq 0 ]; then echo "  ok: $t"; else echo "  TEST FAIL: $t"; overall=1; fi
+  # A helper the suite's lib does not define is not a failing assertion — it is
+  # an assertion that never ran. `assert_path` lived in one lib and was called
+  # from a suite sourcing another, so two checks printed "command not found" to
+  # stderr and the suite still reported 42 passed, 0 failed. The shell says so
+  # every time; nothing was reading it.
+  if grep -qE 'command not found|: not found' "$_ra_out"; then
+    echo "  GATE FAIL: $t called a command that does not exist — an assertion did not run"
+    grep -E 'command not found|: not found' "$_ra_out" | head -3
+    overall=1
+  fi
+  _leak_after=$(_leak_n)
+  if [ "$_leak_after" -gt "$_leak_before" ]; then
+    echo "  GATE FAIL: $t left $((_leak_after - _leak_before)) fixture dir(s) behind in $_ra_tmp"
+    overall=1
+  fi
+  _leak_before=$_leak_after
   tally=$(grep -E '^[^ ]+: [0-9]+ passed, [0-9]+ failed$' "$_ra_out" | tail -1)
   if [ -z "$tally" ]; then
     # A suite that reports no tally cannot be counted, and a suite that cannot be
