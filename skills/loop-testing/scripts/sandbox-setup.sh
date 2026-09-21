@@ -537,6 +537,20 @@ if [ -f "$MARKER" ]; then
           echo "sandbox-setup: the worktree at $RECORDED_WT is still standing — this run could not claim it, so it is left exactly as it is and recorded in the marker rather than forgotten."
         fi
         if [ "$WT_PATH" = "$RECORDED_WT" ] && [ -e "$RECORDED_WT" ]; then
+          # `foreign` and `unknown` are not the same situation and must not get
+          # the same advice. `foreign` is an answer: the stamp was read and it is
+          # somebody else's, so naming --force is fair — the user knows whose it
+          # is even if this script does not. `unknown` is the ABSENCE of an
+          # answer, and handing --force to a user who has just been told this run
+          # cannot identify the worktree is the tool refusing a destructive
+          # operation and then asking the user to perform it by hand. The
+          # qualifier "if it is the sandbox's" does not save it: when the probe
+          # failed the worktree usually IS the sandbox's, so the qualifier reads
+          # as a yes and --force discards whatever uncommitted or untracked QA
+          # work is in there.
+          if [ "$WT_STATE" = unknown ]; then
+            die "this run could not confirm whether the worktree standing at $RECORDED_WT belongs to this sandbox — either the worktree registry or the worktree's own ownership record could not be read (an unreadable .git/worktrees is the usual cause). Fix that and re-run, or pass --worktree-path to build the sandbox somewhere else. No removal command is offered here on purpose: --force discards anything uncommitted or untracked, and this run cannot tell you whose work that would be. If it has '$BRANCH' checked out, --worktree-path alone will not be enough: git will refuse the branch, not the path" 6
+          fi
           die "a worktree this sandbox cannot claim is standing at $RECORDED_WT. Either pass --worktree-path to build the sandbox somewhere else, or deal with that worktree first — 'git worktree remove --force $RECORDED_WT' if it is the sandbox's, move it aside if it is yours — and re-run. If it has '$BRANCH' checked out, --worktree-path alone will not be enough: git will refuse the branch, not the path" 6
         fi ;;
     esac
