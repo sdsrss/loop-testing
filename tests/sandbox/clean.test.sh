@@ -74,6 +74,11 @@ assert_exists "$WT2" "worktree exists before the worktree-cwd clean"
 assert_ok $? "clean from inside the worktree exits 0 (R57)"
 assert_absent "$WT2" "worktree removed even when clean ran from inside it (R57)"
 assert_absent "$REPO2/docs/looptesting/.active" "sentinel disarmed by worktree-cwd clean (R57)"
-assert_file_contains "$REPO2/docs/looptesting/.sandbox/ownership.env" "CLEANED_AT=" "CLEANED_AT recorded on the MAIN-tree marker (R57)"
+# Key presence is what this needs, but a bare `CLEANED_AT=` with nothing after it
+# would satisfy a key-only match while recording no time at all — the same
+# unfailable shape as audit T-05 next door. Require the timestamp's date.
+if grep -qE '^CLEANED_AT=[0-9]{4}-[0-9]{2}-[0-9]{2}T' "$REPO2/docs/looptesting/.sandbox/ownership.env"; then
+  PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: CLEANED_AT missing or not a timestamp on the MAIN-tree marker (R57) — got: $(grep -a '^CLEANED_AT=' "$REPO2/docs/looptesting/.sandbox/ownership.env")" >&2; fi
 
 report "clean.test.sh"
