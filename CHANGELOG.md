@@ -286,6 +286,22 @@ corrections live here:
   section called it "worse than the `--force` it replaced". Corrected above. It
   is the v0.14.0 shape — notes claiming what the code does not do — occurring
   inside the round convened to catch it, and it was a reviewer who found it.
+- **A toolchain declaration made in `c307cfa`'s commit message is wrong**, in a
+  way worth keeping because it is the third instance of one shape in two
+  rounds. It said this host's `find` is bfs and its `grep` is ugrep. Both are
+  **shell functions in an interactive shell only**; a script resolves
+  `/usr/bin/find` (GNU findutils 4.10.0) and `/usr/bin/grep` (GNU grep 3.12),
+  so every suite and every measurement script ran under GNU. What IS substituted
+  everywhere, scripts included, is `coreutils` — uutils 0.8.0 — and `gtimeout`
+  is genuinely absent, which is why the `timeout` finding stands. The tell was
+  in the original measurement: `command -v find` printed the bare word `find`
+  while `command -v timeout` printed `/usr/bin/timeout`, two shapes in one block
+  of output, read as one kind of thing. `command -v` reports a function as
+  itself; `type -t` says so in a word. The shape — a declaration precise enough
+  to look careful and not precise enough to be true — has now appeared as a
+  bash 3.2.0 tarball standing in for 3.2.57, as a reviewer's partial instrument
+  list, and here. The inventory never reached these notes, because it had
+  already been cut for being hedging a reader would not finish.
 - `fb5d3e4`'s T-2 precondition says "**with one inherited**, `git init -q
   "$MONO"` returns 0 having created no repository at $MONO, and every later git
   call addresses the inherited repo", and then shows a table with
