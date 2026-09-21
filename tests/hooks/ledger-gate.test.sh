@@ -653,5 +653,23 @@ assert_rc $? 0 "monorepo subpackage, Bash leg: a replayed VERIFIED write is not 
 json_bash2="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo '### ISSUE-099 | P0 | VERIFIED | thin air' >> $MONOL/docs/looptesting/ISSUES.md\"}}"
 ( cd "$MONOL/pkgs/app" && printf '%s' "$json_bash2" | CLAUDE_PROJECT_DIR="$MONOL/pkgs/app" bash "$LEDGER" ) >/dev/null 2>&1
 assert_rc $? 2 "monorepo subpackage, Bash leg: an unreplayed VERIFIED write is still denied"
+# Review F2: the walk-up moved cwd to the toplevel, which turned ARMED on, which
+# switched on the bare-basename rule — so from a subpackage ANY path ending in
+# ISSUES.md became the ledger, whether or not it exists. Measured against
+# v0.14.1: rc 0 there, rc 2 here, for a file belonging to an unrelated project.
+# A false deny is what this gate's own header calls its most expensive failure
+# mode, and the accusation it prints is aimed at a model doing correct work.
+# The bare-basename rule is only sound when the anchor IS the project root.
+json_bare="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo '### ISSUE-001 | P1 | VERIFIED | unrelated project file' >> ISSUES.md\"}}"
+( cd "$MONOL/pkgs/app" && printf '%s' "$json_bare" | CLAUDE_PROJECT_DIR="$MONOL/pkgs/app" bash "$LEDGER" ) >/dev/null 2>&1
+assert_rc $? 0 "subpackage: a bare ISSUES.md is NOT the toplevel ledger (F2 false deny)"
+json_nested="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo '### ISSUE-007 | P1 | VERIFIED | x' >> notes/ISSUES.md\"}}"
+( cd "$MONOL/pkgs/app" && printf '%s' "$json_nested" | CLAUDE_PROJECT_DIR="$MONOL/pkgs/app" bash "$LEDGER" ) >/dev/null 2>&1
+assert_rc $? 0 "subpackage: a nested notes/ISSUES.md is not the ledger either (F2)"
+# Control, and it is the half that keeps the fix honest: anchored AT the project
+# root — no walk-up — the bare-basename rule must still fire, or this repair has
+# simply switched the widening off everywhere.
+( cd "$MONOL" && printf '%s' "$json_bare" | CLAUDE_PROJECT_DIR="$MONOL" bash "$LEDGER" ) >/dev/null 2>&1
+assert_rc $? 2 "anchored at the project root, a bare ISSUES.md IS still the ledger"
 
 report "ledger-gate.test.sh"

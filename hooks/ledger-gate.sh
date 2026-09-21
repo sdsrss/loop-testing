@@ -115,8 +115,9 @@ fi
 if [ -z "$BASE" ]; then
   BASE=$(printf '%s' "$INPUT" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 fi
+BASE_OK=0
 if [ -n "$BASE" ] && [ -d "$BASE" ]; then
-  cd "$BASE" 2>/dev/null || true   # unresolvable -> stay in cwd (legacy)
+  if cd "$BASE" 2>/dev/null; then BASE_OK=1; fi   # unresolvable -> stay in cwd (legacy)
 fi
 
 # --- and up to the git toplevel when the anchor is a subpackage (audit K-14) ---
@@ -126,10 +127,14 @@ fi
 # below are cwd-relative. From a subpackage that meant a VERIFIED write with a
 # perfectly good replay at the toplevel was DENIED — H-01's direction, reached
 # through the anchor rather than through the lexer.
-if [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
+# Gated on the anchor having RESOLVED, and it records WHETHER it moved — see the
+# note in stop-gate.sh for the first (review F3), and ARMED below for the second
+# (review F2). The P-05 residual is stated there too and applies here unchanged.
+LT_WALKED=0
+if [ "$BASE_OK" = 1 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
   GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
   if [ -n "$GTOP" ] && [ -d "$GTOP/docs/looptesting" ]; then
-    cd "$GTOP" 2>/dev/null || true
+    if cd "$GTOP" 2>/dev/null; then LT_WALKED=1; fi
   fi
 fi
 
@@ -191,7 +196,20 @@ $CONTENT"
     # Prefilter: no mention of the ledger's basename anywhere -> nothing to weigh,
     # and no lexer process for the overwhelming majority of Bash calls.
     if printf '%s' "$CMD" | grep -qaF 'ISSUES.md'; then
-      ARMED=0; [ -f docs/looptesting/.active ] && ARMED=1
+      # ARMED does one job: it widens the ledger match to a BARE `ISSUES.md`
+      # basename (norm() below, and $LP on the regex leg). That widening is only
+      # sound when the anchor IS the project root — there, a bare ISSUES.md in a
+      # command is the ledger. After a walk-up it is not: cwd moved to the
+      # toplevel while the command was written against a subpackage, so every
+      # path ending in ISSUES.md anywhere in the tree became the ledger, whether
+      # or not it exists. Measured against v0.14.1: rc 0 there, rc 2 here, on a
+      # file belonging to an unrelated project (review F2) — and a false deny is
+      # what this file's header calls its most expensive failure mode, printed
+      # with an accusation aimed at a model doing correct work.
+      # Full `docs/looptesting/ISSUES.md` suffixes are NOT conditioned on ARMED
+      # and still match from anywhere, which is what K-14 needed.
+      ARMED=0
+      if [ "$LT_WALKED" = 0 ] && [ -f docs/looptesting/.active ]; then ARMED=1; fi
       # ---- primary leg: lex, then compare operand TOKENS to the ledger path ----
       # No expansion, no execution, no grammar: shlex hands back shell operators as
       # their own tokens and quoted text as one token, which is exactly the

@@ -58,8 +58,9 @@ fi
 if [ -z "$BASE" ]; then
   BASE=$(printf '%s' "$STDIN_JSON" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 fi
+BASE_OK=0
 if [ -n "$BASE" ] && [ -d "$BASE" ]; then
-  cd "$BASE" 2>/dev/null || true   # unresolvable -> stay in cwd (legacy)
+  if cd "$BASE" 2>/dev/null; then BASE_OK=1; fi   # unresolvable -> stay in cwd (legacy)
 fi
 
 # --- and up to the git toplevel when the anchor is a subpackage (audit K-14) ---
@@ -76,10 +77,26 @@ fi
 # exits 0 from every subdirectory in it, and a subpackage running its own loop
 # keeps its own. Guarded on git being present: a hook that errors is a hook the
 # platform's timeout resolves as ALLOW. Kept identical to ledger-gate.sh.
-if [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
+# Gated on the anchor having RESOLVED (review F3). When $BASE is empty, or names
+# something `cd` refuses, the documented fallback is "stay in cwd (legacy)" —
+# inert while resolution was cwd-relative, because the cwd then had to literally
+# contain docs/looptesting. The walk-up turns that same fallback into "find any
+# enclosing repo running a loop and act on it", and this gate's actions include
+# removing .active and .gate-count. An anchor that did not resolve must not
+# acquire authority it never had.
+#
+# Residual, stated rather than closed (review P-05): `command -v git` says git is
+# installed, not that it can answer. A git that refuses the repo — dubious
+# ownership on a bind-mounted tree under root is the common case — returns empty
+# and this falls back to pre-K-14 behaviour silently. Warning on it was not worth
+# the noise: `git rev-parse` exits 128 both for "refused" and for "not a repo",
+# so telling them apart needs a predicate over git's message text, which is the
+# shape that produced H-01 in this very tree.
+LT_WALKED=0
+if [ "$BASE_OK" = 1 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
   GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
   if [ -n "$GTOP" ] && [ -d "$GTOP/docs/looptesting" ]; then
-    cd "$GTOP" 2>/dev/null || true
+    if cd "$GTOP" 2>/dev/null; then LT_WALKED=1; fi
   fi
 fi
 
