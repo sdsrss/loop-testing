@@ -59,14 +59,26 @@ for pair in "loop:$DRIVER" "codex:$CODEX"; do
 done
 # And the refusal, when there is genuinely nowhere to look, names the flags that
 # work rather than failing later about something else.
-out="$(env -u HOME bash "$CODEX" --project . 2>&1)"; rc=$?
+#
+# BOTH invocations below pass a --project that does not exist, deliberately. The
+# driver's argument checks run in order — skill-dir guard, then `--project is
+# required`, then `--project is not a directory` — so a non-existent project is
+# enough to distinguish "which check fired" while guaranteeing the driver can
+# never reach a session launch. An earlier version of this case passed
+# `--project .`: it got past the skill-dir guard exactly as intended and then
+# started a real unattended run against this repository, which is not something
+# a help-output suite may do.
+out="$(env -u HOME bash "$CODEX" --project /nonexistent-project-dir 2>&1)"; rc=$?
 assert_rc "$rc" 2 "codex refuses (exit 2) when neither CODEX_HOME nor HOME is set"
 assert_file_contains <(printf '%s\n' "$out") "--skill-dir" \
   "and the refusal names --skill-dir"
 # Control: an explicit --skill-dir must NOT be refused — a guard that ignores the
-# flag it recommends would be worse than the crash it replaced.
-out="$(env -u HOME bash "$CODEX" --skill-dir /nonexistent-skill-dir --project . 2>&1)"
+# flag it recommends would be worse than the crash it replaced. Reaching the
+# NEXT check is the proof that it got past this one.
+out="$(env -u HOME bash "$CODEX" --skill-dir /nonexistent-skill-dir --project /nonexistent-project-dir 2>&1)"
 assert_file_lacks <(printf '%s\n' "$out") "nowhere to look for the skill" \
   "an explicit --skill-dir is accepted rather than refused by the same guard"
+assert_file_contains <(printf '%s\n' "$out") "not a directory" \
+  "and the run stops at the next check instead, never reaching a session"
 
 report "driver-help.test.sh"
