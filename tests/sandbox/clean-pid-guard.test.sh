@@ -221,6 +221,13 @@ run_clean_isolated "$REPO" "$OUT" "$victim7"
 PATH="$OLD_PATH7"; export PATH; unset LOOP_TESTING_PROCFS
 assert_file_contains "$OUT/clean.out" "could not walk its own ancestry" \
   "clean says why it skipped the .pids stage instead of signalling blind"
+# The exit code is the half a caller reading only `$?` ever sees, and it was 0 —
+# a run that left services alive reporting a completed teardown. "Ran but
+# stopped short" is exit 4, the same code the worktree case already uses.
+assert_file_contains "$OUT/rc.txt" "rc=4" \
+  "and it exits 4, not 0 — a skipped stage is not a finished run"
+assert_file_contains "$OUT/clean.out" "clean incomplete" \
+  "and the closing line names the stage rather than saying 'done.' over it"
 # Fail-closed means the recorded PID survives. That is the deliberate cost: this
 # run cannot prove it is not one of its own ancestors, and stopping the teardown
 # before the worktree is removed is the worse outcome.

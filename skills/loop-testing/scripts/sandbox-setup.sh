@@ -389,7 +389,7 @@ wt_gitdir_of() {
 #   foreign  something else is standing there
 #   unknown  the question could not be answered — never a licence to delete
 wt_ownership() {
-  local p="$1" want="$2" gd got list nl   # $3 (recorded branch) is no longer consulted
+  local p="$1" want="$2" gd got list nl _gl   # $3 (recorded branch) is no longer consulted
   # Builtins only from here down. The first version parsed `git worktree list`
   # with awk, so a missing awk read as "not ours"; swapping awk for `cat` only
   # moved that hole. Any external command on this path can fail, and a failed
@@ -422,7 +422,33 @@ wt_ownership() {
       # `.git` as a DIRECTORY, and that one really is absent as far as this
       # sandbox is concerned — `-e` would manufacture a permanent exit 4 over a
       # user's own repository.
-      if [ -f "$p/.git" ]; then printf 'unknown'; else printf 'absent'; fi
+      # Three states, not two. `-f` false can mean "no worktree here" or "this
+      # process cannot look". An unreadable admin dir alone is not enough to get
+      # here — git still LISTS an inaccessible worktree — but an unreadable admin
+      # dir together with an unsearchable PARENT is, and that pair has one
+      # plausible cause: a sandbox created by another account on a shared box,
+      # which is the scenario the finding names. `-x` on the parent is the "can I
+      # look at all" test, and `${p%/*}` keeps this function builtins-only as its
+      # header requires.
+      #
+      # A `.git` FILE is not by itself a linked worktree: `git init
+      # --separate-git-dir`, a submodule checkout and a plain file of that name
+      # all have one. Only a linked worktree of THIS repo points into
+      # `$TOP/.git/worktrees/`, so that is what makes it ours — without the
+      # check, a user's own --separate-git-dir repo parked at the freed path
+      # reads as `unknown` and earns a permanent exit 4, with a diagnosis
+      # ("the registry could not be read") that is false: it read fine.
+      if [ -f "$p/.git" ]; then
+        _gl=""
+        IFS= read -r _gl < "$p/.git" 2>/dev/null
+        case "$_gl" in
+          "gitdir: $TOP/.git/worktrees/"*) printf 'unknown'; return ;;
+          "") printf 'unknown'; return ;;   # present but unreadable — cannot tell
+        esac
+        printf 'absent'; return             # someone else's .git file
+      fi
+      if [ -e "$p" ]; then printf 'absent'; return; fi
+      if [ -x "${p%/*}" ]; then printf 'absent'; else printf 'unknown'; fi
       return ;;
   esac
   # Registered, but the directory is gone. This is the one case where ownership

@@ -176,7 +176,11 @@ pid_is_gone() { # pid
   fi
   if command -v ps >/dev/null 2>&1; then
     if ps -p "$1" >/dev/null 2>&1; then return 1; fi
-    if ps -p "$$" >/dev/null 2>&1; then return 0; fi   # ps answered about us, so it works
+    # PID 1, not `$$`: the canary has to test whether this ps can see OTHER
+    # accounts' processes, which is the situation the orphan's owner is in. Our
+    # own process stays visible under every such restriction, so `ps -p $$`
+    # succeeds precisely when the probe is blind.
+    if ps -p 1 >/dev/null 2>&1; then return 0; fi
     return 1
   fi
   return 1   # no probe at all
@@ -221,7 +225,14 @@ do_install() {
     # `mv "$DEST" "$DEST.bak"` and then `mv "$staging" "$DEST"`, so a reap landing
     # between them makes the second mv fail under `set -euo pipefail` and leaves
     # that install with its skill directory GONE and only the .bak beside it.
-    pid_is_gone "$opid" || continue
+    if ! pid_is_gone "$opid"; then
+      # Say so. Skipping silently means that on a host where the probe cannot
+      # answer, full copies of the skill tree accumulate with no diagnostic
+      # anywhere — including under --dry-run, where a reader is specifically
+      # looking for what this run would touch.
+      action "keeping $orphan (its owner pid $opid could not be confirmed dead — a live parallel install would lose its skill dir if this were wrong)"
+      continue
+    fi
     case "$orphan" in
       */"$SKILL_NAME".staging.*)
         if [ "$DRY_RUN" -eq 1 ]; then action "rm -rf $orphan (stale staging orphan)"

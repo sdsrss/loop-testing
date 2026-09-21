@@ -43,16 +43,39 @@ hasnt() { if flat "$1" | grep -qF -- "$2"; then fail "$3 (unexpected '$2' in ${1
 
 # Self-test for the `--` above, because nothing else in this suite would notice
 # if it were removed: today every needle here happens to start with a letter, so
-# the bug is latent and a latent bug in a NEGATIVE assertion is invisible by
-# construction — it reports absent, which is what the caller expected to hear.
-_ig_probe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-igprobe.XXXXXX")
-printf 'alpha --target beta\n' > "$_ig_probe"
-if flat "$_ig_probe" | grep -qF -- "--target"; then
-  pass "helper self-test: a dash-leading needle is matched, not consumed as a grep option"
+# the bug is latent, and a latent bug in a NEGATIVE assertion is invisible by
+# construction — it reports "absent", which is what the caller expected to hear.
+#
+# It has to call has()/hasnt() themselves. An earlier version of this self-test
+# re-implemented their grep call inline, which tested grep and left the helpers
+# completely unguarded — the exact shape of "an assertion that cannot fail for
+# the reason it names" that this suite exists to prevent. pass/fail are
+# overridden inside a command substitution so the real helpers can be run without
+# their verdicts reaching the suite tally.
+_ig_verdict() { # file needle helper -> the verdict that helper reached
+  ( pass() { printf 'PASS'; }; fail() { printf 'FAIL'; }; "$3" "$1" "$2" "self-test" )
+}
+_ig_probe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-igprobe.XXXXXX") || _ig_probe=""
+if [ -z "$_ig_probe" ]; then
+  fail "helper self-test: could not create its probe file, so the helpers are unguarded"
 else
-  fail "helper self-test: a dash-leading needle was consumed as a grep option — hasnt would report a present string as absent AND count it as a pass"
+  printf 'alpha --target beta\n' > "$_ig_probe"
+  # The needle IS in the file, so hasnt() must reach fail() and has() must reach
+  # pass(). Without `--`, grep consumes "--target" as an option and exits 2;
+  # "not zero" is not "found", so hasnt() would reach pass() instead — reporting
+  # a present string as absent and counting it as a pass.
+  if [ "$(_ig_verdict "$_ig_probe" "--target" hasnt)" = "FAIL" ]; then
+    pass "helper self-test: hasnt() sees a present dash-leading needle"
+  else
+    fail "helper self-test: hasnt() read a present '--target' as absent and would have counted it a pass"
+  fi
+  if [ "$(_ig_verdict "$_ig_probe" "--target" has)" = "PASS" ]; then
+    pass "helper self-test: has() sees a present dash-leading needle"
+  else
+    fail "helper self-test: has() read a present '--target' as missing"
+  fi
+  rm -f "$_ig_probe"
 fi
-rm -f "$_ig_probe"
 
 [ -f "$ROUND0" ] && pass "references/round-0.md exists" || { fail "round-0.md missing"; exit 1; }
 [ -f "$SETUP" ]  && pass "sandbox-setup.sh exists"      || { fail "sandbox-setup.sh missing"; exit 1; }

@@ -139,8 +139,13 @@ else fail "bak-guard: staging dir residue remains"; fi
 # account fails with EPERM. No privileges needed to build the exact case.
 sb6="$(make_sandbox)"
 trap 'chmod u+w "$sb2" 2>/dev/null; rm -rf "$sandbox" "$sb2" "$sb3" "$shim" "$sb4" "$sb5" "$sb6"' EXIT
-if [ "$(id -u 2>/dev/null)" = "0" ]; then
-  echo "  note: running as root — 'kill -0 1' succeeds, so this case cannot reach the EPERM path; skipped"
+# Guard on the condition the case actually needs, not on uid. They differ where
+# it matters: in a container whose PID 1 runs as the same non-root uid as the
+# test, `kill -0 1` succeeds, `pid_is_gone` returns at its first line, and both
+# assertions below pass identically against the UNFIXED installer — a green that
+# proves nothing, in the one case written to prove something.
+if kill -0 1 2>/dev/null; then
+  echo "  note: 'kill -0 1' succeeds here, so this case cannot reach the EPERM path; skipped"
 else
   mkdir -p "$sb6/loop-testing.staging.1"
   echo "someone else's in-flight install" > "$sb6/loop-testing.staging.1/keepme.txt"

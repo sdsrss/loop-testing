@@ -10,24 +10,29 @@ set -u
 # forward reference that, under `set -u`, aborts the whole `rm -rf` during word
 # expansion if an exit lands in that window.
 #
-# Preventive, not a measured leak: injecting an exit into that window here left
-# no fixtures behind (the exit status does become 1, which is the trap failing),
-# so something else is clearing them. The same construct in
-# tests/sandbox/purge.test.sh IS a live leak — 11 workspaces against 1 for the
-# control — and that one is audit T-10. This is the second and last site of the
-# construct in the tree; it is converted so the class is gone rather than the
-# instance that happened to bite.
+# Measured, not preventive: injecting `exit 7` into that window on the
+# pre-conversion file leaves 10 fixture directories behind — every workspace the
+# file had made — exactly like tests/sandbox/purge.test.sh, which leaks 11 and is
+# the one audit T-10 names.
 #
-# Newline-delimited rather than space-split: the space-split accumulator some
-# suites use is not safe for a $TMPDIR containing a space.
-WS_ALL=""
-track_ws() { WS_ALL="${WS_ALL}$1
-"; }
+# An earlier version of this comment said the opposite, on the strength of a
+# probe that ran the suite from outside its own directory, where `dirname $0`
+# resolves neither lib.sh nor $STOP and the run bears no relation to a real one.
+# That probe returned rc=1 for a file with `exit 7` injected at the top — the
+# exit code and the injection contradicted each other, which is the point at
+# which a measurement is void. It got an explanation instead, and a "0 leaked"
+# that nothing supported went into a comment and a commit message. A probe that
+# cannot answer is not an answer; that is the whole subject of this branch.
+#
+# An array, not a delimited string — see the note in tests/sandbox/purge.test.sh.
+# A newline-delimited string is safe for spaces and globs and still splits a
+# $TMPDIR containing a newline into two arguments, the first of which is an
+# absolute path that may exist. bash 3.2 under `set -u`: `${#A[@]}` on an empty
+# array is safe, `"${A[@]}"` is not, so the count test must short-circuit first.
+WS_ALL=()
+track_ws() { WS_ALL+=("$1"); }
 cleanup_all() {
-  [ -n "$WS_ALL" ] || return 0
-  local IFS='
-'
-  rm -rf -- $WS_ALL
+  if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi
 }
 trap cleanup_all EXIT
 

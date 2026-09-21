@@ -26,8 +26,12 @@ they are the part a reader of 0.14.0 acted on.
   entry whose admin dir is unreadable, which is the trigger the audit named, so
   the omission still came out as "already gone": `--purge` deleted the baseline
   tag, the branch, the evidence dir and the ownership marker over a worktree
-  still standing on disk, and closed at exit 0 — the success code. Now closed by
-  testing for the checkout's own `.git` file, which survives both failure modes.
+  still standing on disk, and closed at exit 0 — the success code. Now closed for
+  the worktree, the branch, the evidence dir and the marker, by testing for the
+  checkout's own `.git` file, which survives both failure modes. The baseline tag
+  is still deleted: it is identified by its recorded SHA rather than by name, and
+  README.md already documents it as removed before the branch decision — the
+  `BASELINE_HEAD` field in the kept marker is the anchor that replaces it.
 - **S-06, clean signalling its own ancestors.** Partly closed, and the note did
   not say "partly". The guard covers this process and its parent unconditionally,
   and ancestors above that only when `ps` can answer — the loop could not tell
@@ -39,7 +43,9 @@ they are the part a reader of 0.14.0 acted on.
 - **T-10, the leaking test fixture.** The commit titled "audit T-10" changed a
   different file, for a different defect. The file the finding names was never
   touched and still leaked every workspace it had made whenever it exited early
-  — measured at 11 against 1 for the control. Now fixed where the finding is.
+  — 11 of them, measured by injecting an early exit into the window, against 0
+  after the fix. `tests/hooks/stop-gate.test.sh` turned out to hold the same
+  construct and to leak 10 the same way; both are fixed here.
   (The audit report's own line numbers for T-10 are stale, which is the likely
   reason the fix went elsewhere; that report has been corrected too.)
 
@@ -58,12 +64,13 @@ not shifts but changes of meaning:
 A parser reading "§7 = 红线声明" now reads 验证清单, and "§8 = 残余风险" now
 reads the red-line declaration. Nothing else about the format changed.
 
-**"Both were verified by injecting the exact defects they exist for"** was true
-when written and outgrew itself two commits later. The two runner gates were
-injection-tested when they landed; the commit that widened their pattern to two
-more fixture prefixes re-verified with a full green run instead — and a
-permanently dead gate produces exactly that. The gates do work; the claim
-covered more than the evidence did.
+**"Both were verified by injecting the exact defects they exist for"** was
+written by the same commit that widened the gate, not outgrown later. `69f3a7c`
+injection-tested the gate it landed. Eight commits afterwards `23f267d` widened
+the pattern to two more fixture prefixes, verified with a full green run — which
+a permanently dead gate also produces — and published that sentence, covering
+both halves, in the same diff. The gates do work; the sentence covered more than
+its evidence from the day it was written.
 
 ### Fixes
 
@@ -81,6 +88,9 @@ covered more than the evidence did.
 - The refusal over a worktree this run cannot identify no longer hands you
   `git worktree remove --force`. "If it is the sandbox's" reads as a yes exactly
   when the probe failed, which is when the worktree usually IS the sandbox's.
+  The wording dates from 0.10.0 and was never a 0.14.0 regression; what 0.14.0
+  changed is how often it fires, by adding a new way to reach the `unknown`
+  verdict. The `foreign` arm keeps the `--force` advice, which is correct there.
 - A parallel install's staging directory is no longer reaped when its owner is
   alive but unsignalable. The cost was not the discarded copy: a reap landing
   between the victim's two `mv`s left that install with its skill directory gone
