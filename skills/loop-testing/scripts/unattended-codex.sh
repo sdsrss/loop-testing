@@ -62,7 +62,15 @@ MAX_SESSIONS=15
 MAX_MINUTES=90
 SESSION_MINUTES=40
 CODEX_BIN="codex"
-SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/loop-testing"
+# `${CODEX_HOME:-$HOME/.codex}` reads as guarded and is not: the `:-` protects
+# the OUTER name, while `$HOME` inside the replacement text is expanded
+# unguarded exactly when CODEX_HOME is unset — the condition the default exists
+# to handle. Under `set -u` above, an unset HOME kills the driver here, at line
+# one of its configuration, before it can reach any of the teardown paths that
+# were hardened for this. Same shape as the two `"$HOME/…"` sites already fixed,
+# and invisible to the sweep that found them because the `$HOME` is mid-string
+# after a `:-` rather than behind a quote.
+SKILL_DIR="${CODEX_HOME:-${HOME:-}/.codex}/skills/loop-testing"
 PROTECT=1
 NO_WATCHDOG=0
 
@@ -84,6 +92,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# After arg parsing, so an explicit --skill-dir is the answer rather than a flag
+# the refusal ignores. With neither CODEX_HOME nor HOME set, SKILL_DIR above
+# resolved to a bare "/.codex/…" — a real path that is simply never the skill, so
+# the run would fail much later with a message about the wrong thing. Mirrors
+# install-codex.sh's own refusal, which names the two flags that work.
+if [ -z "${CODEX_HOME:-}" ] && [ -z "${HOME:-}" ] && [ "$SKILL_DIR" = "/.codex/skills/loop-testing" ]; then
+  die "CODEX_HOME is not set and HOME is empty, so there is nowhere to look for the skill. Pass --skill-dir <dir>, or set CODEX_HOME."
+fi
 [ -n "$PROJECT" ] || die "--project <dir> is required"
 [ -d "$PROJECT" ] || die "--project is not a directory: $PROJECT"
 # Absolutize (audit D-02; unattended-loop.sh already did). The path is used

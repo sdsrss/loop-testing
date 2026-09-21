@@ -36,4 +36,37 @@ for d in "$DRIVER" "$CODEX"; do
     "$name --help includes the full exit-5 explanation"
 done
 
+# --- an unset HOME must not kill either driver before it can say anything -----
+# `SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/…"` reads as guarded and is not: the
+# `:-` protects the OUTER name, while `$HOME` inside the replacement text is
+# expanded unguarded exactly when CODEX_HOME is unset — which is the condition
+# the default exists to handle. Under `set -u` that killed the codex driver at
+# line one of its configuration, before it could reach any of the teardown paths
+# hardened for an unset HOME, and before --help.
+#
+# It is the last sibling of the two `"$HOME/…"` sites already fixed, and it was
+# invisible to the sweep that found them because its `$HOME` sits mid-string
+# after a `:-` rather than behind a quote. The sweep that does find this shape is
+#   grep -rnE '\$\{[A-Za-z_][A-Za-z0-9_]*:[-=+?]\$' --include='*.sh'
+# which returns 7 lines tree-wide, six of them the safe same-name accumulator
+# idiom `${x:+$x, }`.
+for pair in "loop:$DRIVER" "codex:$CODEX"; do
+  name="${pair%%:*}"; path="${pair#*:}"
+  out="$(env -u HOME bash "$path" --help 2>&1)"; rc=$?
+  assert_rc "$rc" 0 "$name --help still works with HOME unset"
+  assert_file_lacks <(printf '%s\n' "$out") "unbound variable" \
+    "$name --help does not die on an unbound HOME"
+done
+# And the refusal, when there is genuinely nowhere to look, names the flags that
+# work rather than failing later about something else.
+out="$(env -u HOME bash "$CODEX" --project . 2>&1)"; rc=$?
+assert_rc "$rc" 2 "codex refuses (exit 2) when neither CODEX_HOME nor HOME is set"
+assert_file_contains <(printf '%s\n' "$out") "--skill-dir" \
+  "and the refusal names --skill-dir"
+# Control: an explicit --skill-dir must NOT be refused — a guard that ignores the
+# flag it recommends would be worse than the crash it replaced.
+out="$(env -u HOME bash "$CODEX" --skill-dir /nonexistent-skill-dir --project . 2>&1)"
+assert_file_lacks <(printf '%s\n' "$out") "nowhere to look for the skill" \
+  "an explicit --skill-dir is accepted rather than refused by the same guard"
+
 report "driver-help.test.sh"
