@@ -1,17 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 — 2026-09-21
+
+### What runs after something has already gone wrong
+
+Thirteen findings from the 2026-09-20 audit, in two halves. The first is the code
+that runs once a run is already in trouble: a teardown in an environment that is
+not a login shell, a setup that refuses, a second driver meeting a lock. The
+second is the test suite that was green across every one of them — five of its
+own findings, plus three more of the same class that the audit had not seen.
+
+No file format changed, no flag was removed, and nothing changes about a run that
+succeeds. **Upgrading from 0.13.0** needs no action; the whole release reverts by
+pinning the previous version — `/plugin install loop-testing@loop-testing
+--version 0.13.0` for Claude Code, or re-running `install/install-codex.sh` from
+a `v0.13.0` checkout for Codex.
+
+Suite: 40 suites / 1548 assertions → 43 / 1657, both measured with
+`bash tests/run-all.sh | grep '^TOTAL:'` on a clean tree, not recalled.
+
+**This release has not had an independent review round.** The two before it each
+found defects inside green, self-tested fixes — 18 in ten of them at v0.9.0, and
+at v0.12.0 a CRITICAL introduced by the repair of a previous round. That history
+is why the note is here rather than left implicit.
 
 ### Audit batch B — the teardown, the refusals, and a lock that could be stolen
 
-Seven findings from the 2026-09-20 audit, and what they have in common is where
-they live: the paths that run when something has already gone wrong. A cleanup
-in an environment that is not a login shell; a setup that refuses; a second
-driver meeting a lock. None of them is on the happy path, which is why the suite
-was green across all seven. No flag, format or default changed.
-
-Suite: 40 suites / 1548 assertions → 43 / 1635, both measured with
-`bash tests/run-all.sh | grep '^TOTAL:'`, not recalled.
+Six code findings, and what they have in common is where they live: the paths
+that run when something has already gone wrong. None is on the happy path, which
+is why the suite was green across all six. Two documentation findings from the
+same batch follow them.
 
 **What changes for you.**
 
@@ -62,9 +80,6 @@ repository — the sandbox is a worktree cut from it, `sandbox-setup.sh` refuses
 with exit 3 without one, and the isolation gate then stops the run as `BLOCKED`;
 previously that refusal was where you found out (K-13).
 
-Each fix is one commit, with the finding ID, what was measured before it, and
-the mutation check that shows the new assertions can fail.
-
 ### The test suite, and what its green was not saying
 
 The audit's P3 list included five findings about the tests themselves. They are
@@ -109,8 +124,8 @@ for the ISSUE-to-commit table; it is in §3. The test for it reads the number of
 the template rather than hardcoding it, so renumbering fails the suite instead of
 quietly invalidating the instructions.
 
-Suite across both halves of the batch: 40 suites / 1548 assertions → 43 / 1657,
-0 failed.
+Every fix in this release is one commit carrying its finding ID, the numbers
+measured before it, and the mutation check showing the new assertions can fail.
 
 ## 0.13.0 — 2026-09-20
 
