@@ -24,7 +24,8 @@ mktags() { local name="$1"; shift; local f="$WS/$name.tags.json" first=1
   { printf '['; for v in "$@"; do [ "$first" = 1 ] || printf ','; printf '{"name":"v%s"}' "$v"; first=0; done; printf ']'; } > "$f"
   echo "$f"; }
 
-assert_has()   { if printf '%s' "$1" | grep -qF "$2"; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — output lacked [$2]; got [$1]" >&2; fi; }
+# `--`: a needle starting with `-` would otherwise be read as a grep option.
+assert_has()   { if printf '%s' "$1" | grep -qF -- "$2"; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — output lacked [$2]; got [$1]" >&2; fi; }
 assert_empty() { if [ -z "$1" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $2 — expected no output, got [$1]" >&2; fi; }
 
 # 1. Newer tag exists -> notify (exercises the real curl + grep + sort -V pipeline
