@@ -365,4 +365,65 @@ done
 read -r c28 _ < "$WS28/$CF"
 assert_eq "1" "$c28" "a set that differs past the prefix still counts as progress"
 
+# DD. K-14: the monorepo topology. sandbox-setup.sh creates docs/looptesting/ at
+#     the GIT TOPLEVEL; this hook anchors at $CLAUDE_PROJECT_DIR, which is where
+#     the SESSION was started. Those coincide only when the session started at
+#     the repo root. Started from a subpackage, the gate found no sentinel beside
+#     the package and read that as "no armed loop" — the mechanism layer off for
+#     the whole run, and silent, because an allowed stop is also exactly what a
+#     project that never ran the loop looks like.
+MONO=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-mono.XXXXXX"); track_ws "$MONO"
+git init -q "$MONO" >/dev/null 2>&1
+mkdir -p "$MONO/pkgs/app" "$MONO/docs/looptesting/runs"
+printf '# ISSUES\n' > "$MONO/docs/looptesting/ISSUES.md"
+arm "$MONO"; write_state "$MONO" RUNNING 1
+# Fixture self-probe. Both halves have to hold or the case proves nothing: the
+# subpackage must carry no evidence dir of its own, and git must actually report
+# the toplevel from in there (no git, no walk-up, and the case would "pass" for
+# the wrong reason if it were asserting the other direction).
+if [ ! -d "$MONO/pkgs/app/docs/looptesting" ] \
+   && [ -n "$( cd "$MONO/pkgs/app" && git rev-parse --show-toplevel 2>/dev/null )" ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: fixture: subpackage must be evidence-free and inside a git repo" >&2
+fi
+( cd "$MONO/pkgs/app" && printf '{"stop_hook_active": false}' | CLAUDE_PROJECT_DIR="$MONO/pkgs/app" bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 2 "monorepo subpackage: gate reaches the toplevel evidence dir and still blocks (K-14)"
+
+# EE. Control for DD: same topology, toplevel evidence dir present but NOT armed.
+#     The walk-up must FIND a gate, never invent one — a repo that is not running
+#     the loop has to keep exiting 0 from every subdirectory in it.
+MONO2=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-mono.XXXXXX"); track_ws "$MONO2"
+git init -q "$MONO2" >/dev/null 2>&1
+mkdir -p "$MONO2/pkgs/app" "$MONO2/docs/looptesting/runs"
+write_state "$MONO2" RUNNING 1          # RUNNING but no .active: never armed
+( cd "$MONO2/pkgs/app" && printf '{"stop_hook_active": false}' | CLAUDE_PROJECT_DIR="$MONO2/pkgs/app" bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 0 "monorepo subpackage, toplevel not armed -> still allows (no gate invented)"
+
+# FF. Control for DD: the subpackage runs its OWN loop. The nearer evidence dir
+#     governs and the walk-up must not reach past it. Discriminating on purpose:
+#     the subpackage's own dir is DISARMED while the root's is armed + RUNNING,
+#     so an unconditional walk-up would block here and the narrow one allows.
+MONO3=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-mono.XXXXXX"); track_ws "$MONO3"
+git init -q "$MONO3" >/dev/null 2>&1
+mkdir -p "$MONO3/pkgs/app/docs/looptesting/runs" "$MONO3/docs/looptesting/runs"
+arm "$MONO3"; write_state "$MONO3" RUNNING 1
+write_state "$MONO3/pkgs/app" CONVERGED 4
+( cd "$MONO3/pkgs/app" && printf '{"stop_hook_active": false}' | CLAUDE_PROJECT_DIR="$MONO3/pkgs/app" bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 0 "subpackage with its own evidence dir keeps it (no reach past the nearer one)"
+
+# GG. Control for DD: no git on PATH. The walk-up is guarded by `command -v git`,
+#     and a hook that errors is a hook that fails open on the platform's timeout.
+MONO4=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-mono.XXXXXX"); track_ws "$MONO4"
+BING=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-nogit.XXXXXX"); track_ws "$BING"
+for b in bash grep sed head tr cat rm date stat timeout mktemp printf jq; do
+  p=$(command -v "$b" 2>/dev/null) && ln -sf "$p" "$BING/$b"
+done
+git init -q "$MONO4" >/dev/null 2>&1
+mkdir -p "$MONO4/pkgs/app" "$MONO4/docs/looptesting/runs"
+arm "$MONO4"; write_state "$MONO4" RUNNING 1
+gerr=$( cd "$MONO4/pkgs/app" && printf '{"stop_hook_active": false}' | CLAUDE_PROJECT_DIR="$MONO4/pkgs/app" env PATH="$BING" bash "$STOP" 2>&1 >/dev/null ); grc=$?
+assert_rc "$grc" 0 "no git on PATH: the walk-up is skipped, not attempted (legacy allow)"
+assert_eq "" "$gerr" "no git on PATH produces no error output"
+
 report "stop-gate.test.sh"

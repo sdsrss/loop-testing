@@ -119,6 +119,20 @@ if [ -n "$BASE" ] && [ -d "$BASE" ]; then
   cd "$BASE" 2>/dev/null || true   # unresolvable -> stay in cwd (legacy)
 fi
 
+# --- and up to the git toplevel when the anchor is a subpackage (audit K-14) ---
+# Kept identical to stop-gate.sh; see the long note there. Here the cost lands on
+# the Bash leg and in the other direction: the ledger OPERAND is recognised by
+# path suffix, so it is found from anywhere, while ARMED and the replay lookup
+# below are cwd-relative. From a subpackage that meant a VERIFIED write with a
+# perfectly good replay at the toplevel was DENIED — H-01's direction, reached
+# through the anchor rather than through the lexer.
+if [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
+  GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$GTOP" ] && [ -d "$GTOP/docs/looptesting" ]; then
+    cd "$GTOP" 2>/dev/null || true
+  fi
+fi
+
 TOOL=""; FILE=""; NEWSTR=""; CONTENT=""; CMD=""; OLDSTR=""
 if command -v jq >/dev/null 2>&1; then
   TOOL=$(printf '%s' "$INPUT"    | jq -r '.tool_name // empty'                 2>/dev/null) || TOOL=""

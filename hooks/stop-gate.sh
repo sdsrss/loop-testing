@@ -62,6 +62,27 @@ if [ -n "$BASE" ] && [ -d "$BASE" ]; then
   cd "$BASE" 2>/dev/null || true   # unresolvable -> stay in cwd (legacy)
 fi
 
+# --- and up to the git toplevel when the anchor is a subpackage (audit K-14) ---
+# That anchor is where the SESSION started. The evidence directory is created at
+# the GIT TOPLEVEL — sandbox-setup.sh resolves it with `git rev-parse
+# --show-toplevel` — and in a monorepo the two coincide only when the session was
+# started at the repo root. Started from a subpackage, this gate looked for
+# docs/looptesting/ beside the package, found nothing, and took that for "no
+# armed loop": the mechanism layer off for the whole run, and silent, because an
+# allowed stop is also exactly what a project that never ran the loop looks like.
+#
+# Deliberately narrow. It walks up only when there is no evidence directory HERE
+# and the toplevel actually has one, so a repo that is not running the loop still
+# exits 0 from every subdirectory in it, and a subpackage running its own loop
+# keeps its own. Guarded on git being present: a hook that errors is a hook the
+# platform's timeout resolves as ALLOW. Kept identical to ledger-gate.sh.
+if [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
+  GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$GTOP" ] && [ -d "$GTOP/docs/looptesting" ]; then
+    cd "$GTOP" 2>/dev/null || true
+  fi
+fi
+
 LT="docs/looptesting"
 ACTIVE="$LT/.active"
 STATE="$LT/STATE.md"
