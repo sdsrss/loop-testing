@@ -110,7 +110,8 @@ block() { # file start-regex -> the bullet block from the matching '- ' line to 
   ' "$1"
 }
 block_has() { # file start-regex needle label
-  if block "$1" "$2" | tr '[:space:]' ' ' | tr -s ' ' | grep -qF "$3"; then pass "$4"
+  # `--`: a needle starting with `-` would otherwise be read as a grep option.
+  if block "$1" "$2" | tr '[:space:]' ' ' | tr -s ' ' | grep -qF -- "$3"; then pass "$4"
   else fail "$4 (block '$2' in ${1##*/} lacks '$3')"; fi
 }
 block_has "$PROMPT" '^- \*\*.*status' 'do NOT start a run' "prompt: no-run guard sits INSIDE the status block"

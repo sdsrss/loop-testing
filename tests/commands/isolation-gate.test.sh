@@ -31,8 +31,28 @@ pass() { printf '  ok: %s\n' "$1"; _pass=$((_pass + 1)); }
 fail() { printf '  FAIL: %s\n' "$1"; _fails=1; _failn=$((_failn + 1)); }
 # Markdown wraps phrases across lines: flatten whitespace before matching.
 flat() { tr '[:space:]' ' ' < "$1" | tr -s ' '; }
-has()  { if flat "$1" | grep -qF "$2"; then pass "$3"; else fail "$3 (missing '$2' in ${1##*/})"; fi; }
-hasnt() { if flat "$1" | grep -qF "$2"; then fail "$3 (unexpected '$2' in ${1##*/})"; else pass "$3"; fi; }
+# `--` on both. Without it a needle beginning with `-` is consumed as a grep
+# option and grep exits 2 — and "not zero" is not "found", so `hasnt` takes its
+# else branch and calls pass(). The string is present, the assertion says it is
+# absent, and the tally counts a pass; the "unrecognized option" text does not
+# match the runner's command-not-found gate either, so nothing downstream sees
+# it. `has` fails loudly in the same situation — wrong reason, safe direction —
+# which is why only the negative form is silently wrong.
+has()  { if flat "$1" | grep -qF -- "$2"; then pass "$3"; else fail "$3 (missing '$2' in ${1##*/})"; fi; }
+hasnt() { if flat "$1" | grep -qF -- "$2"; then fail "$3 (unexpected '$2' in ${1##*/})"; else pass "$3"; fi; }
+
+# Self-test for the `--` above, because nothing else in this suite would notice
+# if it were removed: today every needle here happens to start with a letter, so
+# the bug is latent and a latent bug in a NEGATIVE assertion is invisible by
+# construction — it reports absent, which is what the caller expected to hear.
+_ig_probe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-igprobe.XXXXXX")
+printf 'alpha --target beta\n' > "$_ig_probe"
+if flat "$_ig_probe" | grep -qF -- "--target"; then
+  pass "helper self-test: a dash-leading needle is matched, not consumed as a grep option"
+else
+  fail "helper self-test: a dash-leading needle was consumed as a grep option — hasnt would report a present string as absent AND count it as a pass"
+fi
+rm -f "$_ig_probe"
 
 [ -f "$ROUND0" ] && pass "references/round-0.md exists" || { fail "round-0.md missing"; exit 1; }
 [ -f "$SETUP" ]  && pass "sandbox-setup.sh exists"      || { fail "sandbox-setup.sh missing"; exit 1; }
