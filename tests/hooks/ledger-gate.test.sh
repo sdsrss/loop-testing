@@ -614,12 +614,16 @@ run_ledger "$WS20" "$json"; assert_rc $? 0 "sort --output=ELSEWHERE with the led
 json='{"tool_name":"Bash","tool_input":{"command":"uniq docs/looptesting/ISSUES.md /tmp/u.md && grep -c VERIFIED /tmp/u.md"}}'
 run_ledger "$WS20" "$json"; assert_rc $? 0 "uniq LEDGER ELSEWHERE -> allow (ledger is the input)"
 
-# K-14: the monorepo topology, same defect as stop-gate's case DD. This gate's
-# armed-check (.active) and replay lookup (runs/) are cwd-relative too, so a
-# session started in a subpackage of a monorepo found neither and allowed every
-# write — including the one this gate exists to deny, a VERIFIED stamp with no
-# replay footprint behind it. Failing OPEN is the dangerous direction here: the
-# ledger is what every later claim in the run rests on.
+# K-14: the monorepo topology, and NOT the same defect as stop-gate's case DD —
+# this comment used to say it was, which was the hypothesis the measurement
+# retracted (review T-3). The Write/Edit leg derives its anchor from
+# `dirname "$FILE"` on an absolute path, so it is cwd-independent by
+# construction and was never affected; the first two assertions below pass on
+# the pre-fix hook and are kept as controls, not as coverage. The Bash leg is
+# the affected one, and it failed in the OPPOSITE direction to stop-gate: ARMED
+# and the replay lookup are cwd-relative, so a VERIFIED write backed by a real
+# replay at the toplevel was DENIED. Only the assertion labelled (K-14) on the
+# Bash leg discriminates.
 MONOL=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-monol.XXXXXX")
 trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL" "$WS20" "$WS21" "$WS22" "$WS23" "$NOPY" "$WS24" "$WS25" "$MONOL"' EXIT
 git init -q "$MONOL" >/dev/null 2>&1
@@ -637,12 +641,12 @@ else
 fi
 json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$MONOL")\",\"new_string\":\"### ISSUE-042 | P0 | VERIFIED | no replay behind this\"}}"
 ( cd "$MONOL/pkgs/app" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$MONOL/pkgs/app" bash "$LEDGER" ) >/dev/null 2>&1
-assert_rc $? 2 "monorepo subpackage: armed toplevel ledger still denies VERIFIED w/o footprint (K-14)"
+assert_rc $? 2 "control (Edit leg, cwd-independent): armed toplevel ledger denies VERIFIED w/o footprint"
 # Control: with the replay footprint at the toplevel it must allow again, or the
 # walk-up would have turned the gate into a blanket deny from every subdirectory.
 echo "replayed ISSUE-042: steps -> pass" > "$MONOL/docs/looptesting/runs/round-7.md"
 ( cd "$MONOL/pkgs/app" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$MONOL/pkgs/app" bash "$LEDGER" ) >/dev/null 2>&1
-assert_rc $? 0 "monorepo subpackage: the toplevel replay footprint is found too -> allow"
+assert_rc $? 0 "control (Edit leg): the toplevel replay footprint is found too -> allow"
 # The Bash leg reaches the same decision by a different route: the ledger operand
 # is recognised by path SUFFIX (cwd-independent), but the replay footprint is
 # looked up under a cwd-relative docs/looptesting/runs/. From the subpackage that

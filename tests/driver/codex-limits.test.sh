@@ -198,13 +198,20 @@ assert_file_contains "$WS16/docs/looptesting/driver.log" "exit=124" "driver.log 
 #     refusal text both read as a promise of unbounded sessions. Mirrors loop N2.
 WS16B=$(mk_proj)
 trap 'chmod -R u+w "$FAKE13" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS16B"' EXIT
-printf '#!/usr/bin/env bash\nsleep 300\n' > "$WS16B/hang-stub.sh"; chmod +x "$WS16B/hang-stub.sh"
-write_state "$WS16B" RUNNING 1
-bash "$CODEX_DRIVER" --project "$WS16B" --codex-bin "$WS16B/hang-stub.sh" --no-protect --no-watchdog \
-  --session-minutes 0 --max-sessions 5 >/dev/null 2>&1
-assert_rc $? 5 "--no-watchdog with a watchdog binary present: hung sessions still bounded (exit 5)"
-assert_file_contains "$WS16B/docs/looptesting/driver.log" "exit=124" "--no-watchdog does not disable the wall-clock kill (D-07)"
-assert_file_contains "$WS16B/docs/looptesting/driver.log" "no effect" "driver.log states the flag does not apply when a watchdog binary exists (D-07)"
+# Premise checked, not assumed — see the note on driver-limits N2 (review P-04):
+# without a watchdog binary the flag waives the refusal for real, the 300s stub
+# runs twice, and the headline rc-5 assertion passes in both worlds anyway.
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  printf '#!/usr/bin/env bash\nsleep 300\n' > "$WS16B/hang-stub.sh"; chmod +x "$WS16B/hang-stub.sh"
+  write_state "$WS16B" RUNNING 1
+  bash "$CODEX_DRIVER" --project "$WS16B" --codex-bin "$WS16B/hang-stub.sh" --no-protect --no-watchdog \
+    --session-minutes 0 --max-sessions 5 >/dev/null 2>&1
+  assert_rc $? 5 "--no-watchdog with a watchdog binary present: hung sessions still bounded (exit 5)"
+  assert_file_contains "$WS16B/docs/looptesting/driver.log" "exit=124" "--no-watchdog does not disable the wall-clock kill (D-07)"
+  assert_file_contains "$WS16B/docs/looptesting/driver.log" "no effect" "driver.log states the flag does not apply when a watchdog binary exists (D-07)"
+else
+  echo "  skip: no timeout/gtimeout on PATH — R2 is about the host that HAS one"
+fi
 
 # S. The skill-dir protection must RESTORE the original mode, not just u+w. The
 #    header promises "restored on EXIT"; protecting with `a-w` and restoring with
@@ -312,18 +319,28 @@ SHIM
     # The lock is written immediately before the protect chmod, so the driver is
     # inside the (shimmed, slow) chmod right now.
     kill -TERM "$DRV19" 2>/dev/null
-    wait_pid_gone "$DRV19" || :
-    kill -9 "$DRV19" 2>/dev/null
-    if [ -w "$FAKE19/SKILL.md" ] && [ -w "$FAKE19/scripts/a.sh" ]; then
-      PASS=$((PASS+1))
+    # `|| :` here threw the expiry away (review T-5), and the two assertions
+    # below then ran regardless: on a timeout the driver is SIGKILLed mid-cleanup
+    # and blamed for a read-only skill dir, while the idempotence assertion
+    # passes over a run in which cleanup never ran twice — or at all. That is
+    # the half of T-08 85dbb80 claims to have closed, left open one line later.
+    if wait_pid_gone "$DRV19"; then
+      kill -9 "$DRV19" 2>/dev/null
+      if [ -w "$FAKE19/SKILL.md" ] && [ -w "$FAKE19/scripts/a.sh" ]; then
+        PASS=$((PASS+1))
+      else
+        FAIL=$((FAIL+1)); echo "  FAIL: signal during the protect chmod left the skill dir read-only (restore skipped)" >&2
+      fi
+      # The signal handler exits, which fires the EXIT trap too — so cleanup runs
+      # TWICE. A second pass that re-runs the blanket `chmod -R u+w` after the
+      # read-only snapshot has been consumed silently re-grants write.
+      assert_eq "444" "$(stat -c '%a' "$FAKE19/frozen.txt" 2>/dev/null || stat -f '%Lp' "$FAKE19/frozen.txt")" \
+        "cleanup is idempotent: the second pass does not re-grant write"
     else
-      FAIL=$((FAIL+1)); echo "  FAIL: signal during the protect chmod left the skill dir read-only (restore skipped)" >&2
+      kill -9 "$DRV19" 2>/dev/null
+      FAIL=$((FAIL+1))
+      echo "  FAIL: the driver outlived $(test_wait_budget)s after SIGTERM — this run never left the protect window, so it is not evidence about the restore in either direction (audit T-08)" >&2
     fi
-    # The signal handler exits, which fires the EXIT trap too — so cleanup runs
-    # TWICE. A second pass that re-runs the blanket `chmod -R u+w` after the
-    # read-only snapshot has been consumed silently re-grants write.
-    assert_eq "444" "$(stat -c '%a' "$FAKE19/frozen.txt" 2>/dev/null || stat -f '%Lp' "$FAKE19/frozen.txt")" \
-      "cleanup is idempotent: the second pass does not re-grant write"
   else
     FAIL=$((FAIL+1))
     echo "  FAIL: no lock pid appeared within $(test_wait_budget)s — this run never reached the protect window, so it is not evidence about the restore in either direction (audit T-08)" >&2

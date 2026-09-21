@@ -20,8 +20,11 @@ branch_exists() { ( cd "$1" && git rev-parse -q --verify refs/heads/qa/loop-test
 # run of this suite left six directories in $TMPDIR (audit T-10). Registering at
 # creation cannot skip an entry, because there is no list to retype.
 #
-# Word-split on purpose, like the other suites here; mk_ws paths contain no
-# whitespace unless $TMPDIR does.
+# An ARRAY, not a delimited string (review P-09/T-11 — this comment used to say
+# "word-split on purpose", and it outlived the word-splitting by a commit). The
+# string form relied on no fixture path ever containing whitespace, which is a
+# property of $TMPDIR and not of this project: under a $TMPDIR with a space in
+# it, this suite left eight directories behind. It leaves none now.
 WS_ALL=()
 track_ws() { WS_ALL+=("$1"); }
 cleanup_all() { if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi; }

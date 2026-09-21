@@ -132,7 +132,16 @@ fi
 # (review F2). The P-05 residual is stated there too and applies here unchanged.
 LT_WALKED=0
 if [ "$BASE_OK" = 1 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
-  GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
+  # Budgeted, like the STATE grep below (review F7). This is the only subprocess
+  # the walk-up adds to a gate whose header requires every addition to be O(1) or
+  # capped: on a stale NFS mount or a hung gitdir an unbounded `git rev-parse`
+  # blocks until the platform kills the hook, and a killed Stop hook resolves as
+  # ALLOW — a fail-open path inside a fail-closed gate.
+  if command -v timeout >/dev/null 2>&1; then
+    GTOP=$(timeout 5 git rev-parse --show-toplevel 2>/dev/null)
+  else
+    GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
+  fi
   if [ -n "$GTOP" ] && [ -d "$GTOP/docs/looptesting" ]; then
     if cd "$GTOP" 2>/dev/null; then LT_WALKED=1; fi
   fi

@@ -398,6 +398,13 @@ assert_rc $? 2 "monorepo subpackage: gate reaches the toplevel evidence dir and 
 # EE. Control for DD: same topology, toplevel evidence dir present but NOT armed.
 #     The walk-up must FIND a gate, never invent one — a repo that is not running
 #     the loop has to keep exiting 0 from every subdirectory in it.
+#
+#     Stated plainly (review T-12): no single-edit mutation of the CURRENT
+#     implementation turns this red, because nothing in it treats the evidence
+#     directory's existence as arming. It is a contract statement about the
+#     boundary, not a discriminating test — kept because "the directory is here,
+#     so the loop is on" is a plausible next edit, and this is what would catch
+#     it. Do not count it as coverage of the walk-up.
 MONO2=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-mono.XXXXXX"); track_ws "$MONO2"
 git init -q "$MONO2" >/dev/null 2>&1
 mkdir -p "$MONO2/pkgs/app" "$MONO2/docs/looptesting/runs"

@@ -55,9 +55,15 @@ esac
 # handed to a driver that runs sessions under --permission-mode
 # bypassPermissions, on the assumption that argument validation always happens
 # first. The assumption is exactly what a regression would break, and if it did
-# the damage would land outside any fixture. WS3 is a throwaway project that has
-# run no sessions, so the same assumption is now an assertion instead: after two
-# usage errors aimed at it, nothing in it has started or been locked.
+# the damage would land outside any fixture. WS3 is a throwaway project: case C
+# drove it with --max-minutes 0, so it has a driver.log but has launched no
+# session, and the assumption is an assertion now rather than a premise.
+#
+# Scope, stated (review T-10): the session count below restates what :32 already
+# asserts for WS3, and both of these check the PROJECT directory only. The codex
+# driver also protects and restores a skill dir, and nothing here covers that
+# half — the reason `--project /tmp` was dangerous is broader than what is
+# pinned. Filed rather than implied.
 assert_eq "0" "$(sessions_in_log "$WS3")" "a usage error launches no session in the project it was aimed at"
 if [ -e "$WS3/docs/looptesting/.driver.lock" ]; then
   FAIL=$((FAIL+1)); echo "  FAIL: a usage error acquired the project's driver lock" >&2
@@ -181,13 +187,24 @@ assert_file_contains "$WS12/docs/looptesting/driver.log" "WARNING: no timeout/gt
 #     the flag does not apply here, and it must still kill the hung session.
 WS12B=$(mk_proj)
 trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF" "$WS12" "$WS12B"' EXIT
-printf '#!/usr/bin/env bash\nsleep 300\n' > "$WS12B/hang-stub.sh"; chmod +x "$WS12B/hang-stub.sh"
-write_state "$WS12B" RUNNING 1
-bash "$DRIVER" --project "$WS12B" --claude-bin "$WS12B/hang-stub.sh" --no-watchdog \
-  --session-minutes 0 --max-sessions 5 >/dev/null 2>&1
-assert_rc $? 5 "--no-watchdog with a watchdog binary present: hung sessions still bounded (exit 5)"
-assert_file_contains "$WS12B/docs/looptesting/driver.log" "exit=124" "--no-watchdog does not disable the wall-clock kill (D-07)"
-assert_file_contains "$WS12B/docs/looptesting/driver.log" "no effect" "driver.log states the flag does not apply when a watchdog binary exists (D-07)"
+# The premise is in the case's own name, so it is checked rather than assumed
+# (review P-04). Without either binary the flag waives the refusal for real and
+# the 300s stub runs to completion — twice — which is ~10 minutes of blocked
+# suite ending in two failures that say nothing about the driver. Worse, the
+# headline `assert_rc 5` passes in BOTH worlds, so the case would not even
+# report the right reason. Skip and count nothing, the convention case P uses
+# for setsid.
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  printf '#!/usr/bin/env bash\nsleep 300\n' > "$WS12B/hang-stub.sh"; chmod +x "$WS12B/hang-stub.sh"
+  write_state "$WS12B" RUNNING 1
+  bash "$DRIVER" --project "$WS12B" --claude-bin "$WS12B/hang-stub.sh" --no-watchdog \
+    --session-minutes 0 --max-sessions 5 >/dev/null 2>&1
+  assert_rc $? 5 "--no-watchdog with a watchdog binary present: hung sessions still bounded (exit 5)"
+  assert_file_contains "$WS12B/docs/looptesting/driver.log" "exit=124" "--no-watchdog does not disable the wall-clock kill (D-07)"
+  assert_file_contains "$WS12B/docs/looptesting/driver.log" "no effect" "driver.log states the flag does not apply when a watchdog binary exists (D-07)"
+else
+  echo "  skip: no timeout/gtimeout on PATH — N2 is about the host that HAS one"
+fi
 
 # O. Watchdog KILL path (R49): a session that HANGS is killed by the wall-clock
 #    watchdog (rc 124 recorded in driver.log), and two such fingerprint-static

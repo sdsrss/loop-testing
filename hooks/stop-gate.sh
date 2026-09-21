@@ -65,18 +65,32 @@ fi
 
 # --- and up to the git toplevel when the anchor is a subpackage (audit K-14) ---
 # That anchor is where the SESSION started. The evidence directory is created at
-# the GIT TOPLEVEL — sandbox-setup.sh resolves it with `git rev-parse
-# --show-toplevel` — and in a monorepo the two coincide only when the session was
-# started at the repo root. Started from a subpackage, this gate looked for
-# docs/looptesting/ beside the package, found nothing, and took that for "no
-# armed loop": the mechanism layer off for the whole run, and silent, because an
-# allowed stop is also exactly what a project that never ran the loop looks like.
+# the MAIN worktree's toplevel: sandbox-setup.sh STARTS from `git rev-parse
+# --show-toplevel` (:180) and then spends :183-228 undoing it, because from
+# inside a linked worktree that call returns the worktree while the marker lives
+# in the main tree. This walk-up replicates only the first half — so a session
+# anchored inside the qa worktree, the topology this skill itself creates, is
+# still not covered (review F4/F5; pre-existing, verified identical at v0.14.1,
+# filed rather than fixed here). In a monorepo the anchor and the toplevel
+# coincide only when the session was started at the repo root. Started from a
+# subpackage, this gate looked for docs/looptesting/ beside the package, found
+# nothing, and took that for "no armed loop": the mechanism layer off for the
+# whole run, and silent, because an allowed stop is also exactly what a project
+# that never ran the loop looks like.
 #
 # Deliberately narrow. It walks up only when there is no evidence directory HERE
 # and the toplevel actually has one, so a repo that is not running the loop still
 # exits 0 from every subdirectory in it, and a subpackage running its own loop
 # keeps its own. Guarded on git being present: a hook that errors is a hook the
 # platform's timeout resolves as ALLOW. Kept identical to ledger-gate.sh.
+#
+# The converse it creates, stated rather than left for someone to find (review
+# F10): every subdirectory of a repo that IS running a loop now shares that
+# loop's sentinel and .gate-count. A second session working in an unrelated
+# subpackage reaches the same counter, and on a terminal status disarms the
+# same .active. That is the price of the gate working at all in this topology;
+# the guard below narrows it to anchors that resolved, but does not remove it.
+#
 # Gated on the anchor having RESOLVED (review F3). When $BASE is empty, or names
 # something `cd` refuses, the documented fallback is "stay in cwd (legacy)" —
 # inert while resolution was cwd-relative, because the cwd then had to literally
@@ -94,7 +108,16 @@ fi
 # shape that produced H-01 in this very tree.
 LT_WALKED=0
 if [ "$BASE_OK" = 1 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
-  GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
+  # Budgeted, like the STATE grep below (review F7). This is the only subprocess
+  # the walk-up adds to a gate whose header requires every addition to be O(1) or
+  # capped: on a stale NFS mount or a hung gitdir an unbounded `git rev-parse`
+  # blocks until the platform kills the hook, and a killed Stop hook resolves as
+  # ALLOW — a fail-open path inside a fail-closed gate.
+  if command -v timeout >/dev/null 2>&1; then
+    GTOP=$(timeout 5 git rev-parse --show-toplevel 2>/dev/null)
+  else
+    GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
+  fi
   if [ -n "$GTOP" ] && [ -d "$GTOP/docs/looptesting" ]; then
     if cd "$GTOP" 2>/dev/null; then LT_WALKED=1; fi
   fi

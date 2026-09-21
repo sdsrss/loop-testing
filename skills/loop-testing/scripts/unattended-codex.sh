@@ -721,7 +721,7 @@ if [ -z "$TIMEOUT_BIN" ]; then
 elif [ "$NO_WATCHDOG" = "1" ]; then
   # Console too, not just driver.log: the misreading this guards against belongs
   # to whoever typed the flag, and they are not reading a log file yet.
-  nw_note="NOTE: --no-watchdog has no effect on this host — $TIMEOUT_BIN is on PATH, so every session is still bounded by --session-minutes=$SESSION_MINUTES. The flag only waives the refusal to start when NEITHER timeout NOR gtimeout exists; there is no way to run a session unbounded on a host that has one."
+  nw_note="NOTE: --no-watchdog has no effect on this host — $TIMEOUT_BIN is on PATH, so every session is still bounded — by --session-minutes=$SESSION_MINUTES, or by whatever is left of --max-minutes, whichever is smaller, and never below one second. The flag only waives the refusal to start when NEITHER timeout NOR gtimeout exists; there is no way to run a session unbounded on a host that has one."
   log "$nw_note"
   printf '%s\n' "unattended-codex: $nw_note" >&2
 fi
