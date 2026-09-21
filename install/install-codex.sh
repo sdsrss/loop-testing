@@ -67,6 +67,15 @@ while [ $# -gt 0 ]; do
 done
 
 # ---- resolve target ----
+# The default destination is under $HOME, and this script runs with `set -u`, so
+# a missing HOME used to end it on `HOME: unbound variable` — a bash diagnostic
+# naming a shell variable, from cron, a systemd unit without `User=`, `env -i` or
+# a container entrypoint. Refuse here instead, naming both routes that work. This
+# is the same environment the sandbox teardown broke in (audit S-05).
+if [ -z "$TARGET" ] && [ -z "${CODEX_HOME:-}" ] && [ -z "${HOME:-}" ]; then
+  echo "error: no --target given, CODEX_HOME is not set, and HOME is empty — there is nowhere to install. Pass --target <skills dir>, or set CODEX_HOME." >&2
+  exit 2
+fi
 resolve_skills_dir() {
   if [ -n "$TARGET" ]; then
     printf '%s\n' "$TARGET"
