@@ -50,8 +50,18 @@ trap 'rm -f "$_ra_out"' EXIT INT TERM HUP
 # names the file to fix. Counts, not names: only growth is a failure, so a
 # concurrent run of another copy cannot turn this into a false accusation, though
 # it can mask one.
+# Every mktemp template under tests/, so the gate cannot watch one prefix while a
+# suite leaks under another: `loop-testing-*` (sandbox, driver, hooks, commands,
+# portability), `loop-install-test.*` (install) and `lt-upd.*` (update-check).
+# `loop-runall.*` is this runner's own capture file, present for the whole loop
+# and removed by the trap above — constant, so it cannot register as growth.
+# Add a prefix here when a suite starts using one.
 _ra_tmp="${TMPDIR:-/tmp}"
-_leak_n() { find "$_ra_tmp" -maxdepth 1 -name 'loop-testing-*' 2>/dev/null | wc -l | tr -d ' '; }
+_leak_n() {
+  find "$_ra_tmp" -maxdepth 1 \
+    \( -name 'loop-testing-*' -o -name 'loop-install-test.*' -o -name 'lt-upd.*' \) \
+    2>/dev/null | wc -l | tr -d ' '
+}
 _leak_before=$(_leak_n)
 while IFS= read -r -d '' t; do
   tests_found=1

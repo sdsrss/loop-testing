@@ -65,6 +65,53 @@ previously that refusal was where you found out (K-13).
 Each fix is one commit, with the finding ID, what was measured before it, and
 the mutation check that shows the new assertions can fail.
 
+### The test suite, and what its green was not saying
+
+The audit's P3 list included five findings about the tests themselves. They are
+worth the same attention as product defects, because every claim this project
+makes about a fix rests on the suite that checked it.
+
+- A suite re-declared its cleanup trap at each workspace with a literal list of
+  every variable so far, and at the last one the list was wrong. Six directories
+  per run, for months, invisible because the suite was green (T-10).
+- Two assertions in that same file called a helper defined in a different lib.
+  The shell printed "command not found" on every run; the tally counted neither
+  a pass nor a failure. One of them sits under a comment reading "this is the
+  assertion that would have caught the defect."
+- An assertion that a marker field is *empty* used a fixed-string match on the
+  key, so it matched any value and could not fail (T-05).
+- Two sites handed out `PASS=$((PASS+2))` when the fixture could not hold on
+  that host — two passes for two assertions that did not run. The unknown-verdict
+  case is now covered by a fixture that needs no privileges to work, so the arm
+  is tested everywhere rather than on non-root hosts only (T-11).
+- A captured refusal message that nothing ever asserted on, in a section whose
+  neighbour asserts exactly that (T-12).
+- An interrupt test that found its window with `sleep 0.5`. When the race is
+  lost, the signal arrives before anything is staged and three assertions pass
+  over a run that never entered the state they describe. It polls for the state
+  now, and says so when it never arrives (T-13).
+
+`tests/run-all.sh` gained two gates, because every one of those was invisible to
+the gates it already had: a suite that grows the fixture count in `$TMPDIR`
+fails the run, and so does a suite whose output contains "command not found".
+Both were verified by injecting the exact defects they exist for — the run ends
+in FAILED while the offending suite's own tally still reads "0 failed".
+
+**Two more `$HOME` fixes, same shape as S-05.** The SessionStart update check
+read `$HOME` bare under `set -u` and ended a hook with a raw unbound-variable
+error in the user's terminal; it now does nothing at all when there is no cache
+root, like every other unavailable resource in that file. And `install-codex.sh`
+refused the same way instead of naming the two things that fix it — `--target`
+or `CODEX_HOME`.
+
+**Documentation.** Both READMEs sent the harvest step to `FINAL_REPORT.md §4`
+for the ISSUE-to-commit table; it is in §3. The test for it reads the number off
+the template rather than hardcoding it, so renumbering fails the suite instead of
+quietly invalidating the instructions.
+
+Suite across both halves of the batch: 40 suites / 1548 assertions → 43 / 1657,
+0 failed.
+
 ## 0.13.0 — 2026-09-20
 
 ### What a crash leaves behind, and what a failed session says
