@@ -162,13 +162,16 @@ round* below.
 
 ### The review round
 
-Four independent reviewers over `v0.14.1..HEAD`, none of them the author. They
-found **nine defects inside these seven fixes**, four of them High, and two of
-those would have shipped as harm rather than noise. Every one below was checked
-against the tree before being acted on — but that check is not the same thing
-as a failing test first, and the paragraph below says where the two part
-company. Two reviewer claims did not survive the check and were retracted; both
-retractions came from the reviewer.
+An independent review round over `v0.14.1..HEAD`, by readers who were not the
+author, found defects inside these seven fixes. They are enumerated below, and
+the list is the tally: this batch is not one commit per defect, so any count
+derived from the commits would be verifiable and wrong, which is worse than no
+count at all. Two of them would have shipped as harm rather than noise; both
+are named first, with enough mechanism to open the diffs and judge. Some claims
+did not survive the check and were retracted rather than repaired — those are
+below too. Every finding was checked against the tree before being acted on,
+but that check is not the same thing as a failing test first, and the paragraph
+below says where the two part company.
 
 **The two that blocked.**
 

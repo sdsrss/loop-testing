@@ -191,6 +191,19 @@ assert_ok $? "setup (fix-commits case)"
 # that reads exactly like `--purge` destroying a branch with unharvested work.
 # It was this line. The porcelain format is one record per line, `worktree ` and
 # then the path verbatim, so everything past column 10 IS the path.
+#
+# RESIDUAL, documented rather than fixed (delta review T-F): a path containing a
+# NEWLINE still breaks this, because "one record per line" stops being true. It
+# is not worth rewriting here, for two reasons measured rather than assumed.
+# First, the tool cannot produce such a path: sandbox-setup.sh:705 derives the
+# worktree as `$(dirname "$TOP")/$(basename "$TOP")-qa-loop`, so every character
+# in it came from the user's own repository path or the literal `-qa-loop`
+# suffix — a newline enters only via the user's own directory name or an
+# explicit --worktree-path. Second, the SHIPPED extraction has the identical
+# limitation: sandbox-setup.sh:216 and sandbox-clean.sh:117 use
+# `sed -n 's/^worktree //p'`, which is the correct per-line form and equally
+# line-oriented. So rewriting the test's extraction alone would leave the
+# product where it started, which is the argument for documenting it once.
 QA_WT8="$(cd "$REPO8" && git worktree list --porcelain \
   | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/qa\/loop-testing/{print p}')"
 ( cd "$QA_WT8" && echo fix > fix.txt && git add -A && git commit -qm "fix: a real one" ) >/dev/null 2>&1

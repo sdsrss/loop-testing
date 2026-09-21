@@ -164,6 +164,16 @@ run_case() {
       # and arrives corrupt under /bin/sh or with SHELL unset. Space, quote and
       # leading-dash survive either way, so this widens the fix rather than
       # being the fix.
+      # The `${BASH:-…}` fallback is near-unreachable by measurement: bash sets
+      # $BASH in every invocation tried, including `env -i /bin/bash` and
+      # --posix; only an explicit `unset BASH`, which nothing here does, clears
+      # it. The literal is a belt-and-braces default, not a supported path —
+      # and if it ever DID fire into a bash 3.2 consumer, whether 3.2 parses
+      # bash 5's `%q` output is REASONED, not measured: `$'…'` predates bash
+      # 3.2 and is not a bash-4 construct, but no 3.x was available to run it
+      # on. Three things must stack for it to bite — `unset BASH`, a 3.2
+      # consumer, and a control character in $TMPDIR — so it is noted, not
+      # guarded.
       ptycmd=$(printf '%q ' "$@")
       ( ( trap - INT QUIT; exec env SHELL="${BASH:-/bin/bash}" script -q -c "$ptycmd" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
       ;;
