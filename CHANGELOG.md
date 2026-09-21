@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 — 2026-09-21
 
 Four items from the 2026-09-20 audit's open list — D-07, K-14, T-16, T-08 —
 plus three found in passing, each with its own commit. Five of the seven carry
