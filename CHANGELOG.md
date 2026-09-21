@@ -8,15 +8,43 @@ a before-the-fix measurement; T-08 is a shape removed rather than a flake
 reproduced, and the `--project /tmp` item had no defect to measure and carries
 positive controls instead.
 
-Suite 43 suites / 1739 assertions -> 43 / 1784, 0 failed on a space-free
-`$TMPDIR`.
+Suite 43 suites / 1739 assertions -> the runner's own line, quoted verbatim:
 
-That qualifier used to hide a real gap. Measured under a `$TMPDIR` whose path
-contains a space, and stated as **two** results because the runner keeps two
-counters and an earlier draft of this paragraph merged them into one wrong
-sentence:
+```
+TOTAL: 43 suites, 1784 assertions, 0 failed (space-free $TMPDIR; timeout; node present)
+```
 
-- the suite reports **1779 assertions, 5 failed**, all five in `update-check`;
+Those parentheses are new in this release, and they exist because the sentence
+that used to stand here — "0 failed on a space-free `$TMPDIR`" — was a
+hand-written qualification, and hand-written qualifications drift from the
+number they qualify. This one did, twice, inside these notes. A count is a
+property of a **run**, not of the code, so `tests/run-all.sh` now prints the
+three predicates that move it by design rather than by failure: whether
+`$TMPDIR` contains a space, which of `timeout` / `gtimeout` / neither is on
+PATH (with neither, the watchdog cases skip and the total is lower with nothing
+having failed), and whether node ran. Recompute the whole thing, conditions
+included, with `bash tests/run-all.sh | grep '^TOTAL:'`.
+
+The middle arm is not a neutral detail. It is one of the three the `bounded`
+repair below is about, and `timeout`-present is the arm on which that defect is
+invisible by construction — every unqualified green in the first draft of these
+notes came from the one configuration that could not see it. It was found by
+synthesising the `gtimeout`-only arm, and it surfaced because a reviewer
+audited its own declared toolchain and found the declaration incomplete, not
+because any host happened to have it.
+
+Green remains the weak direction. Agreement on *how many* assertions ran says
+nothing about whether one of them passed for the wrong reason — a distinction
+this project has earned the hard way, having once reported ALL GREEN after
+running 12 of 35 suite files. Nothing here certifies a GNU, BSD or macOS host.
+
+The space-free qualifier used to hide a real gap. Measured under a `$TMPDIR`
+whose path contains a space, and stated as **two** results because the runner
+keeps two counters and an earlier draft of this paragraph merged them into one
+wrong sentence:
+
+- the suite reports `TOTAL: 43 suites, 1779 assertions, 5 failed (spaced
+  $TMPDIR; timeout; node present)`, all five failures in `update-check`;
 - separately, the fixture-leak gate fails the run on two suites —
   `session-stderr` and `codex-session-stderr` — which leave 25 and 24
   directories behind. A leak trip sets the run's exit status and contributes
@@ -25,22 +53,6 @@ sentence:
 
 All three predate this batch: the same 24 and 25 are measurable at `v0.14.1`.
 Every suite this batch touched is green under both shapes. Filed, not fixed.
-
-**What host those numbers are from**, because a suite count reads as a property
-of the code and is a property of one machine: Linux 7.0, bash 5.3.9, git 2.53.0,
-GNU sed 4.9 — and, for the rest of the userland, non-GNU reimplementations
-throughout. `coreutils` is uutils 0.8.0 (so `timeout`, `mktemp`, `stat`, `date`,
-`sort`, `wc` are all uutils), `find` is bfs 4.1.1, `grep` is ugrep 7.8.4, `awk`
-is mawk 1.3.4. `timeout` is present and `gtimeout` is absent.
-
-That last pair is not a neutral detail. It is one of the three arms the
-`bounded` repair below is about, and it is the arm on which that defect is
-invisible by construction — every unqualified green in the first draft of these
-notes was measured on the one configuration that could not see it. A reviewer
-found this in its own declared instrument, not in the code. Green is the weak
-direction: a red would mean something on any toolchain, but nothing here
-certifies a GNU host, a BSD host, or macOS, and these counts should not be read
-as doing so.
 
 An independent review round HAS now been run over this batch, and it found more
 defects inside these seven fixes than the CHANGELOG first admitted. What it

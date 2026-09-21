@@ -201,14 +201,42 @@ fi
 # The line a release note quotes verbatim. "Suite" = one file under tests/
 # matching *.test.* ; "assertion" = one pass-or-fail decision a suite reports.
 # Recompute with:  bash tests/run-all.sh | grep '^TOTAL:'
-# When node is absent the moa suites are skipped, so the counts cover shell only
-# and this line says so rather than quietly reporting a smaller total.
-if [ "$node_counted" -eq 1 ]; then
-  printf 'TOTAL: %d suites, %d assertions, %d failed\n' "$suites" "$asserts" "$afails"
+#
+# The line carries the ARMS it was measured on, because a count is a property of
+# a RUN and not of the code, and each of these three predicates moves the total
+# BY DESIGN rather than by failure:
+#   * node absent          -> the moa suites do not run at all (the original
+#                             case this line already handled);
+#   * neither timeout nor gtimeout -> the watchdog cases skip, so the total is
+#                             lower with nothing having failed;
+#   * a $TMPDIR containing a space -> several suites take a different path, and
+#                             `update-check` currently fails five there.
+# Printing them here instead of hand-writing them into a release note is the
+# whole point: a note quotes ONE line that carries its own conditions, so the
+# qualification cannot drift from the number the way a hand-written clause does
+# — and demonstrably did, twice, in the notes for this release.
+#
+# This is not a toolchain inventory and should not become one. Which `grep` or
+# `coreutils` produced the run is not an axis that moves these counts; whether a
+# skip branch fired is. Name the arms, not the userland.
+if command -v timeout >/dev/null 2>&1; then
+  _ra_arm_to="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  _ra_arm_to="gtimeout-only"
 else
-  printf 'TOTAL: %d suites, %d assertions, %d failed (shell only — node not run)\n' \
-    "$suites" "$asserts" "$afails"
+  _ra_arm_to="no timeout/gtimeout — watchdog cases skipped"
 fi
+case "${TMPDIR:-/tmp}" in
+  *\ *) _ra_arm_tmp='spaced $TMPDIR' ;;
+  *)    _ra_arm_tmp='space-free $TMPDIR' ;;
+esac
+if [ "$node_counted" -eq 1 ]; then
+  _ra_arm_node="node present"
+else
+  _ra_arm_node="shell only — node not run"
+fi
+printf 'TOTAL: %d suites, %d assertions, %d failed (%s; %s; %s)\n' \
+  "$suites" "$asserts" "$afails" "$_ra_arm_tmp" "$_ra_arm_to" "$_ra_arm_node"
 # A failed assertion has to reach the verdict, not just the TOTAL line. `afails`
 # was summed from every suite's tally and then printed, while `overall` — the
 # only thing ALL GREEN consults — was set by suite exit codes and the gates and
