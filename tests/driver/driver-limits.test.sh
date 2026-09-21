@@ -39,17 +39,29 @@ assert_rc $? 2 "missing --project -> exit 2"
 # (Regression guard: `shift 2` on a 1-arg tail is a no-op -> infinite loop.)
 timeout 10 bash "$DRIVER" --project >/dev/null 2>&1
 assert_rc $? 2 "trailing --project -> exit 2 (no hang)"
-timeout 10 bash "$DRIVER" --project /tmp --max-turns >/dev/null 2>&1
+timeout 10 bash "$DRIVER" --project "$WS3" --max-turns >/dev/null 2>&1
 assert_rc $? 2 "trailing --max-turns -> exit 2 (no hang)"
 
 # E2. the validation error must name the REAL flag (--max-sessions), not the
 # internal variable lowercased (--max_sessions) — a user copy-pasting the name
 # out of the message gets "unknown argument".
-OUT=$(timeout 10 bash "$DRIVER" --project /tmp --max-sessions abc 2>&1)
+OUT=$(timeout 10 bash "$DRIVER" --project "$WS3" --max-sessions abc 2>&1)
 case "$OUT" in
   *"--max-sessions"*) PASS=$((PASS+1)) ;;
   *) FAIL=$((FAIL+1)); echo "  FAIL: validation error must name --max-sessions — got: $OUT" >&2 ;;
 esac
+
+# E3. Those two used to pass `--project /tmp`: a real directory on the host,
+# handed to a driver that runs sessions under --permission-mode
+# bypassPermissions, on the assumption that argument validation always happens
+# first. The assumption is exactly what a regression would break, and if it did
+# the damage would land outside any fixture. WS3 is a throwaway project that has
+# run no sessions, so the same assumption is now an assertion instead: after two
+# usage errors aimed at it, nothing in it has started or been locked.
+assert_eq "0" "$(sessions_in_log "$WS3")" "a usage error launches no session in the project it was aimed at"
+if [ -e "$WS3/docs/looptesting/.driver.lock" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: a usage error acquired the project's driver lock" >&2
+else PASS=$((PASS+1)); fi
 
 # F. Progress via convergence + evidence only (round AND issue count static, but
 #    converged_streak advances and runs/ evidence grows) must NOT trip NO_PROGRESS

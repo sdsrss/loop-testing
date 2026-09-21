@@ -49,8 +49,17 @@ esac
 # (Regression guard: `shift 2` on a 1-arg tail is a no-op -> infinite loop.)
 timeout 10 bash "$CODEX_DRIVER" --project >/dev/null 2>&1
 assert_rc $? 2 "trailing --project -> exit 2 (no hang)"
-timeout 10 bash "$CODEX_DRIVER" --project /tmp --max-sessions >/dev/null 2>&1
+timeout 10 bash "$CODEX_DRIVER" --project "$WS4" --max-sessions >/dev/null 2>&1
 assert_rc $? 2 "trailing --max-sessions -> exit 2 (no hang)"
+
+# F2. That line used to pass `--project /tmp` — a real host directory handed to a
+# driver that also protects and restores a skill dir, on the assumption that
+# argument validation runs first. Same treatment as driver-limits E3: aim it at a
+# throwaway project that has run nothing, and assert the assumption.
+assert_eq "0" "$(sessions_in_log "$WS4")" "a usage error launches no session in the project it was aimed at"
+if [ -e "$WS4/docs/looptesting/.driver.lock" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: a usage error acquired the project's driver lock" >&2
+else PASS=$((PASS+1)); fi
 
 # G. Watchdog binary detection falls back to `gtimeout` when GNU `timeout` is
 # absent (macOS/Homebrew coreutils). Evaluate the detection logic under a PATH
