@@ -42,25 +42,46 @@ afails=0
 # recomputable from `bash tests/run-all.sh | tail -1` instead of being summed by
 # hand over whichever suites happened to print a number (audit T-04).
 _ra_out="$(mktemp "${TMPDIR:-/tmp}/loop-runall.XXXXXX")" || { echo "FAILED: mktemp"; exit 1; }
-trap 'rm -f "$_ra_out"' EXIT INT TERM HUP
+# Give this run its own TMPDIR. Every suite resolves its fixtures through
+# `${TMPDIR:-/tmp}` — the four lib helpers and the ~30 suites that call mktemp
+# directly alike — so exporting one here puts all of them inside a single
+# directory this runner owns, with no suite edits at all. That containment IS the
+# fixture identity: what leaked is what is still in here, established by position
+# rather than by name.
+#
+# `_ra_out` is created BEFORE the root on purpose, so this runner's own capture
+# file sits outside the watched directory and cannot register as residue.
+_ra_root="$(mktemp -d "${TMPDIR:-/tmp}/loop-runroot.XXXXXX")" || { echo "FAILED: mktemp -d"; exit 1; }
+export TMPDIR="$_ra_root"
+trap 'rm -f "$_ra_out"; rm -rf "${_ra_root:?}"' EXIT INT TERM HUP
 # Fixture-leak gate. Every suite builds its workspaces under $TMPDIR and removes
 # them in an EXIT trap. A trap that misses one leaks silently: the suite is green,
 # the tally is right, and the only evidence is a directory nobody looks at — one
 # suite left six per run for months (audit T-10). Counted per suite so the report
-# names the file to fix. Counts, not names: only growth is a failure, so a
-# concurrent run of another copy cannot turn this into a false accusation, though
-# it can mask one.
-# Every mktemp template under tests/, so the gate cannot watch one prefix while a
-# suite leaks under another: `loop-testing-*` (sandbox, driver, hooks, commands,
-# portability), `loop-install-test.*` (install) and `lt-upd.*` (update-check).
-# `loop-runall.*` is this runner's own capture file, present for the whole loop
-# and removed by the trap above — constant, so it cannot register as growth.
-# Add a prefix here when a suite starts using one.
-_ra_tmp="${TMPDIR:-/tmp}"
+# names the file to fix.
+#
+# This counted a hand-maintained list of name prefixes until the run root above
+# replaced it. That list was the same "ownership claimed by a NAME, with nothing
+# verifying it" shape this project keeps finding in its own product code — living
+# in the gate whose whole job is to catch sloppiness — and it had already missed
+# once: the gate watched `loop-testing-*` while suites also used
+# `loop-install-test.*` and `lt-upd.*`, so two thirds of the tree was unwatched
+# and the comment said "add a prefix here when a suite starts using one", which
+# is a request that nothing enforces. Containment needs no list: a suite that
+# invents a new prefix tomorrow is covered the day it is written.
+#
+# Two things the old form could not do, now free: a concurrent copy of this
+# runner gets its own root and can no longer be blamed on whichever suite the
+# sampling window landed on, and residue from an earlier crashed run is outside
+# this root instead of being baked into the first sample as the baseline.
+#
+# Files as well as directories: a suite that leaves a stray capture file behind
+# has leaked too, and the drivers under test write their session-err captures
+# into $TMPDIR — inside the root now, which is correct, because an orphaned one
+# is a real leak.
+_ra_tmp="$_ra_root"
 _leak_n() {
-  find "$_ra_tmp" -maxdepth 1 \
-    \( -name 'loop-testing-*' -o -name 'loop-install-test.*' -o -name 'lt-upd.*' \) \
-    2>/dev/null | wc -l | tr -d ' '
+  find "$_ra_tmp" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' '
 }
 _leak_before=$(_leak_n)
 while IFS= read -r -d '' t; do
@@ -113,7 +134,22 @@ node_counted=0
 if [ -d tests/moa ]; then
   echo "== node --test tests/moa/ =="
   if command -v node >/dev/null 2>&1; then
-    if node --test tests/moa/*.test.mjs >"$_ra_out" 2>&1; then rc=0; else rc=1; fi
+    # The counted set and the executed set have to be the SAME set. This counted
+    # with `find` (recursive) and executed with `tests/moa/*.test.mjs` (one level
+    # only), so the first .test.mjs placed in a subdirectory would be counted as
+    # a suite, never run, and the run would still print ALL GREEN — the same
+    # counted-but-not-executed shape that once let 23 suites go unrun. The two
+    # numbers agree today because tests/moa/ is flat; that is a property of the
+    # directory, not of the runner. No `mapfile`: bash 4+, and this runner has to
+    # start on macOS's bash 3.2.
+    node_files=()
+    while IFS= read -r f; do node_files+=("$f"); done \
+      < <(find tests/moa -name '*.test.mjs' -type f 2>/dev/null | sort)
+    nsuites=${#node_files[@]}
+    if [ "$nsuites" -eq 0 ]; then
+      echo "  GATE FAIL: tests/moa exists but holds no *.test.mjs"; overall=1
+    else
+    if node --test "${node_files[@]}" >"$_ra_out" 2>&1; then rc=0; else rc=1; fi
     cat "$_ra_out"
     if [ "$rc" -eq 0 ]; then echo "  ok: moa tests"; else echo "  MOA TEST FAIL"; overall=1; fi
     # node --test reports its own totals; fold them in so one number covers the
@@ -123,12 +159,12 @@ if [ -d tests/moa ]; then
     case "${np:-x}" in ''|*[!0-9]*) np="" ;; esac
     case "${nf:-x}" in ''|*[!0-9]*) nf="" ;; esac
     if [ -n "$np" ] && [ -n "$nf" ]; then
-      nsuites=$(find tests/moa -name '*.test.mjs' -type f 2>/dev/null | wc -l | tr -d ' ')
       suites=$((suites + nsuites)); asserts=$((asserts + np)); afails=$((afails + nf))
       node_counted=1
     else
       echo "  GATE FAIL: could not read node's pass/fail totals"; overall=1
     fi
+    fi   # closes the "no *.test.mjs discovered" guard above
   else
     echo "  node not installed, skipping moa tests"
   fi
@@ -147,5 +183,15 @@ else
   printf 'TOTAL: %d suites, %d assertions, %d failed (shell only — node not run)\n' \
     "$suites" "$asserts" "$afails"
 fi
-[ "$overall" -eq 0 ] && echo "ALL GREEN" || echo "FAILED"
+# A failed assertion has to reach the verdict, not just the TOTAL line. `afails`
+# was summed from every suite's tally and then printed, while `overall` — the
+# only thing ALL GREEN consults — was set by suite exit codes and the gates and
+# never by `afails`. A suite reporting "1 failed" and still exiting 0 therefore
+# printed its failure one line above ALL GREEN. Unreachable today only because
+# every suite ends in report/finish, which returns non-zero when FAIL>0; it
+# becomes reachable the moment any suite gains a command after that line.
+[ "$afails" -eq 0 ] || {
+  echo "  GATE FAIL: $afails assertion(s) failed but no suite reported it through its exit code"
+  overall=1; }
+if [ "$overall" -eq 0 ]; then echo "ALL GREEN"; else echo "FAILED"; fi
 exit "$overall"
