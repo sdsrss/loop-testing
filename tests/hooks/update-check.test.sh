@@ -130,4 +130,27 @@ out=$(CLAUDE_PLUGIN_ROOT="$r" CLAUDE_PLUGIN_DATA="$WS/data-loses" LOOP_TESTING_U
 if [ -f "$OVR/latest-tag" ]; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: LOOP_TESTING_UPDATE_CACHE must outrank CLAUDE_PLUGIN_DATA" >&2; fi
 
+# 13. No HOME and no XDG_CACHE_HOME: the hook stays quiet instead of dying on an
+# unbound variable. Every other unavailable resource in this file exits 0; the
+# cache path was the one place that reached for `$HOME` bare, under `set -u`, so
+# a SessionStart from cron, a systemd unit without `User=`, or `env -i` ended in
+# a raw bash error on the user's terminal. Same shape as audit S-05 in the
+# sandbox teardown.
+r=$(mkroot 0.2.6 c12); t=$(mktags c12 0.9.9)
+out=$(env -u HOME -u XDG_CACHE_HOME CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 \
+      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>&1); rc13=$?
+if [ "$rc13" -eq 0 ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: the hook must exit 0 with no HOME and no XDG_CACHE_HOME, got $rc13" >&2; fi
+if printf '%s' "$out" | grep -q 'unbound variable'; then
+  FAIL=$((FAIL+1)); echo "  FAIL: the hook died on an unbound variable — got [$out]" >&2
+else PASS=$((PASS+1)); fi
+# Control: with HOME present the same invocation still does its job, so the fix
+# cannot be "always bail out".
+HOMEDIR="$WS/home13"; mkdir -p "$HOMEDIR"
+out=$(env -u XDG_CACHE_HOME HOME="$HOMEDIR" CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 \
+      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>/dev/null)
+assert_has "$out" "0.9.9" "with HOME set the check still reports the newer tag"
+if [ -f "$HOMEDIR/.cache/loop-testing/latest-tag" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: with HOME set the throttle file must land under \$HOME/.cache" >&2; fi
+
 report "update-check.test.sh"

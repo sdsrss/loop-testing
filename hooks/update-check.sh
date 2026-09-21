@@ -52,8 +52,18 @@ if [ -n "${LOOP_TESTING_UPDATE_CACHE:-}" ]; then
   CACHE_DIR="$LOOP_TESTING_UPDATE_CACHE"
 elif [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
   CACHE_DIR="$CLAUDE_PLUGIN_DATA"
+elif [ -n "${XDG_CACHE_HOME:-}" ]; then
+  CACHE_DIR="$XDG_CACHE_HOME/loop-testing"
+elif [ -n "${HOME:-}" ]; then
+  CACHE_DIR="$HOME/.cache/loop-testing"
 else
-  CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/loop-testing"
+  # Neither cache root exists: cron, a systemd unit without `User=`, `env -i`, a
+  # container entrypoint. There is nowhere to keep the throttle file, and an
+  # unthrottled check would reach the network on every SessionStart — so this
+  # run does nothing, like every other unavailable resource in this file. It
+  # used to read `$HOME` bare under `set -u`, which ended the hook with a raw
+  # unbound-variable error in the user's session instead of a silent exit 0.
+  exit 0
 fi
 CACHE_FILE="$CACHE_DIR/latest-tag"
 TTL="${LOOP_TESTING_UPDATE_TTL:-86400}"
