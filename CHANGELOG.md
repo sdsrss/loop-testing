@@ -26,6 +26,22 @@ sentence:
 All three predate this batch: the same 24 and 25 are measurable at `v0.14.1`.
 Every suite this batch touched is green under both shapes. Filed, not fixed.
 
+**What host those numbers are from**, because a suite count reads as a property
+of the code and is a property of one machine: Linux 7.0, bash 5.3.9, git 2.53.0,
+GNU sed 4.9 — and, for the rest of the userland, non-GNU reimplementations
+throughout. `coreutils` is uutils 0.8.0 (so `timeout`, `mktemp`, `stat`, `date`,
+`sort`, `wc` are all uutils), `find` is bfs 4.1.1, `grep` is ugrep 7.8.4, `awk`
+is mawk 1.3.4. `timeout` is present and `gtimeout` is absent.
+
+That last pair is not a neutral detail. It is one of the three arms the
+`bounded` repair below is about, and it is the arm on which that defect is
+invisible by construction — every unqualified green in the first draft of these
+notes was measured on the one configuration that could not see it. A reviewer
+found this in its own declared instrument, not in the code. Green is the weak
+direction: a red would mean something on any toolchain, but nothing here
+certifies a GNU host, a BSD host, or macOS, and these counts should not be read
+as doing so.
+
 An independent review round HAS now been run over this batch, and it found more
 defects inside these seven fixes than the CHANGELOG first admitted. What it
 found, and what was wrong in the first draft of these notes, is in *The review
@@ -203,6 +219,26 @@ injected into a working-tree copy and the check is shown to go red. Not all of
 them carry even that: the repairs in `334da3b` have neither, and that commit
 does not say so — it closes on six green suite counts. This sentence is the
 disclosure; there is no second one waiting in a commit message.
+
+**Then the repairs themselves were reviewed**, and that round found defects in
+them. The one that reaches a user: the test harness called bare `timeout` at
+five sites to bound its own no-hang guards. Stock macOS ships no `timeout` —
+homebrew coreutils installs it as `gtimeout` — which is precisely the host the
+driver's own watchdog fallback exists to serve. On such a machine the harness
+died at 127 and reported the failures against the driver, which was correct
+throughout: `driver-limits` 35 passed / 3 failed and `codex-limits` 46 / 2,
+none of it the product's doing. Both libs now resolve the binary the way the
+drivers do, and a `bounded` helper carries it. It deliberately does NOT fall
+back to running unbounded when neither binary exists, because those call sites
+guard against an infinite loop and an unbounded fallback turns a caught hang
+into a hung suite; it names the missing precondition instead. Measured on a
+`gtimeout`-only PATH: 38 / 0 and 48 / 0, unchanged where `timeout` exists.
+
+The rest of that round landed on these notes rather than the code — a line
+count no extraction boundary reproduces, a correction that left the sentence it
+contradicted standing twenty lines above, a disclosure delegated to a commit
+that never made it, and the scorecard this section used to open with. Each is
+in the corrections list below.
 
 **Corrections to the first draft of these notes**, which is the part a reader
 of the batch acted on. The commit messages are left as written — the repair
