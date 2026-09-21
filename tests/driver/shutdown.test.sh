@@ -89,15 +89,20 @@ STUB
 
 hb_lines() { [ -f "$1/docs/looptesting/heartbeat" ] && wc -l < "$1/docs/looptesting/heartbeat" | tr -d ' ' || echo 0; }
 
-wait_lock_pid() { # ws -> prints the driver pid once the lock names it (≤15s)
-  local pid=""
-  for _ in $(seq 1 60); do
-    [ -f "$1/docs/looptesting/.driver.lock/pid" ] && read -r pid < "$1/docs/looptesting/.driver.lock/pid" 2>/dev/null
-    case "$pid" in ''|*[!0-9]*) pid="" ;; *) echo "$pid"; return 0 ;; esac
-    sleep 0.25
-  done
-  return 1
-}
+# wait_lock_pid comes from lib.sh. It used to be redefined here, nine lines
+# below the `. lib.sh` that provides it, and the later definition won — so this
+# suite quietly kept the pre-T-08 version and two repairs from that round were
+# void in the one place they mattered most (review T-4, delta review):
+#   * LOOP_TESTING_TEST_WAIT is documented as the way to survive a slow host,
+#     and the heaviest suite in the tree — real drivers, pty sessions, 154
+#     assertions — never consulted it;
+#   * the local copy had no `0` arm on the pid, and this is the only suite that
+#     feeds that pid to `ps -o pgid=` and `kill -KILL -- -"$pg"`.
+# Deleting it was enough: same signature, same stdout contract, and `$( )`
+# strips the newline `echo` added, so all three call sites are unchanged. The
+# budget goes 15s -> 30s, i.e. only more patient.
+#
+# `wait_heartbeat` below has no twin in lib.sh and keeps its own loop.
 
 wait_heartbeat() { # ws -> 0 once the stub has beaten at least 3 times (≤15s)
   for _ in $(seq 1 60); do [ "$(hb_lines "$1")" -ge 3 ] && return 0; sleep 0.25; done
@@ -166,7 +171,7 @@ run_case() {
       ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
       ;;
   esac
-  drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — driver never wrote its lock pid" >&2; [ "$method" = pty ] && exec 3>&-; return 0; }
+  drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no lock pid appeared within $(test_wait_budget)s; this run never reached the state the case is about, so it is not evidence about shutdown either way (audit T-08)" >&2; [ "$method" = pty ] && exec 3>&-; return 0; }
   wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); echo "  FAIL: $label — child session never started beating" >&2; [ "$method" = pty ] && exec 3>&-; return 0; }
   sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no session process group found under the driver" >&2; [ "$method" = pty ] && exec 3>&-; return 0; }
   pgid=$(ps -o pgid= -p "$drv" | tr -d ' ')
@@ -252,7 +257,7 @@ run_double() {
   else
     ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
   fi
-  drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — driver never wrote its lock pid" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
+  drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no lock pid appeared within $(test_wait_budget)s; this run never reached the state the case is about, so it is not evidence about shutdown either way (audit T-08)" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
   wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); echo "  FAIL: $label — child session never started beating" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
   sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no session process group found under the driver" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
   pgid=$(ps -o pgid= -p "$drv" | tr -d ' ')
@@ -344,7 +349,7 @@ PSSHIM
     set -- env PATH="$shim:$PATH" LOOP_TESTING_STOP_GRACE=3 bash "$DRIVER" --project "$ws" --claude-bin "$stub" --max-sessions 3 --max-minutes 5 --session-minutes 2
   fi
   ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
-  drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — driver never wrote its lock pid" >&2; return 0; }
+  drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no lock pid appeared within $(test_wait_budget)s; this run never reached the state the case is about, so it is not evidence about shutdown either way (audit T-08)" >&2; return 0; }
   wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); echo "  FAIL: $label — child session never started beating" >&2; return 0; }
   # The test's own view of the process table is never shimmed.
   sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no session process group found under the driver" >&2; return 0; }
