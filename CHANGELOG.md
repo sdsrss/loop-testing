@@ -8,10 +8,13 @@ a before-the-fix measurement; T-08 is a shape removed rather than a flake
 reproduced, and the `--project /tmp` item had no defect to measure and carries
 positive controls instead.
 
-Suite 43 suites / 1739 assertions -> 43 / 1762, 0 failed **on a space-free
-`$TMPDIR`**. That qualifier is load-bearing: under a `$TMPDIR` whose path
-contains a space, `purge-ref-identity` is 38/6 and a destructive path fails —
-see *Found, not fixed* at the end of this section.
+Suite 43 suites / 1739 assertions -> 43 / 1776, 0 failed on a space-free
+`$TMPDIR`. That qualifier used to hide a real gap and is now measured: under a
+`$TMPDIR` whose path contains a space the suite is **1770 / 6 failed**, in
+three places this batch did not touch — `update-check` (5), and the leak gate
+tripping on the two `session-stderr` suites, which leave 24 and 25 fixture
+directories behind there. Every suite this batch did touch is green under both
+shapes. The three are filed, not fixed here.
 
 An independent review round HAS now been run over this batch, and it found more
 defects inside these seven fixes than the CHANGELOG first admitted. What it
@@ -109,12 +112,23 @@ round* below.
   for this — "verified against the file, not inferred from the diff" — can
   establish that all four are present and can never establish which commit added
   one; it was offered as support for exactly the half it cannot support.
-- **Found, not fixed:** under a `$TMPDIR` whose path contains a space,
-  `sandbox-clean --purge` deletes a branch still holding unharvested fix commits
-  and then orphans the marker its own recommended follow-up needs (6 assertions,
-  identical before and after the accumulator change, so not caused by it). A
-  destructive path failing on a path shape. Out of this batch's scope and
-  recorded rather than quietly repaired.
+- **Retracted — there was no such defect.** An earlier draft of this section,
+  and the accumulator commit's message, said that under a `$TMPDIR` containing
+  a space `sandbox-clean --purge` deletes a branch holding unharvested fix
+  commits and orphans the marker its follow-up needs. **It does not, and never
+  did.** Three lines of fixture did: `purge-ref-identity` extracted a worktree
+  path with `awk '{p=$2}'`, which truncates at the first space, so its `cd`
+  failed, the fix commit was never created, and six assertions failed in a
+  cascade that reads exactly like a purge destroying real work. `shutdown` had
+  the same class in two copies, joining argv with `"$*"` for `script -c`. Both
+  repaired: under a spaced `$TMPDIR`, `purge-ref-identity` is 44/0 and
+  `shutdown` is 154/0, no leftovers, and both unchanged space-free.
+
+  The misreading is worth more than the bug would have been. A reviewer
+  reported the purge failure as being in the script and marked it VERIFIED; the
+  failures were real and reproducible, and what they were evidence OF was never
+  checked. It then entered these notes as an open destructive-path defect — in
+  a section whose subject is claims outrunning their evidence.
 
 ### The review round
 

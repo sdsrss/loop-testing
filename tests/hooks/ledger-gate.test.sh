@@ -653,11 +653,11 @@ assert_rc $? 0 "control (Edit leg): the toplevel replay footprint is found too -
 # directory does not exist, so a VERIFIED write that IS backed by a replay at the
 # toplevel gets denied — the H-01 direction (false deny), reached through the same
 # anchoring gap as the fail-open above.
-json_bash="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo '### ISSUE-042 | P0 | VERIFIED | replayed' >> $MONOL/docs/looptesting/ISSUES.md\"}}"
+json_bash="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo '### ISSUE-042 | P0 | VERIFIED | replayed' >> '$MONOL/docs/looptesting/ISSUES.md'\"}}"
 ( cd "$MONOL/pkgs/app" && printf '%s' "$json_bash" | CLAUDE_PROJECT_DIR="$MONOL/pkgs/app" bash "$LEDGER" ) >/dev/null 2>&1
 assert_rc $? 0 "monorepo subpackage, Bash leg: a replayed VERIFIED write is not false-denied (K-14)"
 # And the deny must survive the walk-up: same command, an ID with no replay.
-json_bash2="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo '### ISSUE-099 | P0 | VERIFIED | thin air' >> $MONOL/docs/looptesting/ISSUES.md\"}}"
+json_bash2="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo '### ISSUE-099 | P0 | VERIFIED | thin air' >> '$MONOL/docs/looptesting/ISSUES.md'\"}}"
 ( cd "$MONOL/pkgs/app" && printf '%s' "$json_bash2" | CLAUDE_PROJECT_DIR="$MONOL/pkgs/app" bash "$LEDGER" ) >/dev/null 2>&1
 assert_rc $? 2 "monorepo subpackage, Bash leg: an unreplayed VERIFIED write is still denied"
 # Review F2: the walk-up moved cwd to the toplevel, which turned ARMED on, which
