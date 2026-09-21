@@ -5,12 +5,38 @@
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
+# Fixtures are registered the moment they are created, and the trap is set once.
+# The retyped-list form this replaces had BOTH of its failure modes live here:
+#
+#   * the trap at the WSD site referenced $WSB and $WSC, whose first assignments
+#     are 27 and 40 lines further down. Under `set -u` an early exit anywhere in
+#     between killed the trap on its first unbound reference and nothing at all
+#     was removed — measured at 11 leaked workspaces against 1 for the control;
+#   * the two traps that follow it never listed WSD, so an early exit there
+#     dropped that one workspace silently.
+#
+# That is audit T-10. The commit that claimed it changed a different file for a
+# different defect, and this file — the one the finding names — was never touched.
+#
+# Newline-delimited rather than space-split: the space-split accumulator four
+# other suites use is not safe for a $TMPDIR containing a space.
+WS_ALL=""
+track_ws() { WS_ALL="${WS_ALL}$1
+"; }
+cleanup_all() {
+  [ -n "$WS_ALL" ] || return 0
+  local IFS='
+'
+  rm -rf -- $WS_ALL
+}
+trap cleanup_all EXIT
+
 mark_terminal() { # repo — flip the seeded STATE.md to a terminal status
   sed -i 's/^status: RUNNING/status: CONVERGED/' "$1/docs/looptesting/STATE.md"
 }
 
 # --- A. non-terminal STATE: --purge refuses (exit 3) BEFORE doing anything ----
-WS=$(mk_ws); trap 'rm -rf "$WS"' EXIT
+WS=$(mk_ws); track_ws "$WS"
 REPO="$WS/proj"; WT="$WS/proj-qa-loop"
 ( cd "$REPO" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup for the non-terminal purge case"
@@ -54,7 +80,7 @@ assert_eq "0" "$rc_c2" "the documented --discard-fixes follow-up completes"
 assert_absent "$REPO/docs/looptesting" "and only then is the evidence dir removed"
 
 # --- D. terminal + fix commits + --discard-fixes: branch deleted too ----------
-WS2=$(mk_ws); trap 'rm -rf "$WS" "$WS2"' EXIT
+WS2=$(mk_ws); track_ws "$WS2"
 REPO2="$WS2/proj"; WT2="$WS2/proj-qa-loop"
 ( cd "$REPO2" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$WT2" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
@@ -67,7 +93,7 @@ else PASS=$((PASS+1)); fi
 assert_absent "$REPO2/docs/looptesting" "evidence dir removed (--discard-fixes case)"
 
 # --- E. terminal + NO fix commits: branch deleted without --discard-fixes -----
-WS3=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3"' EXIT
+WS3=$(mk_ws); track_ws "$WS3"
 REPO3="$WS3/proj"
 ( cd "$REPO3" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 mark_terminal "$REPO3"
@@ -78,7 +104,7 @@ if ( cd "$REPO3" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/n
 else PASS=$((PASS+1)); fi
 
 # --- F. branch mode: the checked-out qa branch is never deleted ---------------
-WS4=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4"' EXIT
+WS4=$(mk_ws); track_ws "$WS4"
 REPO4="$WS4/proj"
 ( cd "$REPO4" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
 mark_terminal "$REPO4"
@@ -95,7 +121,7 @@ assert_exists "$REPO4/docs/looptesting/.sandbox/ownership.env" "branch mode keep
 assert_eq "qa/loop-testing" "$(cd "$REPO4" && git branch --show-current)" "purge did not move HEAD"
 
 # --- G. no marker at all (never set up): --purge refuses, deletes nothing -----
-WS5=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5"' EXIT
+WS5=$(mk_ws); track_ws "$WS5"
 REPO5="$WS5/proj"
 ( cd "$REPO5" && bash "$CLEAN" --purge ) >/dev/null 2>&1
 assert_eq "3" "$?" "--purge with no marker refuses with exit 3"
@@ -110,7 +136,7 @@ assert_eq "2" "$?" "--discard-fixes without --purge -> exit 2"
 # --- I. R66(a): --purge invoked from INSIDE the qa worktree --------------------
 # Locks the re-anchor + cd-out-before-remove behavior: the script must never rm
 # the directory it is standing in; purge must complete as if run from the main tree.
-WS6=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6"' EXIT
+WS6=$(mk_ws); track_ws "$WS6"
 REPO6="$WS6/proj"; WT6="$WS6/proj-qa-loop"
 ( cd "$REPO6" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 mark_terminal "$REPO6"
@@ -130,7 +156,7 @@ assert_eq "$MAIN_BR6" "$(cd "$REPO6" && git branch --show-current)" "main tree b
 # --- J. R66(b): --purge from an UNRELATED linked worktree of the same repo -----
 # Re-anchor must land on the main tree; only the recorded qa worktree is removed,
 # the unrelated worktree and its checked-out branch stay untouched.
-WS7=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7"' EXIT
+WS7=$(mk_ws); track_ws "$WS7"
 REPO7="$WS7/proj"; WT7="$WS7/proj-qa-loop"; OTHER7="$WS7/proj-other"
 ( cd "$REPO7" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$REPO7" && git worktree add -b other "$OTHER7" ) >/dev/null 2>&1
@@ -145,7 +171,7 @@ assert_eq "other" "$(cd "$OTHER7" && git branch --show-current)" "unrelated work
 # --- K. R66(c): --purge with the main repo on a DETACHED HEAD ------------------
 # Detached HEAD is not a checkout of the qa branch: purge must still complete
 # and must not move the user's HEAD.
-WS8=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8"' EXIT
+WS8=$(mk_ws); track_ws "$WS8"
 REPO8="$WS8/proj"; WT8="$WS8/proj-qa-loop"
 ( cd "$REPO8" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 mark_terminal "$REPO8"
@@ -166,7 +192,7 @@ assert_eq "$HEAD8" "$(cd "$REPO8" && git rev-parse HEAD)" "purge did not move th
 # worktree is gone. Re-deriving ownership from "does this ref exist now" then
 # records NEITHER as ours, so --purge can no longer remove the artifacts this
 # sandbox created — and the "branch holds fix commits" warning goes silent too.
-WS9=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9"' EXIT
+WS9=$(mk_ws); track_ws "$WS9"
 REPO9="$WS9/proj"
 ( cd "$REPO9" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$REPO9" && bash "$CLEAN" ) >/dev/null 2>&1                    # keeps branch + tag
@@ -203,7 +229,7 @@ esac
 # --- M. the harvest warning survives the same rebuild cycle -------------------
 # Fix commits live ONLY on the qa branch. After a rebuild, purge must still name
 # the branch it is keeping — a silent "purge done." reads as "everything cleaned".
-WSA=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA"' EXIT
+WSA=$(mk_ws); track_ws "$WSA"
 REPOA="$WSA/proj"; WTA="$WSA/proj-qa-loop"
 ( cd "$REPOA" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$REPOA" && bash "$CLEAN" ) >/dev/null 2>&1
@@ -228,7 +254,7 @@ if ( cd "$REPOA" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/n
 # their own with the same name, a rebuild must not hand --purge the right to delete
 # them — and with no commits beyond the recorded baseline the old code deleted both
 # under a PLAIN --purge, printing nothing at all.
-WSD=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC" "$WSD"' EXIT
+WSD=$(mk_ws); track_ws "$WSD"
 REPOD="$WSD/proj"
 ( cd "$REPOD" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$REPOD" && bash "$CLEAN" ) >/dev/null 2>&1
@@ -255,7 +281,7 @@ if ( cd "$REPOD" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2
 # merging ref — so a completed harvest IS detectable. The branch is still KEPT
 # (deleting commits stays the user's call); only the advice changes, so the user
 # who just merged is not told to redo it.
-WSB=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB"' EXIT
+WSB=$(mk_ws); track_ws "$WSB"
 REPOB="$WSB/proj"; WTB="$WSB/proj-qa-loop"
 ( cd "$REPOB" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$WTB" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
@@ -268,7 +294,7 @@ case "$OUTB" in
 esac
 
 # Same repo, harvested this time: set up again, commit a fix, merge it, then purge.
-WSC=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC"' EXIT
+WSC=$(mk_ws); track_ws "$WSC"
 REPOC="$WSC/proj"; WTC="$WSC/proj-qa-loop"
 ( cd "$REPOC" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$WTC" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
@@ -289,7 +315,7 @@ if ( cd "$REPOC" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/n
 # `git push origin qa/loop-testing` with nothing merged read as "already reachable
 # from 'origin/qa/loop-testing' — harvest looks complete", inviting the user to
 # --discard-fixes a branch whose commits exist nowhere else.
-WSE=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC" "$WSD" "$WSE"' EXIT
+WSE=$(mk_ws); track_ws "$WSE"
 REPOE="$WSE/proj"; WTE="$WSE/proj-qa-loop"
 git init -q --bare "$WSE/remote.git" >/dev/null 2>&1
 ( cd "$REPOE" && git remote add origin "$WSE/remote.git" && git push -q origin HEAD ) >/dev/null 2>&1
@@ -310,7 +336,7 @@ if ( cd "$REPOE" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/n
 # Excluding the mirror must not blind the genuine signal: with BOTH a backup push
 # and a real merge into the mainline, purge still reports the harvest — naming the
 # mainline, never the branch's own mirror.
-WSF=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC" "$WSD" "$WSE" "$WSF"' EXIT
+WSF=$(mk_ws); track_ws "$WSF"
 REPOF="$WSF/proj"; WTF="$WSF/proj-qa-loop"
 git init -q --bare "$WSF/remote.git" >/dev/null 2>&1
 ( cd "$REPOF" && git remote add origin "$WSF/remote.git" && git push -q origin HEAD ) >/dev/null 2>&1
@@ -332,7 +358,7 @@ esac
 # clean → setup cycle finds nothing to carry and purge falls silent again — the
 # exact "bare purge done. while fix commits sit on an unmentioned branch" this
 # release set out to remove.
-WSG=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSA" "$WSB" "$WSC" "$WSD" "$WSE" "$WSF" "$WSG"' EXIT
+WSG=$(mk_ws); track_ws "$WSG"
 REPOG="$WSG/proj"; WTG="$WSG/proj-qa-loop"
 ( cd "$REPOG" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$WTG" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
