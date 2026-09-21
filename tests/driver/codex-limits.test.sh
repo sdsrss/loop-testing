@@ -248,16 +248,11 @@ SLOW
   write_state "$WS18" RUNNING 0
   setsid bash "$CODEX_DRIVER" --project "$WS18" --codex-bin "$WS18/slow-stub.sh" \
     --skill-dir "$FAKE18" --max-sessions 50 --max-minutes 5 >/dev/null 2>&1 &
-  DRV18=""
-  for _ in $(seq 1 40); do
-    [ -f "$LT18/.driver.lock/pid" ] && read -r DRV18 < "$LT18/.driver.lock/pid" 2>/dev/null
-    case "$DRV18" in ''|*[!0-9]*) DRV18="" ;; *) break ;; esac
-    sleep 0.25
-  done
+  DRV18="$(wait_lock_pid "$WS18")"
   if [ -n "$DRV18" ]; then
     PGID18=$(ps -o pgid= -p "$DRV18" 2>/dev/null | tr -d ' ')
     kill -TERM -- -"$PGID18" 2>/dev/null
-    for _ in $(seq 1 40); do kill -0 "$DRV18" 2>/dev/null || break; sleep 0.25; done
+    wait_pid_gone "$DRV18" || :
     if kill -0 "$DRV18" 2>/dev/null; then
       FAIL=$((FAIL+1)); echo "  FAIL: SIGTERM to the codex driver process group did not stop it" >&2
       kill -9 "$DRV18" 2>/dev/null
@@ -269,7 +264,8 @@ SLOW
         FAIL=$((FAIL+1)); echo "  FAIL: signal shutdown left the skill dir read-only" >&2; fi
     fi
   else
-    FAIL=$((FAIL+1)); echo "  FAIL: codex driver never wrote its lock pid — cannot exercise the shutdown path" >&2
+    FAIL=$((FAIL+1))
+    echo "  FAIL: no lock pid appeared within $(test_wait_budget)s — this run never reached the state the case is about, so it is not evidence about the shutdown path in either direction (audit T-08)" >&2
   fi
 else
   echo "  skip: setsid unavailable — process-group shutdown test not run"
@@ -311,17 +307,12 @@ SHIM
   stub19=$(write_stub "$WS19")
   setsid env PATH="$SHIM19:$PATH" bash "$CODEX_DRIVER" --project "$WS19" --codex-bin "$stub19" \
     --skill-dir "$FAKE19" --max-sessions 1 >/dev/null 2>&1 &
-  DRV19=""
-  for _ in $(seq 1 60); do
-    [ -f "$WS19/docs/looptesting/.driver.lock/pid" ] && read -r DRV19 < "$WS19/docs/looptesting/.driver.lock/pid" 2>/dev/null
-    case "$DRV19" in ''|*[!0-9]*) DRV19="" ;; *) break ;; esac
-    sleep 0.25
-  done
+  DRV19="$(wait_lock_pid "$WS19")"
   if [ -n "$DRV19" ]; then
     # The lock is written immediately before the protect chmod, so the driver is
     # inside the (shimmed, slow) chmod right now.
     kill -TERM "$DRV19" 2>/dev/null
-    for _ in $(seq 1 80); do kill -0 "$DRV19" 2>/dev/null || break; sleep 0.25; done
+    wait_pid_gone "$DRV19" || :
     kill -9 "$DRV19" 2>/dev/null
     if [ -w "$FAKE19/SKILL.md" ] && [ -w "$FAKE19/scripts/a.sh" ]; then
       PASS=$((PASS+1))
@@ -334,7 +325,8 @@ SHIM
     assert_eq "444" "$(stat -c '%a' "$FAKE19/frozen.txt" 2>/dev/null || stat -f '%Lp' "$FAKE19/frozen.txt")" \
       "cleanup is idempotent: the second pass does not re-grant write"
   else
-    FAIL=$((FAIL+1)); echo "  FAIL: codex driver never wrote its lock pid — cannot exercise the protect window" >&2
+    FAIL=$((FAIL+1))
+    echo "  FAIL: no lock pid appeared within $(test_wait_budget)s — this run never reached the protect window, so it is not evidence about the restore in either direction (audit T-08)" >&2
   fi
 else
   echo "  skip: setsid unavailable — protect-window test not run"

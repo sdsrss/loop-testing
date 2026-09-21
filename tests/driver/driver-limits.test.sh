@@ -220,16 +220,11 @@ SLOW
   write_state "$WS17" RUNNING 0
   setsid bash "$DRIVER" --project "$WS17" --claude-bin "$WS17/slow-stub.sh" \
     --max-sessions 50 --max-minutes 5 >/dev/null 2>&1 &
-  DRV17=""
-  for _ in $(seq 1 40); do
-    [ -f "$LT17/.driver.lock/pid" ] && read -r DRV17 < "$LT17/.driver.lock/pid" 2>/dev/null
-    case "$DRV17" in ''|*[!0-9]*) DRV17="" ;; *) break ;; esac
-    sleep 0.25
-  done
+  DRV17="$(wait_lock_pid "$WS17")"
   if [ -n "$DRV17" ]; then
     PGID17=$(ps -o pgid= -p "$DRV17" 2>/dev/null | tr -d ' ')
     kill -TERM -- -"$PGID17" 2>/dev/null
-    for _ in $(seq 1 40); do kill -0 "$DRV17" 2>/dev/null || break; sleep 0.25; done
+    wait_pid_gone "$DRV17" || :
     if kill -0 "$DRV17" 2>/dev/null; then
       FAIL=$((FAIL+1)); echo "  FAIL: SIGTERM to the driver process group did not stop the driver" >&2
       kill -9 "$DRV17" 2>/dev/null
@@ -238,7 +233,8 @@ SLOW
       PASS=$((PASS+1))
     fi
   else
-    FAIL=$((FAIL+1)); echo "  FAIL: driver never wrote its lock pid — cannot exercise the shutdown path" >&2
+    FAIL=$((FAIL+1))
+    echo "  FAIL: no lock pid appeared within $(test_wait_budget)s — this run never reached the state the case is about, so it is not evidence about the shutdown path in either direction (audit T-08)" >&2
   fi
 else
   echo "  skip: setsid unavailable — process-group shutdown test not run"

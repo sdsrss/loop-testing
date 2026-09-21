@@ -139,6 +139,49 @@ sessions_in_log() {
   grep -acE '^session [0-9]+:' "$f" 2>/dev/null || true
 }
 
+# --- waiting for a state, on a wall-clock budget (audit T-08) -----------------
+# Byte-identical to tests/driver/lib.sh's copy; this file is a separate lib, not
+# a wrapper around that one, so a helper added on one side does not exist on the
+# other. Adding these there first and running the codex suites is what said so:
+# `$(test_wait_budget)` expanded to nothing, the budget arithmetic yielded an
+# immediate expiry, and both setsid cases failed. That is the `assert_path`
+# shape from the T-05 round (a helper reached from the wrong lib) caught by a
+# call site that fails loudly instead of counting nothing.
+#
+# `for _ in $(seq 1 40); do … sleep 0.25; done` does not bound ten seconds: each
+# pass also pays for a stat, a read and whatever else the host is running, so
+# the wait drifts with load, which is what the case-U comment below records as a
+# full-suite-only failure. A deadline says what it means, and
+# LOOP_TESTING_TEST_WAIT raises it on a slow machine without editing a count.
+# On expiry the callers report that THIS RUN did not reach the state — "no pid
+# appeared" is not "the driver never wrote one".
+test_wait_budget() { echo "${LOOP_TESTING_TEST_WAIT:-30}"; }
+
+# wait_lock_pid <project-dir> -> echoes the driver's lock pid, rc 0; rc 1 on expiry.
+wait_lock_pid() {
+  local f="$1/docs/looptesting/.driver.lock/pid" pid="" end
+  end=$(( $(date +%s) + $(test_wait_budget) ))
+  while :; do
+    if [ -f "$f" ]; then
+      read -r pid < "$f" 2>/dev/null
+      case "$pid" in ''|*[!0-9]*) pid="" ;; *) printf '%s' "$pid"; return 0 ;; esac
+    fi
+    [ "$(date +%s)" -lt "$end" ] || return 1
+    sleep 0.25
+  done
+}
+
+# wait_pid_gone <pid> -> rc 0 once it is gone, rc 1 if it outlives the budget.
+wait_pid_gone() {
+  local end
+  end=$(( $(date +%s) + $(test_wait_budget) ))
+  while kill -0 "$1" 2>/dev/null; do
+    [ "$(date +%s)" -lt "$end" ] || return 1
+    sleep 0.25
+  done
+  return 0
+}
+
 assert_rc()  { if [ "$1" -eq "$2" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — expected rc $2 got $1" >&2; fi; }
 assert_eq()  { if [ "$1" = "$2" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — expected [$1] got [$2]" >&2; fi; }
 assert_file_contains() { if grep -qaF -- "$2" "$1" 2>/dev/null; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — $1 lacks [$2]" >&2; fi; }
