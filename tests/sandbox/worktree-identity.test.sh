@@ -735,4 +735,43 @@ assert_file_contains "$WS33/clean.out" "already gone" \
   "clean reports the worktree as gone rather than as one it could not identify"
 assert_exists "$WS33/proj-qa-loop/.git" "the user's own repository at that path was not touched"
 
+# --- case 34: an `unknown` verdict must not hand the user --force ------------
+# `foreign` and `unknown` are different situations. `foreign` is an answer — the
+# stamp was read and it is somebody else's — so naming --force is fair. `unknown`
+# is the absence of an answer, and the refusal used to offer --force anyway,
+# qualified with "if it is the sandbox's". When the probe failed the worktree
+# usually IS the sandbox's, so that qualifier reads as a yes: the tool refuses a
+# destructive operation and then asks the user to run it by hand, on a worktree
+# it has just said it cannot identify, discarding whatever uncommitted or
+# untracked QA work is in there.
+WS34=$(mk_ws); WS_ALL="$WS_ALL $WS34"
+( cd "$WS34/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? 'fixture: setup for the unresolvable-registry advice case'
+if [ "$(id -u 2>/dev/null)" = 0 ]; then
+  echo "  skip: running as root — .git/worktrees stays readable, so the unknown verdict cannot be reached here"
+else
+  chmod 000 "$WS34/proj/.git/worktrees" 2>/dev/null
+  probe34="$( cd "$WS34/proj" && git worktree list --porcelain 2>/dev/null )"; probe34_rc=$?
+  if [ "$probe34_rc" = 0 ] && ! printf '%s\n' "$probe34" | grep -qxF "worktree $WS34/proj-qa-loop"; then
+    PASS=$((PASS+1))   # fixture self-probe: the registry really is unreadable
+    ( cd "$WS34/proj" && bash "$SETUP" --mode worktree ) > "$WS34/setup.out" 2>&1
+    rc34=$?
+    assert_eq 6 "$rc34" "setup refuses (exit 6) over a worktree it cannot identify"
+    assert_file_contains "$WS34/setup.out" "could not confirm" \
+      "the refusal says it could not confirm ownership, rather than asserting someone else's"
+    # `--` because the needle would otherwise be read as grep options.
+    if grep -qF -- "worktree remove --force" "$WS34/setup.out"; then
+      FAIL=$((FAIL+1))
+      echo "  FAIL: the refusal handed the user --force for a worktree it had just said it could not identify" >&2
+    else PASS=$((PASS+1)); fi
+    # The route that actually works must still be named, or the refusal is a
+    # dead end dressed as advice.
+    assert_file_contains "$WS34/setup.out" "--worktree-path" "and it still names the flag that works"
+  else
+    FAIL=$((FAIL+1))
+    echo "  FAIL: fixture could not make the registry unreadable — case 34 tested nothing" >&2
+  fi
+  chmod 755 "$WS34/proj/.git/worktrees" 2>/dev/null
+fi
+
 report "worktree-identity.test.sh"
