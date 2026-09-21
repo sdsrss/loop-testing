@@ -157,6 +157,31 @@ safe_remove() {
 # dies between the copy and the final swap — otherwise a killed run leaves a
 # `<name>.staging.<pid>` orphan that no later run reaps (each uses a fresh $$).
 # Guarded to the exact `.staging.` basename so it can never touch $DEST.
+# Returns 0 only when the process is CONFIRMED gone. `kill -0` fails for ESRCH
+# (gone) and for EPERM (alive, owned by another account) alike, and the shell
+# cannot tell them apart — so on the targets where staging orphans actually
+# accumulate (a sudo-installed --target, a shared box, a multi-account CI agent)
+# the owner is exactly the PID we have no permission to signal, and EPERM was
+# being read as "confirmed dead". A negative answer has to prove the probe could
+# have answered; when it cannot, the orphan stays.
+pid_is_gone() { # pid
+  if kill -0 "$1" 2>/dev/null; then return 1; fi
+  local procfs="${LOOP_TESTING_PROCFS:-/proc}"   # test seam; never set in normal use
+  if [ -d "$procfs/self" ]; then
+    if [ -e "$procfs/$1" ]; then return 1; fi
+    # PID 1 always exists. If this procfs cannot show it to us it is hiding other
+    # accounts' processes (hidepid), so the owner's absence proves nothing.
+    if [ -e "$procfs/1" ]; then return 0; fi
+    return 1
+  fi
+  if command -v ps >/dev/null 2>&1; then
+    if ps -p "$1" >/dev/null 2>&1; then return 1; fi
+    if ps -p "$$" >/dev/null 2>&1; then return 0; fi   # ps answered about us, so it works
+    return 1
+  fi
+  return 1   # no probe at all
+}
+
 cleanup_staging() {
   local s="$STAGING"
   STAGING=""   # idempotent: a second firing (INT handler -> EXIT) is a no-op
@@ -191,7 +216,12 @@ do_install() {
     [ -e "$orphan" ] || continue
     opid="${orphan##*.}"
     case "$opid" in ''|*[!0-9]*) continue ;; esac
-    kill -0 "$opid" 2>/dev/null && continue
+    # Was `kill -0 "$opid" 2>/dev/null && continue`, which read EPERM as dead.
+    # The cost of getting this wrong is not the copy: the victim's own run does
+    # `mv "$DEST" "$DEST.bak"` and then `mv "$staging" "$DEST"`, so a reap landing
+    # between them makes the second mv fail under `set -euo pipefail` and leaves
+    # that install with its skill directory GONE and only the .bak beside it.
+    pid_is_gone "$opid" || continue
     case "$orphan" in
       */"$SKILL_NAME".staging.*)
         if [ "$DRY_RUN" -eq 1 ]; then action "rm -rf $orphan (stale staging orphan)"

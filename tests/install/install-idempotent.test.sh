@@ -123,4 +123,38 @@ if [ -z "$(ls -d "$sb5"/loop-testing.staging.* 2>/dev/null)" ]; then
   pass "bak-guard: no staging residue after the refusal"
 else fail "bak-guard: staging dir residue remains"; fi
 
+# --- staging reap: a LIVE owner's staging dir is never reaped (audit IN-1) ----
+# The reaper's own comment says "the owner PID confirmed DEAD", but it asked
+# `kill -0`, which fails for ESRCH (gone) and EPERM (alive, owned by another
+# account) alike. On the targets where orphans actually accumulate — a
+# sudo-installed --target, a shared box, a multi-account CI agent — the owner is
+# exactly the PID we cannot signal, so EPERM was the common case.
+#
+# The damage is not the copy. The victim's own run does `mv $DEST $DEST.bak`
+# and then `mv $staging $DEST`; a reap landing between them makes the second mv
+# fail under `set -euo pipefail`, and that install ends with its skill directory
+# gone and only the .bak beside it.
+#
+# FIXTURE: PID 1 — always alive, owned by root, so `kill -0 1` from an ordinary
+# account fails with EPERM. No privileges needed to build the exact case.
+sb6="$(make_sandbox)"
+trap 'chmod u+w "$sb2" 2>/dev/null; rm -rf "$sandbox" "$sb2" "$sb3" "$shim" "$sb4" "$sb5" "$sb6"' EXIT
+if [ "$(id -u 2>/dev/null)" = "0" ]; then
+  echo "  note: running as root — 'kill -0 1' succeeds, so this case cannot reach the EPERM path; skipped"
+else
+  mkdir -p "$sb6/loop-testing.staging.1"
+  echo "someone else's in-flight install" > "$sb6/loop-testing.staging.1/keepme.txt"
+  bash "$INSTALLER" --target "$sb6" >/dev/null 2>&1
+  assert_eq "$?" "0" "staging-reap: install still succeeds alongside a live orphan"
+  assert_path "$sb6/loop-testing.staging.1/keepme.txt" \
+    "a staging dir whose owner cannot be signalled is NOT reaped"
+  # Control: an owner that really is gone must still be reaped, or the guard has
+  # just disabled the reaper and IN-1 is back.
+  dead6="$(bash -c 'echo $$')"
+  mkdir -p "$sb6/loop-testing.staging.$dead6"
+  bash "$INSTALLER" --target "$sb6" >/dev/null 2>&1
+  assert_no_path "$sb6/loop-testing.staging.$dead6" \
+    "a staging dir whose owner really is gone is still reaped"
+fi
+
 finish
