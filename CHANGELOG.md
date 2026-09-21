@@ -1,5 +1,82 @@
 # Changelog
 
+## Unreleased
+
+Seven items from the 2026-09-20 audit's open list, each with its own commit and
+its own before-the-fix measurement. Suite 43 suites / 1739 assertions -> 43 /
+1762, 0 failed. No independent review round has been run over this batch yet.
+
+### What changes for you
+
+- **`--no-watchdog` stops promising what it cannot do (D-07).** The flag waives
+  the refusal to start when neither `timeout` nor `gtimeout` is on PATH. It does
+  not switch a watchdog off, and on a host that has either binary it never did —
+  measured: with the flag set, a `sleep 300` session is still killed at the
+  session budget, `exit=124` in `driver.log`. Passing it where it cannot apply
+  now says so on stderr and in the log instead of being accepted in silence, and
+  the refusal message and both READMEs no longer read as a general offer of
+  unbounded sessions. Behaviour is deliberately unchanged: making the flag
+  disable the watchdog, or renaming it, would change a published CLI contract.
+- **Neither gate loses the evidence directory in a monorepo (K-14).** They
+  anchor on `$CLAUDE_PROJECT_DIR`, the directory your session started in;
+  `sandbox-setup.sh` creates `docs/looptesting/` at the git toplevel. Start a
+  session in a subpackage and the two diverge. The stop gate read the missing
+  sentinel as "no armed loop" and allowed every stop — the mechanism layer off
+  for a whole run, with nothing in any log, because an allowed stop is also what
+  a project that never ran the loop looks like. The ledger gate failed the other
+  way: a `VERIFIED` write backed by a real replay at the toplevel was denied.
+  Both now walk up to the toplevel, and only when there is no evidence directory
+  at the anchor and the toplevel has one, so a repo that is not running the loop
+  is unaffected and a subpackage running its own loop keeps its own.
+- **`clean` no longer hands you `--force` for a worktree it cannot identify.**
+  The `legacy` arm — a marker predating worktree stamping — printed a
+  ready-to-paste `git worktree remove --force <path>` with "check it first"
+  beside it, long after the `unknown` and `foreign` arms stopped doing exactly
+  that. It now names plain `git worktree remove`, which refuses while anything
+  in there is uncommitted or untracked; that refusal is the check. The worktree
+  was kept before and is kept now — only the advice changed.
+
+### Test integrity
+
+- **T-16, cases that inherited the environment they were testing.** Four hook
+  cases did not override `$CLAUDE_PROJECT_DIR`, which Claude Code sets for every
+  hook — so running the suite from inside a session anchored the hook at the real
+  project. Measured: `CLAUDE_PROJECT_DIR=<repo> bash tests/hooks/stop-gate.test.sh`
+  died at `kc: unbound variable`, having tested nothing past case K. Fixed at the
+  call sites and, for whatever is written next, once in the shared lib. Separately,
+  `check-update`'s offline case reaches the branch it names only when the host's
+  proxy settings leave `127.0.0.1` alone: measured with `curl -v`, a host whose
+  `no_proxy` does not cover it dials the proxy instead. The proxy variables are
+  now stripped for that case. Nothing in the fixture proves the strip worked —
+  that needs a CONNECT-capable proxy — and the file says so rather than implying
+  a gate.
+- **The eight remaining fixture accumulators were space-delimited strings**, torn
+  apart by `rm -rf $WS_ALL` on any `$TMPDIR` containing a space. Measured: 8
+  fixture directories left behind by one suite under such a `$TMPDIR`, 0 after.
+- **Three usage-error cases pointed a full-permission driver at the host's real
+  `/tmp`**, safe only while argument validation keeps running first. Aimed at a
+  throwaway project now, and that ordering is asserted rather than assumed.
+- **T-08, the setsid waits.** An iteration count is not a time budget, and on
+  expiry the message blamed the driver ("never wrote its lock pid") for what was
+  only this harness failing to observe. Now a wall-clock deadline, 10s -> 30s,
+  overridable with `LOOP_TESTING_TEST_WAIT`. **Not a reproduction:** the flake is
+  intermittent, the audit did not reproduce it and neither did this round. The
+  shape is removed and the budget widened; that is all this claims.
+
+### Ledger
+
+- **K-15 was already closed** and never credited. `930a20f`, a K-05 follow-up,
+  gave `SKILL.md` the deterministic locate command, the note that
+  `${CLAUDE_PLUGIN_ROOT}` is guaranteed only to hook processes, the warning not
+  to pick a plugin-cache directory by name, and the `BLOCKED` exit when nothing
+  is found. Verified against the file, not inferred from the diff.
+- **Found, not fixed:** under a `$TMPDIR` whose path contains a space,
+  `sandbox-clean --purge` deletes a branch still holding unharvested fix commits
+  and then orphans the marker its own recommended follow-up needs (6 assertions,
+  identical before and after the accumulator change, so not caused by it). A
+  destructive path failing on a path shape. Out of this batch's scope and
+  recorded rather than quietly repaired.
+
 ## 0.14.1 — 2026-09-21
 
 ### Corrections to the 0.14.0 notes, and the fixes behind them
