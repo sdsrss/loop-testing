@@ -144,7 +144,16 @@ run_case() {
       # foreground process group — the same path as a user's Ctrl-C.
       mkfifo "$ws/tty-in"
       exec 3<>"$ws/tty-in"
-      ( ( trap - INT QUIT; exec script -q -c "$*" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
+      # `script -c` takes ONE string that a shell re-splits, so the argv has to
+      # be re-quoted rather than joined: `"$*"` glues the arguments with spaces
+      # and a $TMPDIR containing one turned `--project /tmp/sp ace/ws1` into two
+      # arguments. The driver then got a --project that does not exist, never
+      # wrote a lock pid, and the case reported "driver never wrote its lock
+      # pid" — the harness blaming the driver for the harness, which is the
+      # shape T-08 is about. The non-pty arm below passes argv straight through
+      # and was always correct, which is why only this arm failed.
+      ptycmd=$(printf '%q ' "$@")
+      ( ( trap - INT QUIT; exec script -q -c "$ptycmd" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
       ;;
     *)
       ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
@@ -227,7 +236,11 @@ run_double() {
   fi
   if [ "$first" = pty ]; then
     mkfifo "$ws/tty-in"; exec 3<>"$ws/tty-in"
-    ( ( trap - INT QUIT; exec script -q -c "$*" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
+    # Second copy of the pty launch, and it needed the same re-quoting as the
+    # one in run_case — fixing only that one left these two cases failing under
+    # a $TMPDIR with a space, which is how a sibling path announces itself here.
+    ptycmd=$(printf '%q ' "$@")
+    ( ( trap - INT QUIT; exec script -q -c "$ptycmd" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
   else
     ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
   fi

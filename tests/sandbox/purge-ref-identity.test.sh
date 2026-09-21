@@ -184,8 +184,15 @@ WS8=$(mk_ws); track_ws "$WS8"
 REPO8="$WS8/proj"
 ( cd "$REPO8" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup (fix-commits case)"
+# `substr($0,10)`, not `$2`: awk splits on whitespace, so a worktree under a
+# $TMPDIR containing a space came back truncated at the first one — `/tmp/lt`
+# for `/tmp/lt space…/proj-qa-loop`. The `cd` below then failed, the fix commit
+# was never created, and all six of this case's assertions failed in a cascade
+# that reads exactly like `--purge` destroying a branch with unharvested work.
+# It was this line. The porcelain format is one record per line, `worktree ` and
+# then the path verbatim, so everything past column 10 IS the path.
 QA_WT8="$(cd "$REPO8" && git worktree list --porcelain \
-  | awk '/^worktree /{p=$2} /^branch refs\/heads\/qa\/loop-testing/{print p}')"
+  | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/qa\/loop-testing/{print p}')"
 ( cd "$QA_WT8" && echo fix > fix.txt && git add -A && git commit -qm "fix: a real one" ) >/dev/null 2>&1
 assert_ok $? "the qa branch holds a fix commit"
 mark_terminal "$REPO8"
