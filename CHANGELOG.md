@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.1 — 2026-09-21
 
 ### Corrections to the 0.14.0 notes, and the fixes behind them
 
@@ -110,7 +110,15 @@ its evidence from the day it was written.
   one-level glob, and a suite's failed assertions were printed in TOTAL but never
   reached the ALL GREEN verdict.
 
-Suite: 43 suites / 1657 assertions → 43 / 1719, measured with
+This release had the independent review round 0.14.0 went without, and it found
+eleven defects inside these repairs — three in the fixes' own logic, including a
+canary that could not detect the failure it existed for, and a `--purge` that
+deleted the ledger a new fail-closed path had just promised to keep. All eleven
+are fixed here, each mutation-checked. That ratio is the third consecutive
+release where the repair round carried about as many defects as the batch it
+repaired, which is the argument for running it rather than a reason to doubt it.
+
+Suite: 43 suites / 1657 assertions → 43 / 1739, measured with
 `bash tests/run-all.sh | grep '^TOTAL:'` on a clean tree, not recalled.
 
 ## 0.14.0 — 2026-09-21
