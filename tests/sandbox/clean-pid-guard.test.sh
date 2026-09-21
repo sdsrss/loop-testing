@@ -185,4 +185,57 @@ assert_absent "$(dirname "$REPO")/proj-qa-loop" "clean completed its real work w
 assert_file_contains "$OUT/clean.out" "refusing to signal PID" "clean names the refused grandparent PID"
 _wp=$(cat "$OUT/sentinel.pid" 2>/dev/null); [ -n "$_wp" ] && kill "$_wp" 2>/dev/null
 
+# --- case 7: a chain this run could not finish walking is fail-closed --------
+# Cases 4 and 6 cover a walk that WORKS. This covers the one that cannot: the
+# loop's exit condition — `case "$_spp" in ''|*[!0-9]*) break` — could not tell
+# "reached the top of the process tree" from "ps could not answer", and on the
+# second reading the chain silently truncated. Every ancestor above the
+# truncation then became a legal signal target, while pgrep still expanded a
+# recorded PID into a tree containing this cleanup.
+#
+# A healthy walk never takes that arm (`ps -o ppid= -p 1` prints 0, so it exits
+# through the `-gt 1` test), which is why nothing noticed.
+new_repo; assert_ok $? "setup for the truncated-ancestry case"; REPO="$NEW_REPO"
+OUT=$(dirname "$REPO")
+# The two probes the walk has, both made unable to answer: a ps that fails only
+# `-o ppid=` (and still delegates everything else, so this is a shim and not a
+# brick), and a procfs pointed somewhere that does not exist.
+mkdir -p "$OUT/shim7"
+REAL_PS7="$(command -v ps)"
+printf '#!/usr/bin/env bash\ncase " $* " in *" -o ppid= "*) exit 1 ;; esac\nexec %s "$@"\n' \
+  "$REAL_PS7" > "$OUT/shim7/ps"
+chmod +x "$OUT/shim7/ps"
+PATH="$OUT/shim7:$PATH" ps >/dev/null 2>&1
+assert_ok $? "fixture: the ps shim delegates everything except -o ppid="
+PATH="$OUT/shim7:$PATH" ps -o ppid= -p "$$" >/dev/null 2>&1
+ps7rc=$?
+if [ "$ps7rc" -ne 0 ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1))
+  echo "  FAIL: fixture: the ps shim did not fail -o ppid=, so case 7 would test nothing" >&2
+fi
+sleep 20 & victim7=$!
+OLD_PATH7="$PATH"
+PATH="$OUT/shim7:$PATH"; export PATH
+LOOP_TESTING_PROCFS="$OUT/nonexistent-procfs"; export LOOP_TESTING_PROCFS
+run_clean_isolated "$REPO" "$OUT" "$victim7"
+PATH="$OLD_PATH7"; export PATH; unset LOOP_TESTING_PROCFS
+assert_file_contains "$OUT/clean.out" "could not walk its own ancestry" \
+  "clean says why it skipped the .pids stage instead of signalling blind"
+# Fail-closed means the recorded PID survives. That is the deliberate cost: this
+# run cannot prove it is not one of its own ancestors, and stopping the teardown
+# before the worktree is removed is the worse outcome.
+if kill -0 "$victim7" 2>/dev/null; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: a recorded PID was signalled through a chain that could not be walked" >&2
+fi
+# Reaped inside the block: job control announces "Killed" on the shell's stderr
+# at reap time, and the runner reads suite stderr.
+{ kill -9 "$victim7"; wait "$victim7"; } >/dev/null 2>&1
+# The ledger has to survive too, or the record of services nobody stopped is
+# thrown away by the run that declined to stop them.
+if [ -s "$REPO/docs/looptesting/.pids" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: .pids was cleared after a stage that deliberately did nothing" >&2
+fi
+assert_absent "$(dirname "$REPO")/proj-qa-loop" "and clean still completed its real work"
+_wp=$(cat "$OUT/sentinel.pid" 2>/dev/null); [ -n "$_wp" ] && kill "$_wp" 2>/dev/null
+
 report "clean-pid-guard.test.sh"

@@ -317,18 +317,39 @@ if [ -f "$PIDS_FILE" ]; then
   # the same place.
   #
   # $$ and $PPID come from the shell and cannot fail. The walk above them uses
-  # `ps`, which may be missing or refuse — an incomplete chain still holds the
-  # two PIDs that matter, so nothing here depends on the walk succeeding. `ps`
-  # right-aligns its output in a fixed-width field, so the padding goes through
-  # `tr -dc '0-9'` like the six other places in this repo that read a padded
-  # count; leaving it in makes every comparison below miss silently.
+  # `ps`, which may be missing or refuse — and an incomplete chain is NOT
+  # harmless: case 6 of clean-pid-guard exists because a grandparent is findable
+  # only by this walk, so "nothing here depends on the walk succeeding" (what
+  # this comment used to say) was contradicted by the test written beside it.
+  # `ps` right-aligns its output in a fixed-width field, so the padding goes
+  # through `tr -dc '0-9'` like the six other places in this repo that read a
+  # padded count; leaving it in makes every comparison below miss silently.
+  #
+  # WALK_COMPLETE is the difference between "reached the top of the tree" and
+  # "could not ask" — `case "$_spp" in ''|…) break` cannot tell those apart, and
+  # on the second reading every ancestor above the truncation becomes a legal
+  # signal target while pgrep still expands the recorded PID into a tree that
+  # contains this cleanup. A healthy walk never takes that arm: `ps -o ppid= -p 1`
+  # prints 0, so it exits through the `-gt 1` test below.
+  LOOP_PROCFS="${LOOP_TESTING_PROCFS:-/proc}"   # test seam; never set in normal use
+  WALK_COMPLETE=0
   SELF_CHAIN=" $$ $PPID "
   _sp="$PPID"
   _hops=0
   while [ "$_hops" -lt 64 ]; do
-    [ "$_sp" -gt 1 ] 2>/dev/null || break
+    [ "$_sp" -gt 1 ] 2>/dev/null || { WALK_COMPLETE=1; break; }   # reached the top
     _spp="$(ps -o ppid= -p "$_sp" 2>/dev/null | tr -dc '0-9')"
-    case "$_spp" in ''|*[!0-9]*) break ;; esac
+    # `ps -p` exits non-zero for "no such process" and for a ps that could not
+    # answer, and `ps -o ppid= -p <live pid>` can print nothing while exiting 0 —
+    # so empty output is not an answer. procfs can still have one.
+    if [ -z "$_spp" ] && [ -r "$LOOP_PROCFS/$_sp/status" ]; then
+      while IFS= read -r _line; do
+        case "$_line" in
+          PPid:*) _spp="$(printf '%s' "${_line#PPid:}" | tr -dc '0-9')"; break ;;
+        esac
+      done < "$LOOP_PROCFS/$_sp/status"
+    fi
+    case "$_spp" in ''|*[!0-9]*) break ;; esac   # neither probe could answer
     case "$SELF_CHAIN" in *" $_spp "*) break ;; esac   # a cycle cannot be walked
     SELF_CHAIN="$SELF_CHAIN$_spp "
     _sp="$_spp"
@@ -355,6 +376,16 @@ if [ -f "$PIDS_FILE" ]; then
       0|1) echo_info "refusing to signal PID $pid from .pids (0 would signal this whole process group, 1 is init)"
            continue ;;
     esac
+    # Fail closed on a chain this run could not finish walking. With a truncated
+    # chain the check below can only reject the ancestors it happens to know, and
+    # the cost of being wrong is signalling the teardown itself — before the
+    # worktree is removed and before `.active` is disarmed. The ledger is left in
+    # place (see the guarded clear below) so a later run on a host where the walk
+    # works can still stop these services.
+    if [ "$WALK_COMPLETE" = 0 ]; then
+      echo_info "refusing to signal PID $pid from .pids (this run could not walk its own ancestry — ps gave no answer and procfs had none either — so it cannot prove this PID is not one of its own ancestors; $PIDS_FILE is left for a later run)"
+      continue
+    fi
     # Compare the normalized value for the same reason the 0/1 guard does: a
     # zero-padded copy of our own parent is still our own parent.
     case "$SELF_CHAIN" in
@@ -367,6 +398,21 @@ if [ -f "$PIDS_FILE" ]; then
 $(collect_tree "$pid")"
   done < "$PIDS_FILE"
   TARGETS=$(printf '%s\n' "$TARGETS" | grep -E '^[0-9]+$' | sort -un)
+  # Backstop. The guard above rejects a RECORDED pid that is one of our own;
+  # this rejects anything `collect_tree` pulled in while expanding one. They are
+  # not the same set: a recorded PID that is an ancestor of this script has this
+  # script among its descendants, so the expansion is the second way our own PID
+  # reaches the kill list. pgrep output is unpadded, and so is SELF_CHAIN.
+  _kept=""
+  for _t in $TARGETS; do
+    case "$SELF_CHAIN" in
+      *" $_t "*)
+        echo_info "refusing to signal PID $_t (it is this cleanup's own process or one of its ancestors, reached by expanding a recorded PID's descendants)" ;;
+      *) _kept="$_kept$_t
+" ;;
+    esac
+  done
+  TARGETS="$_kept"
 
   for pid in $TARGETS; do
     kill -0 "$pid" 2>/dev/null || continue
@@ -382,7 +428,9 @@ $(collect_tree "$pid")"
       kill -9 "$pid" 2>/dev/null && echo_info "escalated to SIGKILL for process $pid"
     fi
   done
-  : > "$PIDS_FILE"   # clear the ledger; keep the file for continued runs
+  # Clear the ledger only if this run was actually able to act on it. Clearing
+  # after a fail-closed skip would discard the record of services nobody stopped.
+  if [ "$WALK_COMPLETE" = 1 ]; then : > "$PIDS_FILE"; fi   # keep the file for continued runs
 fi
 
 # --- remove only the worktree we created ------------------------------------
