@@ -152,8 +152,15 @@ run_case() {
       # pid" — the harness blaming the driver for the harness, which is the
       # shape T-08 is about. The non-pty arm below passes argv straight through
       # and was always correct, which is why only this arm failed.
+      # SHELL is pinned to the bash running this suite (delta review T-E).
+      # `script -c` hands its string to $SHELL, and `printf '%q '` emits bash's
+      # $'…' ANSI-C quoting for control characters, which dash does not parse —
+      # measured: a $TMPDIR containing a TAB round-trips correctly under bash
+      # and arrives corrupt under /bin/sh or with SHELL unset. Space, quote and
+      # leading-dash survive either way, so this widens the fix rather than
+      # being the fix.
       ptycmd=$(printf '%q ' "$@")
-      ( ( trap - INT QUIT; exec script -q -c "$ptycmd" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
+      ( ( trap - INT QUIT; exec env SHELL="${BASH:-/bin/bash}" script -q -c "$ptycmd" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
       ;;
     *)
       ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
@@ -239,8 +246,9 @@ run_double() {
     # Second copy of the pty launch, and it needed the same re-quoting as the
     # one in run_case — fixing only that one left these two cases failing under
     # a $TMPDIR with a space, which is how a sibling path announces itself here.
+    # SHELL pinned for the same reason as the run_case arm (T-E).
     ptycmd=$(printf '%q ' "$@")
-    ( ( trap - INT QUIT; exec script -q -c "$ptycmd" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
+    ( ( trap - INT QUIT; exec env SHELL="${BASH:-/bin/bash}" script -q -c "$ptycmd" /dev/null < "$ws/tty-in" > "$ws/driver.err" 2>&1 ) & )
   else
     ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
   fi

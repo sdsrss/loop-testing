@@ -139,18 +139,33 @@ fi
 # previous one claimed byte-identity of the whole block and diff refuted it over
 # 13 lines. Check the part that actually matters instead.
 LIB_A="tests/driver/lib.sh"; LIB_B="tests/driver/codex-lib.sh"
+# `declare -f` in a subshell, not a sed range over the source text (delta review
+# T-C and T-G). Two defects in the text approach, one in each direction:
+#   * `sed -n "/^fn() {/,/^}/p"` ends at the FIRST column-0 `}`, which a
+#     heredoc body can supply — the extraction then stops early and real drift
+#     after that point is invisible while the gate stays green;
+#   * it compares comments, so a clarifying note added to one copy alone fails a
+#     check that is supposed to be about behaviour.
+# bash's own parse settles both: it discards comments and re-prints the body
+# canonically, so what is compared is what will run. Sourcing happens in a
+# subshell — these libs' top level only sets REPO_ROOT, a couple of paths, the
+# counters and the unsets, none of which escape it.
+fn_dump() { ( . "$1" >/dev/null 2>&1 && declare -f "$2" ) 2>/dev/null; }
 fn_drift=""; fn_empty=""
 for fn in test_wait_budget wait_lock_pid wait_pid_gone; do
-  a=$(sed -n "/^$fn() {/,/^}/p" "$LIB_A"); b=$(sed -n "/^$fn() {/,/^}/p" "$LIB_B")
-  # Self-probe, inline: two EMPTY extractions compare equal, which is how this
-  # check would pass forever if a function were renamed or reformatted.
+  a=$(fn_dump "$LIB_A" "$fn"); b=$(fn_dump "$LIB_B" "$fn")
+  # Self-probe, inline: two EMPTY dumps compare equal, which is how this check
+  # would pass forever if a function were renamed away or the source failed.
   if [ -z "$a" ] || [ -z "$b" ]; then fn_empty="$fn_empty $fn"; continue; fi
   [ "$a" = "$b" ] || fn_drift="$fn_drift $fn"
 done
-if [ -n "$fn_empty" ]; then
-  FAIL=$((FAIL+1)); echo "  FAIL: could not extract from one of the driver libs:$fn_empty — this check was comparing nothing" >&2
-elif [ -n "$fn_drift" ]; then
-  FAIL=$((FAIL+1)); echo "  FAIL: the two driver libs have drifted:$fn_drift" >&2
+# Both conditions are reported, not just the first (T-H): an un-extractable
+# function used to mask the name of a drifted one, which is the diagnostic a
+# maintainer actually needs.
+if [ -n "$fn_empty" ] || [ -n "$fn_drift" ]; then
+  FAIL=$((FAIL+1))
+  [ -n "$fn_empty" ] && echo "  FAIL: could not read from one of the driver libs:$fn_empty — this check was comparing nothing" >&2
+  [ -n "$fn_drift" ] && echo "  FAIL: the two driver libs have drifted:$fn_drift" >&2
 else
   PASS=$((PASS+1))
 fi
