@@ -12,8 +12,22 @@ mark_terminal() { sed -i.bak 's/^status: RUNNING/status: CONVERGED/' "$1/docs/lo
 tag_exists()    { ( cd "$1" && git rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 ); }
 branch_exists() { ( cd "$1" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); }
 
+# Every workspace registers itself the moment it is created, and the EXIT trap
+# removes whatever is registered. The previous form re-declared the trap at each
+# creation with a literal list of every variable so far, which is a list that has
+# to be right every time it is retyped — and at the last one it was not: it read
+# `"$WS" "$WS8"`, so the six workspaces in between were never removed and every
+# run of this suite left six directories in $TMPDIR (audit T-10). Registering at
+# creation cannot skip an entry, because there is no list to retype.
+#
+# Word-split on purpose, like the other suites here; mk_ws paths contain no
+# whitespace unless $TMPDIR does.
+WS_ALL=""
+cleanup_all() { [ -n "$WS_ALL" ] && rm -rf $WS_ALL; }
+trap cleanup_all EXIT
+
 # --- A. tag re-pointed by the user within the lifecycle: KEPT, named ----------
-WS=$(mk_ws); trap 'rm -rf "$WS"' EXIT
+WS=$(mk_ws); WS_ALL="$WS_ALL $WS"
 REPO="$WS/proj"
 ( cd "$REPO" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup (tag case)"
@@ -38,7 +52,7 @@ esac
 # `--purge --discard-fixes`) in the same breath as deleting the only file that
 # route needs, so the follow-up answered exit 3. Two stages each learned to stop
 # short; only the leftover-files one was protecting the marker.
-assert_path "$REPO/docs/looptesting/.sandbox/ownership.env" "a kept ref keeps the marker its own recovery route needs"
+assert_exists "$REPO/docs/looptesting/.sandbox/ownership.env" "a kept ref keeps the marker its own recovery route needs"
 case "$OUT" in
   *"kept evidence dir"*) PASS=$((PASS+1)) ;;
   *) FAIL=$((FAIL+1)); echo "  FAIL: purge must say why it kept the evidence dir — got: $OUT" >&2 ;;
@@ -52,7 +66,7 @@ assert_absent "$REPO/docs/looptesting" "the second purge removes the evidence di
 # --- B. same-named user branch at a baseline ANCESTOR: KEPT ------------------
 # rev-list --count BASE..branch is 0 for an ancestor, which the old code read as
 # "no fix commits, safe to delete".
-WS2=$(mk_ws); trap 'rm -rf "$WS" "$WS2"' EXIT
+WS2=$(mk_ws); WS_ALL="$WS_ALL $WS2"
 REPO2="$WS2/proj"; WT2="$WS2/proj-qa-loop"
 ( cd "$REPO2" && echo b >> README.md && git commit -qam second ) >/dev/null 2>&1
 ( cd "$REPO2" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
@@ -73,7 +87,7 @@ esac
 # --- C. --discard-fixes does not override identity ----------------------------
 # Waiving fix commits is a statement about OUR branch's commits; it is not a
 # licence to delete a branch that is not ours.
-WS3=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3"' EXIT
+WS3=$(mk_ws); WS_ALL="$WS_ALL $WS3"
 REPO3="$WS3/proj"; WT3="$WS3/proj-qa-loop"
 ( cd "$REPO3" && echo b >> README.md && git commit -qam second ) >/dev/null 2>&1
 ( cd "$REPO3" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
@@ -86,7 +100,7 @@ if branch_exists "$REPO3"; then PASS=$((PASS+1)); else
 
 # --- D. control: untouched tag + fix-less branch are still deleted ------------
 # Identity checks must not turn the normal purge into a keep-everything.
-WS4=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4"' EXIT
+WS4=$(mk_ws); WS_ALL="$WS_ALL $WS4"
 REPO4="$WS4/proj"
 ( cd "$REPO4" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 mark_terminal "$REPO4"
@@ -101,7 +115,7 @@ case "$OUT4" in *"deleted baseline tag qa-baseline"*"deleted branch qa/loop-test
 
 # --- E. control: a branch WITH fix commits (descends from baseline) is still
 # deleted under --discard-fixes — identity holds, the waiver applies.
-WS5=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5"' EXIT
+WS5=$(mk_ws); WS_ALL="$WS_ALL $WS5"
 REPO5="$WS5/proj"; WT5="$WS5/proj-qa-loop"
 ( cd "$REPO5" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$WT5" && echo fix > fix.txt && git add fix.txt && git commit -qm "fix(qa): test fix" ) >/dev/null 2>&1
@@ -112,7 +126,7 @@ if branch_exists "$REPO5"; then FAIL=$((FAIL+1)); echo "  FAIL: control — our 
 else PASS=$((PASS+1)); fi
 
 # --- F. marker with no BASELINE_HEAD: nothing can be identified -> both kept ---
-WS6=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6"' EXIT
+WS6=$(mk_ws); WS_ALL="$WS_ALL $WS6"
 REPO6="$WS6/proj"
 ( cd "$REPO6" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 sed -i.bak '/^BASELINE_HEAD=/d' "$REPO6/docs/looptesting/.sandbox/ownership.env"; rm -f "$REPO6/docs/looptesting/.sandbox/ownership.env.bak"
@@ -133,7 +147,7 @@ case "$OUT6" in *"kept tag qa-baseline"*) PASS=$((PASS+1)) ;;
 # (`git tag <name>`, no -a/-m/-s), so an annotated object of that name was made by
 # someone else — the tag object itself is the evidence, and it carries the user's
 # message and signature.
-WS7=$(mk_ws); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7"' EXIT
+WS7=$(mk_ws); WS_ALL="$WS_ALL $WS7"
 REPO7="$WS7/proj"
 ( cd "$REPO7" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup (annotated-tag case)"
@@ -162,7 +176,7 @@ esac
 # them to re-run with --discard-fixes once they have. That follow-up reads the
 # marker, so deleting the marker here breaks the only documented route out
 # (README cleanup section) on the tool's NORMAL successful outcome.
-WS8=$(mk_ws); trap 'rm -rf "$WS" "$WS8"' EXIT
+WS8=$(mk_ws); WS_ALL="$WS_ALL $WS8"
 REPO8="$WS8/proj"
 ( cd "$REPO8" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup (fix-commits case)"
@@ -179,7 +193,7 @@ case "$OUT8" in
   *"--discard-fixes"*) PASS=$((PASS+1)) ;;
   *) FAIL=$((FAIL+1)); echo "  FAIL: purge must name the --discard-fixes follow-up — got: $OUT8" >&2 ;;
 esac
-assert_path "$REPO8/docs/looptesting/.sandbox/ownership.env" \
+assert_exists "$REPO8/docs/looptesting/.sandbox/ownership.env" \
   "the marker that follow-up needs survives the run that recommends it"
 # The follow-up must actually work. This is the assertion that would have caught
 # the defect: exit 3 here means the tool destroyed the route it just named.
