@@ -58,7 +58,22 @@ chmod +x "$shim/cp"
 
 PATH="$shim:$PATH" bash "$INSTALLER" --target "$sb3" >/dev/null 2>&1 &
 inst_pid=$!
-sleep 0.5
+# Wait for the state this case is about, instead of betting on how long it takes
+# to arrive. `sleep 0.5` was that bet, and when it lost — a loaded box, a cold
+# cache — the TERM landed before anything had been staged, and all three
+# assertions below passed over a run that never entered the window they describe
+# (audit T-13). Polling for the staging dir makes the precondition explicit, and
+# a precondition that does not hold is reported rather than assumed.
+staged=""
+_i=0
+while [ "$_i" -lt 100 ]; do          # up to ~10s, far beyond the shim's 2s window
+  staged="$(ls -d "$sb3"/loop-testing.staging.* 2>/dev/null | head -1)"
+  [ -n "$staged" ] && break
+  sleep 0.1
+  _i=$((_i + 1))
+done
+if [ -n "$staged" ]; then pass "signal: the interrupt window was entered (staging dir exists)"
+else fail "signal: no staging dir ever appeared — the interrupt case tested nothing"; fi
 kill -TERM "$inst_pid" 2>/dev/null   # single PID, not the group: the sleeping cp lives on
 wait "$inst_pid" 2>/dev/null
 

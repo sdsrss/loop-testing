@@ -24,7 +24,11 @@ assert_path()    { if [ -e "$1" ]; then pass "exists: $1"; else fail "missing: $
 assert_no_path() { if [ ! -e "$1" ]; then pass "absent: $1"; else fail "should not exist: $1 ($2)"; fi; }
 assert_eq()      { if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 (want '$2', got '$1')"; fi; }
 assert_ne()      { if [ "$1" != "$2" ]; then pass "$3"; else fail "$3 (both '$1')"; fi; }
-assert_contains(){ if printf '%s' "$1" | grep -qF "$2"; then pass "$3"; else fail "$3 (missing '$2')"; fi; }
+# `--` before the needle: without it a needle that starts with a dash — `--target`,
+# `-h`, any flag this installer's messages are supposed to name — is parsed as a
+# grep option, and the assertion dies with a usage error instead of asserting.
+# The sandbox and driver libs already terminate their options this way.
+assert_contains(){ if printf '%s' "$1" | grep -qF -- "$2"; then pass "$3"; else fail "$3 (missing '$2')"; fi; }
 
 # Make a fresh sandbox skills dir; echo its path. Registers cleanup via trap.
 make_sandbox() {
