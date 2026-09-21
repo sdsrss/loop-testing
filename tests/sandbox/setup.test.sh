@@ -203,6 +203,18 @@ chmod a-w "$REPOB/docs/looptesting"          # .sandbox stays writable
 OUTB=$( cd "$REPOB" && bash "$SETUP" --mode worktree 2>&1 )
 RCB=$?
 assert_eq "8" "$RCB" "unwritable docs/looptesting (writable .sandbox) -> documented exit 8"
+# The output was captured here and never looked at (audit T-12), while the
+# section above it asserts exactly this on its own capture. An exit code says the
+# run refused; it does not say the user was told which directory stopped it, and
+# "ready" together with exit 8 would be the contradiction most worth catching.
+case "$OUTB" in
+  *ready*) FAIL=$((FAIL+1)); echo "  FAIL: setup reported ready despite an unwritable evidence dir — got: $OUTB" >&2 ;;
+  *) PASS=$((PASS+1)) ;;
+esac
+case "$OUTB" in
+  *"$REPOB/docs/looptesting"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: the refusal must name the directory it could not write — got: $OUTB" >&2 ;;
+esac
 assert_absent "$WSB/proj-qa-loop" "no worktree created by that refusal"
 if ( cd "$REPOB" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/null 2>&1 ); then
   FAIL=$((FAIL+1)); echo "  FAIL: refusal left a qa branch behind (probe scope too narrow)" >&2
