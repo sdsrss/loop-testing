@@ -8,13 +8,23 @@ a before-the-fix measurement; T-08 is a shape removed rather than a flake
 reproduced, and the `--project /tmp` item had no defect to measure and carries
 positive controls instead.
 
-Suite 43 suites / 1739 assertions -> 43 / 1776, 0 failed on a space-free
-`$TMPDIR`. That qualifier used to hide a real gap and is now measured: under a
-`$TMPDIR` whose path contains a space the suite is **1770 / 6 failed**, in
-three places this batch did not touch — `update-check` (5), and the leak gate
-tripping on the two `session-stderr` suites, which leave 24 and 25 fixture
-directories behind there. Every suite this batch did touch is green under both
-shapes. The three are filed, not fixed here.
+Suite 43 suites / 1739 assertions -> 43 / 1784, 0 failed on a space-free
+`$TMPDIR`.
+
+That qualifier used to hide a real gap. Measured under a `$TMPDIR` whose path
+contains a space, and stated as **two** results because the runner keeps two
+counters and an earlier draft of this paragraph merged them into one wrong
+sentence:
+
+- the suite reports **1779 assertions, 5 failed**, all five in `update-check`;
+- separately, the fixture-leak gate fails the run on two suites —
+  `session-stderr` and `codex-session-stderr` — which leave 25 and 24
+  directories behind. A leak trip sets the run's exit status and contributes
+  **nothing** to the assertion count, so no arithmetic ever reconciled "5
+  failed" with three named places.
+
+All three predate this batch: the same 24 and 25 are measurable at `v0.14.1`.
+Every suite this batch touched is green under both shapes. Filed, not fixed.
 
 An independent review round HAS now been run over this batch, and it found more
 defects inside these seven fixes than the CHANGELOG first admitted. What it
@@ -51,9 +61,25 @@ round* below.
   The `legacy` arm — a marker predating worktree stamping — printed a
   ready-to-paste `git worktree remove --force <path>` with "check it first"
   beside it, long after the `unknown` and `foreign` arms stopped doing exactly
-  that. It now names plain `git worktree remove`, which refuses while anything
-  in there is uncommitted or untracked; that refusal is the check. The worktree
-  was kept before and is kept now — only the advice changed.
+  that. It now tells you to look first, with a command that can actually see
+  what is in there — `git status --porcelain --ignored -uall` — and gives the
+  removal as `git worktree remove -- "<path>"`. The `--` and the quotes are
+  part of the fix, not typography: the old line interpolated the path bare, so
+  a worktree under `~/My Projects/` produced advice git would misparse.
+
+  **And it tells you where that stops.** git refuses over tracked-modified and
+  untracked files; it does **not** refuse over ignored ones, and a finished loop
+  sandbox is exactly that state, because the loop commits its fixes and what
+  remains is build output, `.env` and logs. So `git worktree remove` will take
+  such a worktree silently, at exit 0. Measured: `.env` + `node_modules/` +
+  `dist/` + a log → `git status --porcelain` prints nothing, `--ignored -uall`
+  prints four lines, and the removal succeeds and destroys the lot.
+
+  The first draft of this bullet said the refusal *was* your check. It is not,
+  and this paragraph is the correction — see *The review round* below, where a
+  reviewer caught that promise and where the same mistake recurred one level
+  down in the inspection command originally named here. The worktree was kept
+  before and is kept now; only the advice changed.
 
 ### Test integrity
 
@@ -106,8 +132,12 @@ round* below.
 
   The credit is a chain, not one commit, and the first draft of this entry gave
   all four to `930a20f`. Three predate it: the hook-process note came from
-  `9674e5a`, the don't-pick-by-name warning from `63c3dd7`, and `BLOCKED` first
-  appears at `085eac8` (v0.5.0). `930a20f` contributed the *deterministic form*
+  `9674e5a`, the don't-pick-by-name warning from `63c3dd7`, and `085eac8`
+  (v0.5.0) is the oldest commit `git log -S'BLOCKED'` reports for that file —
+  weaker than it looks, and stated as such, because `-S` finds commits where an
+  occurrence COUNT changed, so it locates a commit that touched the string
+  rather than the one that introduced the clause. `930a20f` contributed the
+  *deterministic form*
   of a locate command that already existed as `ls -d`. The method first cited
   for this — "verified against the file, not inferred from the diff" — can
   establish that all four are present and can never establish which commit added
@@ -159,7 +189,13 @@ inherited `GIT_DIR` sent the case at an unrelated repository); a consumer of
 unresolved anchor gaining authority it never had; a `|| :` that swallowed a
 timeout and then blamed the driver for it; two cases whose own titles named a
 premise they did not check; and five comments that no longer described their
-code. All repaired above, each with its own commit and its own RED.
+code. All repaired above. **Not all with a RED**, and the first draft of this
+line said otherwise: a failing-test-first repair is possible where a behaviour
+changed — F1, F2, the anchor pair, the fixture probes — and is not where the
+change was a comment, a message string, or a gate whose target is already
+correct in the tree. Those carry a positive control instead: the defect is
+injected into a working-tree copy and the check is shown to go red. Where
+neither was done, the commit says so.
 
 **Corrections to the first draft of these notes**, which is the part a reader
 of the batch acted on. The commit messages are left as written — the repair
@@ -167,9 +203,12 @@ commits cite them by sha, and rewriting would dangle those citations — so the
 corrections live here:
 
 - `796af26` says "+7 assertions (stop-gate 72 -> 73, ledger-gate 161 -> 163)".
-  Measured at `796af26^`: **67 -> 73 and 158 -> 163, +11**. The 72 and 162 are
-  that commit's own *mutated-run* pass counts, quoted correctly two paragraphs
-  further down and misread as baselines at the top. Same error in `5712345`:
+  Measured at `796af26^`: **67 -> 73 and 158 -> 163, +11**. The 72 is that
+  commit's own *mutated-run* pass count, quoted correctly two paragraphs
+  further down and misread as a baseline at the top. The 161 has no such
+  excuse: it is not the baseline (158) and not the mutated run (162), so it is
+  simply a number that was never measured — which a reviewer caught while
+  checking the correction itself. Same error in `5712345`:
   "driver-limits 35 -> 36" is **33 -> 36**; its codex-limits figure is right and
   the +6 total is right.
 - The shape behind both: a RED run already contains the new test code, so it is
@@ -179,6 +218,19 @@ corrections live here:
   which is the property an intermittent bug is about.
 - `c5f2943`'s "with one site's `env -u` also reverted, the abort comes straight
   back" holds for case K's pair, not for all four sites.
+- `08634bf` says "the six repair commits cite those by sha" as the reason not to
+  rewrite history. The reason holds and the number does not: the range has kept
+  growing as the review round went on, and the count was stale the moment the
+  next repair landed. Cited counts of one's own commits age badly; the citation
+  argument never needed one.
+- **The user-facing `clean` bullet above kept the premise this round retracted.**
+  It told the reader that `git worktree remove` "refuses while anything in there
+  is uncommitted or untracked; that refusal is the check" — the exact sentence
+  `ab542cb` was written to withdraw, left standing in the section a reader of
+  the release acts on while the shipped script said the opposite and this
+  section called it "worse than the `--force` it replaced". Corrected above. It
+  is the v0.14.0 shape — notes claiming what the code does not do — occurring
+  inside the round convened to catch it, and it was a reviewer who found it.
 
 ## 0.14.1 — 2026-09-21
 
