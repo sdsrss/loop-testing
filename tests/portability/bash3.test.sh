@@ -89,6 +89,29 @@ else
 fi
 rm -f "$bprobe"
 
+# --- the two driver libs must not drift apart (review T-7) -------------------
+# tests/driver/lib.sh and tests/driver/codex-lib.sh are independent copies, not
+# a lib and a wrapper, and codex-lib.sh's note says the three wait helpers are
+# identical to the other's. A comment claiming that is worth nothing — the
+# previous one claimed byte-identity of the whole block and diff refuted it over
+# 13 lines. Check the part that actually matters instead.
+LIB_A="tests/driver/lib.sh"; LIB_B="tests/driver/codex-lib.sh"
+fn_drift=""; fn_empty=""
+for fn in test_wait_budget wait_lock_pid wait_pid_gone; do
+  a=$(sed -n "/^$fn() {/,/^}/p" "$LIB_A"); b=$(sed -n "/^$fn() {/,/^}/p" "$LIB_B")
+  # Self-probe, inline: two EMPTY extractions compare equal, which is how this
+  # check would pass forever if a function were renamed or reformatted.
+  if [ -z "$a" ] || [ -z "$b" ]; then fn_empty="$fn_empty $fn"; continue; fi
+  [ "$a" = "$b" ] || fn_drift="$fn_drift $fn"
+done
+if [ -n "$fn_empty" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: could not extract from one of the driver libs:$fn_empty — this check was comparing nothing" >&2
+elif [ -n "$fn_drift" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: the two driver libs have drifted:$fn_drift" >&2
+else
+  PASS=$((PASS+1))
+fi
+
 # The scan is only meaningful if the pattern actually fires; a silently-broken ERE
 # would make this suite a green no-op forever (same zero-discovery reasoning as
 # tests/run-all.sh). Prove the case-modification pattern matches a known-positive.

@@ -377,15 +377,20 @@ git init -q "$MONO" >/dev/null 2>&1
 mkdir -p "$MONO/pkgs/app" "$MONO/docs/looptesting/runs"
 printf '# ISSUES\n' > "$MONO/docs/looptesting/ISSUES.md"
 arm "$MONO"; write_state "$MONO" RUNNING 1
-# Fixture self-probe. Both halves have to hold or the case proves nothing: the
-# subpackage must carry no evidence dir of its own, and git must actually report
-# the toplevel from in there (no git, no walk-up, and the case would "pass" for
-# the wrong reason if it were asserting the other direction).
+# Fixture self-probe, and it asserts IDENTITY, not existence (review T-2). The
+# first version asked only that `git rev-parse --show-toplevel` print something
+# non-empty. With GIT_DIR exported — git sets it for its own hooks, for
+# `rebase --exec`, for `bisect run` — `git init -q "$MONO"` returns 0 having
+# created no repository at $MONO at all, and the toplevel that comes back is
+# whatever outer repo contains $TMPDIR. A non-empty check passes on that, DD
+# then passes without touching the fixture, and the suite writes .gate-count
+# into an unrelated repository. A probe that cannot fail is the thing this case
+# exists to prevent, and it was the probe.
 if [ ! -d "$MONO/pkgs/app/docs/looptesting" ] \
-   && [ -n "$( cd "$MONO/pkgs/app" && git rev-parse --show-toplevel 2>/dev/null )" ]; then
+   && [ "$( cd "$MONO/pkgs/app" && git rev-parse --show-toplevel 2>/dev/null )" = "$( cd "$MONO" && pwd -P )" ]; then
   PASS=$((PASS+1))
 else
-  FAIL=$((FAIL+1)); echo "  FAIL: fixture: subpackage must be evidence-free and inside a git repo" >&2
+  FAIL=$((FAIL+1)); echo "  FAIL: fixture: subpackage must be evidence-free and inside the repo THIS case created" >&2
 fi
 ( cd "$MONO/pkgs/app" && printf '{"stop_hook_active": false}' | CLAUDE_PROJECT_DIR="$MONO/pkgs/app" bash "$STOP" ) >/dev/null 2>&1
 assert_rc $? 2 "monorepo subpackage: gate reaches the toplevel evidence dir and still blocks (K-14)"

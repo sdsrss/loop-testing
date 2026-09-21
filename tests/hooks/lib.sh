@@ -24,6 +24,17 @@ export STOP LEDGER
 # set it explicitly on the command line, which still overrides.
 unset CLAUDE_PROJECT_DIR
 
+# Same class, different variable (review T-2). Fixtures here call `git init` in
+# $TMPDIR, and git exports GIT_DIR / GIT_WORK_TREE to its own hooks, to
+# `rebase --exec` and to `bisect run` — so a suite run from any of those
+# inherits them. `git init -q "$DIR"` then returns 0 having created nothing at
+# $DIR, every later git command in the fixture addresses the INHERITED repo, and
+# a case can pass having tested an unrelated repository — while writing state
+# into it. GIT_CEILING_DIRECTORIES goes too: it can stop the upward search the
+# K-14 walk-up depends on, which would make those cases fail for a reason that
+# has nothing to do with the code under test.
+unset GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES
+
 PASS=0
 FAIL=0
 

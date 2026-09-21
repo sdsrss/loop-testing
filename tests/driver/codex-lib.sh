@@ -6,6 +6,12 @@
 # (protect-path cases) point --skill-dir at a mktemp FAKE dir. The real `codex`
 # is NEVER invoked here. Each test cleans its own workspace.
 
+# Fixtures here call `git init` in $TMPDIR; git exports GIT_DIR / GIT_WORK_TREE
+# to its own hooks, to `rebase --exec` and to `bisect run`, and an inherited one
+# makes `git init` a silent no-op that leaves every later git command addressing
+# somebody else's repository. See the long note in tests/hooks/lib.sh (review T-2).
+unset GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
 CODEX_DRIVER="$REPO_ROOT/skills/loop-testing/scripts/unattended-codex.sh"
@@ -140,9 +146,14 @@ sessions_in_log() {
 }
 
 # --- waiting for a state, on a wall-clock budget (audit T-08) -----------------
-# Byte-identical to tests/driver/lib.sh's copy; this file is a separate lib, not
-# a wrapper around that one, so a helper added on one side does not exist on the
-# other. Adding these there first and running the codex suites is what said so:
+# The three FUNCTIONS below are identical to tests/driver/lib.sh's; the notes
+# around them are not. An earlier version of this line claimed byte-identity of
+# the whole block, which `diff` refuted over 13 lines (review T-7) — and the
+# claim was load-bearing, since it was the stated reason to believe the two
+# copies had not drifted. What is checkable is checked: tests/portability/
+# bash3.test.sh diffs the function bodies.
+# This file is a separate lib, not a wrapper around tests/driver/lib.sh, so a
+# helper added on one side does not exist on the other. Adding these there first and running the codex suites is what said so:
 # `$(test_wait_budget)` expanded to nothing, the budget arithmetic yielded an
 # immediate expiry, and both setsid cases failed. That is the `assert_path`
 # shape from the T-05 round (a helper reached from the wrong lib) caught by a
@@ -155,7 +166,17 @@ sessions_in_log() {
 # LOOP_TESTING_TEST_WAIT raises it on a slow machine without editing a count.
 # On expiry the callers report that THIS RUN did not reach the state — "no pid
 # appeared" is not "the driver never wrote one".
-test_wait_budget() { echo "${LOOP_TESTING_TEST_WAIT:-30}"; }
+# Validated, because it is fed to $(( )) under `set -u`: a non-numeric value is
+# read as a variable NAME there, so `LOOP_TESTING_TEST_WAIT=abc` aborts the suite
+# with "abc: unbound variable" — naming the typo as a shell variable (review
+# T-9 / P-08). A knob documented as the way to survive a slow host must not be
+# the fastest way to kill the run.
+test_wait_budget() {
+  case "${LOOP_TESTING_TEST_WAIT:-30}" in
+    ""|*[!0-9]*) echo 30 ;;
+    *)           echo "${LOOP_TESTING_TEST_WAIT:-30}" ;;
+  esac
+}
 
 # wait_lock_pid <project-dir> -> echoes the driver's lock pid, rc 0; rc 1 on expiry.
 wait_lock_pid() {
@@ -164,7 +185,11 @@ wait_lock_pid() {
   while :; do
     if [ -f "$f" ]; then
       read -r pid < "$f" 2>/dev/null
-      case "$pid" in ''|*[!0-9]*) pid="" ;; *) printf '%s' "$pid"; return 0 ;; esac
+      # `0` is rejected alongside empty (review T-8). It passes the numeric test,
+      # and `kill -0 0` then succeeds against the CALLER's own process group, so
+      # a zero pid burns the whole budget in wait_pid_gone and reduces
+      # `ps -o pgid= -p 0` to a `kill -TERM -- -""`.
+      case "$pid" in ''|0|*[!0-9]*) pid="" ;; *) printf '%s' "$pid"; return 0 ;; esac
     fi
     [ "$(date +%s)" -lt "$end" ] || return 1
     sleep 0.25

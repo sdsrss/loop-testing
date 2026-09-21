@@ -6,6 +6,12 @@
 # real repo or $HOME — these are destructive-path scripts. Each test cleans its
 # own workspace on exit:  WS=$(mk_ws); trap 'rm -rf "$WS"' EXIT
 
+# Fixtures here call `git init` in $TMPDIR; git exports GIT_DIR / GIT_WORK_TREE
+# to its own hooks, to `rebase --exec` and to `bisect run`, and an inherited one
+# makes `git init` a silent no-op that leaves every later git command addressing
+# somebody else's repository. See the long note in tests/hooks/lib.sh (review T-2).
+unset GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
 SETUP="$REPO_ROOT/skills/loop-testing/scripts/sandbox-setup.sh"

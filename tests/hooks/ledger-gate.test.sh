@@ -626,11 +626,14 @@ git init -q "$MONOL" >/dev/null 2>&1
 mkdir -p "$MONOL/pkgs/app" "$MONOL/docs/looptesting/runs"
 printf '# ISSUES\n' > "$MONOL/docs/looptesting/ISSUES.md"
 : > "$MONOL/docs/looptesting/.active"
+# Identity, not existence — see the note on the same probe in stop-gate.test.sh
+# (review T-2): with GIT_DIR exported, `git init` succeeds without creating the
+# repo and a non-empty toplevel is the OUTER repo's.
 if [ ! -d "$MONOL/pkgs/app/docs/looptesting" ] \
-   && [ -n "$( cd "$MONOL/pkgs/app" && git rev-parse --show-toplevel 2>/dev/null )" ]; then
+   && [ "$( cd "$MONOL/pkgs/app" && git rev-parse --show-toplevel 2>/dev/null )" = "$( cd "$MONOL" && pwd -P )" ]; then
   PASS=$((PASS+1))
 else
-  FAIL=$((FAIL+1)); echo "  FAIL: fixture: subpackage must be evidence-free and inside a git repo" >&2
+  FAIL=$((FAIL+1)); echo "  FAIL: fixture: subpackage must be evidence-free and inside the repo THIS case created" >&2
 fi
 json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$(issues_path "$MONOL")\",\"new_string\":\"### ISSUE-042 | P0 | VERIFIED | no replay behind this\"}}"
 ( cd "$MONOL/pkgs/app" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$MONOL/pkgs/app" bash "$LEDGER" ) >/dev/null 2>&1
