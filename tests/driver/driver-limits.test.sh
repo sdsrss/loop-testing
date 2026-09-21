@@ -160,12 +160,29 @@ stub=$(write_stub "$WS12"); write_state "$WS12" RUNNING 0
 assert_rc $? 0 "--no-watchdog: run proceeds to convergence without a watchdog binary"
 assert_file_contains "$WS12/docs/looptesting/driver.log" "WARNING: no timeout/gtimeout" "driver.log warns that the watchdog is disabled"
 
+# N2. D-07: on a host that HAS timeout/gtimeout — the common case — --no-watchdog
+#     waives nothing, because there is no refusal to waive: the session is still
+#     wrapped in `timeout -k 15 <budget>`. That was silent, while the flag's NAME
+#     and the refusal text it appears in ("pass --no-watchdog to accept unbounded
+#     sessions") both read as a promise of unbounded sessions on any host.
+#     The two halves pull in opposite directions on purpose: the driver must SAY
+#     the flag does not apply here, and it must still kill the hung session.
+WS12B=$(mk_proj)
+trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF" "$WS12" "$WS12B"' EXIT
+printf '#!/usr/bin/env bash\nsleep 300\n' > "$WS12B/hang-stub.sh"; chmod +x "$WS12B/hang-stub.sh"
+write_state "$WS12B" RUNNING 1
+bash "$DRIVER" --project "$WS12B" --claude-bin "$WS12B/hang-stub.sh" --no-watchdog \
+  --session-minutes 0 --max-sessions 5 >/dev/null 2>&1
+assert_rc $? 5 "--no-watchdog with a watchdog binary present: hung sessions still bounded (exit 5)"
+assert_file_contains "$WS12B/docs/looptesting/driver.log" "exit=124" "--no-watchdog does not disable the wall-clock kill (D-07)"
+assert_file_contains "$WS12B/docs/looptesting/driver.log" "no effect" "driver.log states the flag does not apply when a watchdog binary exists (D-07)"
+
 # O. Watchdog KILL path (R49): a session that HANGS is killed by the wall-clock
 #    watchdog (rc 124 recorded in driver.log), and two such fingerprint-static
 #    sessions trip NO_PROGRESS. This is the sole wall-clock bound on a hung
 #    session and was previously never exercised — only detection logic was.
 #    --session-minutes 0 clamps the per-session budget to 1s, so the test is fast.
-WS13=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF" "$WS12" "$WS13"' EXIT
+WS13=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF" "$WS12" "$WS12B" "$WS13"' EXIT
 printf '#!/usr/bin/env bash\nsleep 300\n' > "$WS13/hang-stub.sh"; chmod +x "$WS13/hang-stub.sh"
 write_state "$WS13" RUNNING 1
 bash "$DRIVER" --project "$WS13" --claude-bin "$WS13/hang-stub.sh" --session-minutes 0 --max-sessions 5 >/dev/null 2>&1
@@ -178,7 +195,7 @@ assert_file_contains "$WS13/docs/looptesting/driver.log" "exit=124" "driver.log 
 #    the loop, so the signal only dropped the concurrency lock while the driver
 #    kept launching sessions — the guard silently void, the user's Ctrl-C ignored.
 if command -v setsid >/dev/null 2>&1; then
-  WS14=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF" "$WS12" "$WS13" "$WS14"' EXIT
+  WS14=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$BINF" "$WS12" "$WS12B" "$WS13" "$WS14"' EXIT
   WS17="$WS14"
   LT17="$WS17/docs/looptesting"; mkdir -p "$LT17/runs"
   cat > "$WS17/slow-stub.sh" <<'SLOW'

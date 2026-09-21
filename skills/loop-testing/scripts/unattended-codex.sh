@@ -704,14 +704,26 @@ elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
 
 # DR-7: without a watchdog binary a single hung session would hang the driver
 # forever (--max-minutes is only checked BETWEEN sessions). Refuse to start
-# unless the caller explicitly accepts unbounded sessions. Kept identical to
+# unless the caller explicitly accepts running without one. Kept identical to
 # unattended-loop.sh.
+#
+# What --no-watchdog is, and what it is not (audit D-07): it waives THIS refusal
+# and nothing else. On a host that has timeout or gtimeout — the common case —
+# every session is still wrapped in `timeout -k 15 <session budget>`, so passing
+# the flag there changes nothing about how long a session may run. See the longer
+# note in unattended-loop.sh.
 if [ -z "$TIMEOUT_BIN" ]; then
   if [ "$NO_WATCHDOG" = "1" ]; then
     log "WARNING: no timeout/gtimeout on PATH and --no-watchdog given — sessions run unbounded (wall-clock watchdog disabled)"
   else
-    die "no timeout/gtimeout on PATH — the wall-clock watchdog cannot run (a hung session would hang the driver); install coreutils or pass --no-watchdog to accept unbounded sessions"
+    die "no timeout/gtimeout on PATH — the wall-clock watchdog cannot run (a hung session would hang the driver); install coreutils, or pass --no-watchdog to start anyway and accept that no wall-clock bound exists on this host"
   fi
+elif [ "$NO_WATCHDOG" = "1" ]; then
+  # Console too, not just driver.log: the misreading this guards against belongs
+  # to whoever typed the flag, and they are not reading a log file yet.
+  nw_note="NOTE: --no-watchdog has no effect on this host — $TIMEOUT_BIN is on PATH, so every session is still bounded by --session-minutes=$SESSION_MINUTES. The flag only waives the refusal to start when NEITHER timeout NOR gtimeout exists; there is no way to run a session unbounded on a host that has one."
+  log "$nw_note"
+  printf '%s\n' "unattended-codex: $nw_note" >&2
 fi
 
 # Same preflight as unattended-loop.sh: an absent or misspelled $CODEX_BIN used to

@@ -473,8 +473,12 @@ full-permission session on the same `STATE.md`. `SIGKILL` to the driver skips al
 the session keeps running and the lock is left naming a dead holder, which the next driver
 steals — so use one of the signals above instead.
 Also note: without `timeout`/`gtimeout` on PATH the drivers refuse to start (the wall-clock
-watchdog would be silently absent); pass `--no-watchdog` to explicitly accept unbounded
-sessions.
+watchdog would be silently absent); pass `--no-watchdog` to start anyway on such a host and
+accept that nothing bounds a session there. That refusal is all the flag waives — on a host
+that **has** either binary it grants nothing, every session is still wrapped in a watchdog
+below `--session-minutes`, and the drivers say so on stderr and in `driver.log` rather than
+accepting the flag in silence. There is no way to run a session unbounded on a host that has
+a watchdog binary.
 
 ---
 

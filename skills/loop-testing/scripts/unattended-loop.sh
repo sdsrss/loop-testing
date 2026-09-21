@@ -697,14 +697,29 @@ log_line "driver start: project=$PROJECT max_sessions=$MAX_SESSIONS max_minutes=
 
 # DR-7: without a watchdog binary a single hung session would hang the driver
 # forever (--max-minutes is only checked BETWEEN sessions). Refuse to start
-# unless the caller explicitly accepts unbounded sessions. Kept identical to
+# unless the caller explicitly accepts running without one. Kept identical to
 # unattended-codex.sh.
+#
+# What --no-watchdog is, and what it is not (audit D-07). It waives THIS refusal
+# and nothing else. It does not turn a watchdog off: on a host that has timeout
+# or gtimeout — the common case — every session is still wrapped in
+# `timeout -k 15 <session budget>` below, so passing the flag there changes
+# nothing about how long a session may run. That used to be silent, while the
+# flag's NAME and the refusal text it appears in both read as a general promise
+# of unbounded sessions. The flag keeps its meaning; the promises are narrowed to
+# it, and the case where it cannot apply now says so instead of passing quietly.
 if [ -z "$TIMEOUT_BIN" ]; then
   if [ "$NO_WATCHDOG" = "1" ]; then
     log_line "WARNING: no timeout/gtimeout on PATH and --no-watchdog given — sessions run unbounded (wall-clock watchdog disabled)"
   else
-    die "no timeout/gtimeout on PATH — the wall-clock watchdog cannot run (a hung session would hang the driver); install coreutils or pass --no-watchdog to accept unbounded sessions"
+    die "no timeout/gtimeout on PATH — the wall-clock watchdog cannot run (a hung session would hang the driver); install coreutils, or pass --no-watchdog to start anyway and accept that no wall-clock bound exists on this host"
   fi
+elif [ "$NO_WATCHDOG" = "1" ]; then
+  # Console too, not just driver.log: the misreading this guards against belongs
+  # to whoever typed the flag, and they are not reading a log file yet.
+  nw_note="NOTE: --no-watchdog has no effect on this host — $TIMEOUT_BIN is on PATH, so every session is still bounded by --session-minutes=$SESSION_MINUTES. The flag only waives the refusal to start when NEITHER timeout NOR gtimeout exists; there is no way to run a session unbounded on a host that has one."
+  log_line "$nw_note"
+  printf '%s\n' "unattended-loop: $nw_note" >&2
 fi
 
 # The agent binary gets the same treatment as the watchdog: check it BEFORE the

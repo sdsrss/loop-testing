@@ -183,13 +183,27 @@ assert_rc $? 5 "hung sessions killed by the watchdog -> NO_PROGRESS exit 5"
 assert_eq "2" "$(sessions_in_log "$WS16")" "watchdog bounded exactly 2 hung sessions"
 assert_file_contains "$WS16/docs/looptesting/driver.log" "exit=124" "driver.log records the watchdog kill (rc 124)"
 
+# R2. D-07: --no-watchdog waives the refusal in P and nothing else. With a
+#     watchdog binary on PATH it grants nothing — the hung session is still
+#     killed — and that used to happen in silence, while the flag's name and the
+#     refusal text both read as a promise of unbounded sessions. Mirrors loop N2.
+WS16B=$(mk_proj)
+trap 'chmod -R u+w "$FAKE13" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS16B"' EXIT
+printf '#!/usr/bin/env bash\nsleep 300\n' > "$WS16B/hang-stub.sh"; chmod +x "$WS16B/hang-stub.sh"
+write_state "$WS16B" RUNNING 1
+bash "$CODEX_DRIVER" --project "$WS16B" --codex-bin "$WS16B/hang-stub.sh" --no-protect --no-watchdog \
+  --session-minutes 0 --max-sessions 5 >/dev/null 2>&1
+assert_rc $? 5 "--no-watchdog with a watchdog binary present: hung sessions still bounded (exit 5)"
+assert_file_contains "$WS16B/docs/looptesting/driver.log" "exit=124" "--no-watchdog does not disable the wall-clock kill (D-07)"
+assert_file_contains "$WS16B/docs/looptesting/driver.log" "no effect" "driver.log states the flag does not apply when a watchdog binary exists (D-07)"
+
 # S. The skill-dir protection must RESTORE the original mode, not just u+w. The
 #    header promises "restored on EXIT"; protecting with `a-w` and restoring with
 #    `u+w` silently strips group/other write bits from the user's installed skill
 #    dir (~/.codex/skills/loop-testing) on every run — permanent on a shared,
 #    group-writable install.
 WS17=$(mk_proj); FAKE17=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-fakeskill.XXXXXX")
-trap 'chmod -R u+w "$FAKE13" "$FAKE17" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS17" "$FAKE17"' EXIT
+trap 'chmod -R u+w "$FAKE13" "$FAKE17" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS16B" "$WS17" "$FAKE17"' EXIT
 mkdir -p "$FAKE17/scripts"
 printf 'SKILL\n' > "$FAKE17/SKILL.md"
 printf 'x\n' > "$FAKE17/scripts/a.sh"
@@ -212,7 +226,7 @@ assert_eq "444" "$(stat -c '%a' "$FAKE17/frozen.txt" 2>/dev/null || stat -f '%Lp
 #    sessions kept launching. Mirrors loop driver P.
 if command -v setsid >/dev/null 2>&1; then
   WS18=$(mk_proj); FAKE18=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-fakeskill.XXXXXX")
-  trap 'chmod -R u+w "$FAKE13" "$FAKE17" "$FAKE18" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS17" "$FAKE17" "$WS18" "$FAKE18"' EXIT
+  trap 'chmod -R u+w "$FAKE13" "$FAKE17" "$FAKE18" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS16B" "$WS17" "$FAKE17" "$WS18" "$FAKE18"' EXIT
   printf 'SKILL\n' > "$FAKE18/SKILL.md"
   LT18="$WS18/docs/looptesting"; mkdir -p "$LT18/runs"
   cat > "$WS18/slow-stub.sh" <<'SLOW'
@@ -263,7 +277,7 @@ if command -v setsid >/dev/null 2>&1; then
   WS19=$(mk_proj)
   FAKE19=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-fakeskill.XXXXXX")
   SHIM19=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-shim.XXXXXX")
-  trap 'chmod -R u+w "$FAKE13" "$FAKE17" "$FAKE18" "$FAKE19" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS17" "$FAKE17" "$WS18" "$FAKE18" "$WS19" "$FAKE19" "$SHIM19"' EXIT
+  trap 'chmod -R u+w "$FAKE13" "$FAKE17" "$FAKE18" "$FAKE19" 2>/dev/null; rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$FAKE13" "$WS14" "$BINF" "$WS15" "$WS16" "$WS16B" "$WS17" "$FAKE17" "$WS18" "$FAKE18" "$WS19" "$FAKE19" "$SHIM19"' EXIT
   mkdir -p "$FAKE19/scripts"
   printf 'SKILL\n' > "$FAKE19/SKILL.md"
   printf 'x\n' > "$FAKE19/scripts/a.sh"
