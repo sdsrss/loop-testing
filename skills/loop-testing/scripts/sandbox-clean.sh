@@ -541,7 +541,17 @@ if [ -n "$CREATED_WORKTREE" ]; then
           # whatever stood at the recorded path — the original data-loss bug,
           # still armed for every sandbox that already exists. No identity
           # recorded is not permission.
-          echo_info "kept worktree $CREATED_WORKTREE — its ownership marker predates worktree stamping, so this run cannot tell it from one of yours; if it is the sandbox's, remove it with 'git worktree remove --force $CREATED_WORKTREE' — check it first, --force discards anything uncommitted or untracked in there" ;;
+          #
+          # And "not permission" has to survive into the advice, which it did not.
+          # `legacy` is `unknown`'s situation and not `foreign`'s: the stamp was
+          # never written, so there is no answer to read, and this arm went on
+          # printing a ready-to-paste `--force` long after the other two stopped.
+          # "check it first" next to the command that skips the check is not a
+          # check. Name the command that REFUSES instead: plain `git worktree
+          # remove` takes a clean worktree and declines a dirty one, so git makes
+          # the determination this run cannot, on the only machine that has the
+          # evidence — the user's.
+          echo_info "kept worktree $CREATED_WORKTREE — its ownership marker predates worktree stamping, so nothing records that this sandbox created it and this run cannot tell it from one of yours. Once you have established it is the sandbox's, remove it with 'git worktree remove $CREATED_WORKTREE': git will refuse that while anything in there is uncommitted or untracked, and that refusal is the check — read what it names before overriding it. No --force is printed here on purpose; this run cannot tell you whose work it would discard" ;;
         *)  # ours
           if git -C "$TOP" worktree remove --force "$CREATED_WORKTREE" >/dev/null 2>&1; then
             echo_info "removed worktree $CREATED_WORKTREE"

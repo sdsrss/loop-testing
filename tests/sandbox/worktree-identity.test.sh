@@ -149,6 +149,21 @@ assert_ok $? "clean over a legacy marker exits 0"
 assert_exists "$WT9" "clean does not force-remove a worktree it cannot identify"
 assert_exists "$WT9/user-untracked.txt" "untracked work at that path survives"
 assert_file_contains "$WS9/clean.out" "git worktree remove" "clean names the exact manual command"
+# ...and the command it names must be the one that REFUSES when there is work to
+# lose. `legacy` is `unknown`'s situation, not `foreign`'s: the stamp was never
+# written, so there is no identity to read and this run cannot say whose work is
+# in there. Both of those arms stopped handing over a paste-ready --force (cases
+# 32 and 34); this one kept doing it, with "check it first" written next to the
+# command that skips the check. Plain `git worktree remove` succeeds on a clean
+# worktree and refuses on this one — the fixture above put untracked work there
+# on purpose — so git performs the check instead of asking for it.
+# `--` because the needle begins with a dash.
+if grep -qF -- "worktree remove --force" "$WS9/clean.out"; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: clean handed the user --force for a worktree it had just said it could not identify" >&2
+else PASS=$((PASS+1)); fi
+assert_file_contains "$WS9/clean.out" "will refuse" \
+  "clean says git itself will refuse while there is uncommitted or untracked work there"
 
 # Resuming is NOT the destructive half. Adopting a worktree to continue a run is
 # reversible — at worst QA commits land on a branch and can be undone — while a
