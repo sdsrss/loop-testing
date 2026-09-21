@@ -1,5 +1,108 @@
 # Changelog
 
+## Unreleased
+
+### Corrections to the 0.14.0 notes, and the fixes behind them
+
+0.14.0 shipped without an independent review round — stated in its own notes at
+the time. That round has now happened, and it found that four of the entries
+below claimed more than the code delivered. The corrections come first because
+they are the part a reader of 0.14.0 acted on.
+
+**Four findings were reported closed that were not.**
+
+- **D-06, the driver lock.** 0.14.0 says "A driver lock held by a process you
+  cannot signal is refused instead of stolen", with no qualifier, and names "another
+  account on a shared box" as the case. That is the case it did not close. The
+  fix replaced one probe that cannot answer (`kill -0` returning EPERM) with two
+  that can also fail to answer — and both failures resolved to `gone`, the verdict
+  that authorises stealing the lock. On a procfs mounted `hidepid=2` (ordinary
+  hardening on exactly the shared box the note names) a live holder is invisible
+  and its lock was still stolen. So was a holder on a host whose `ps` cannot
+  answer. Both are now closed, by requiring a negative answer to prove the probe
+  could have answered at all.
+- **S-04, the unidentifiable worktree.** The guard tested whether
+  `git worktree list --porcelain` FAILED. It also exits 0 and silently omits an
+  entry whose admin dir is unreadable, which is the trigger the audit named, so
+  the omission still came out as "already gone": `--purge` deleted the baseline
+  tag, the branch, the evidence dir and the ownership marker over a worktree
+  still standing on disk, and closed at exit 0 — the success code. Now closed by
+  testing for the checkout's own `.git` file, which survives both failure modes.
+- **S-06, clean signalling its own ancestors.** Partly closed, and the note did
+  not say "partly". The guard covers this process and its parent unconditionally,
+  and ancestors above that only when `ps` can answer — the loop could not tell
+  "reached the top of the process tree" from "could not ask", so the chain
+  silently truncated and the cleanup sent SIGTERM to its own parent and
+  grandparent. 0.14.0 is still strictly better than 0.13.0 here, where an
+  ancestor in `.pids` self-killed the cleanup unconditionally; it was the
+  completeness that was overstated.
+- **T-10, the leaking test fixture.** The commit titled "audit T-10" changed a
+  different file, for a different defect. The file the finding names was never
+  touched and still leaked every workspace it had made whenever it exited early
+  — measured at 11 against 1 for the control. Now fixed where the finding is.
+  (The audit report's own line numbers for T-10 are stale, which is the likely
+  reason the fix went elsewhere; that report has been corrected too.)
+
+**"No file format changed" was wrong.** `templates/FINAL_REPORT.md` is
+instantiated verbatim into your `docs/looptesting/`, and 0.14.0 renumbered it.
+Tooling keyed to the old section numbers is affected, and two of the changes are
+not shifts but changes of meaning:
+
+| Section | 0.13.0 | 0.14.0 |
+|---|---|---|
+| §6 | 遗留低级问题（P3） | 既有/环境问题 |
+| §7 | 代码交付与红线声明 | 验证清单 |
+| §8 | 残余风险与续跑入口 | 代码交付与红线声明 |
+| §9 | — | 残余风险与续跑入口 |
+
+A parser reading "§7 = 红线声明" now reads 验证清单, and "§8 = 残余风险" now
+reads the red-line declaration. Nothing else about the format changed.
+
+**"Both were verified by injecting the exact defects they exist for"** was true
+when written and outgrew itself two commits later. The two runner gates were
+injection-tested when they landed; the commit that widened their pattern to two
+more fixture prefixes re-verified with a full green run instead — and a
+permanently dead gate produces exactly that. The gates do work; the claim
+covered more than the evidence did.
+
+### Fixes
+
+- A worktree that `git worktree list` omits at exit 0 is no longer read as gone,
+  and the branch deletion is gated on the same verdict — git's own "checked out
+  elsewhere" refusal reads the same unreadable admin dir, so it was not a
+  protection but a probe that failed silently (S-04, second arm).
+- A driver lock holder that no probe can see is refused rather than stolen, and
+  the verdict `case` is now matched-to-steal instead of matched-to-refuse: it
+  listed the two refusals and let anything unanticipated fall through to the
+  removal (D-06, residual).
+- `clean` stops before the `.pids` stage when it cannot walk its own ancestry,
+  and leaves the ledger for a later run rather than clearing a stage that did
+  nothing (S-06, residual).
+- The refusal over a worktree this run cannot identify no longer hands you
+  `git worktree remove --force`. "If it is the sandbox's" reads as a yes exactly
+  when the probe failed, which is when the worktree usually IS the sandbox's.
+- A parallel install's staging directory is no longer reaped when its owner is
+  alive but unsignalable. The cost was not the discarded copy: a reap landing
+  between the victim's two `mv`s left that install with its skill directory gone
+  and only the `.bak` beside it (IN-1, residual).
+- The last `$HOME` sibling of the two fixes that shipped in 0.14.0:
+  `${CODEX_HOME:-$HOME/.codex}` reads as guarded and is not — the `:-` protects
+  the outer name while the inner `$HOME` is expanded unguarded exactly when
+  CODEX_HOME is unset. Under `set -u` that killed the Codex driver before
+  `--help`.
+- Test integrity: a negative assertion handed a `-`-leading needle straight to
+  `grep`, which consumed it as an option and returned "not found" — reporting a
+  present string as absent AND counting it as a pass. Four helpers were missing
+  `--`; all four are fixed.
+- The fixture-leak gate identifies leaks by containment now, not by a
+  hand-maintained list of name prefixes that nothing kept in sync. Two counting
+  defects went with it: moa suites were counted with `find` and executed with a
+  one-level glob, and a suite's failed assertions were printed in TOTAL but never
+  reached the ALL GREEN verdict.
+
+Suite: 43 suites / 1657 assertions → 43 / 1719, measured with
+`bash tests/run-all.sh | grep '^TOTAL:'` on a clean tree, not recalled.
+
 ## 0.14.0 — 2026-09-21
 
 ### What runs after something has already gone wrong
