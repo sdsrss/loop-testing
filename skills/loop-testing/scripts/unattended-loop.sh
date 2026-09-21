@@ -231,8 +231,14 @@ holder_state() { # pid
     # Same rule, same reason: `ps -p` exits non-zero both for "no such process"
     # and for a `ps` that could not answer at all — and `ps -o ppid= -p 999999`
     # even prints nothing while exiting 0, so status alone is not a signal here.
-    # Our own PID must be visible to us, so it is this probe's canary.
-    if ps -p "$$" >/dev/null 2>&1; then printf 'gone'; else printf 'unknown'; fi
+    #
+    # The canary is PID 1, not `$$`. The whole point of a canary here is to
+    # detect a probe that cannot see processes belonging to OTHER accounts —
+    # which is the case the holder is in. Our own process is visible to us under
+    # every such restriction, so `ps -p $$` succeeds exactly when the probe is
+    # blind and would have confirmed nothing. PID 1 always exists and belongs to
+    # root, so it is the smallest thing that tests the right property.
+    if ps -p 1 >/dev/null 2>&1; then printf 'gone'; else printf 'unknown'; fi
     return
   fi
   printf 'unknown'

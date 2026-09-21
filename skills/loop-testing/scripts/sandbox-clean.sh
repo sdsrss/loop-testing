@@ -221,7 +221,7 @@ wt_gitdir_of() {
 # collapsed a detached HEAD, a missing text tool and a genuine stranger into a
 # single verdict, which stranded the sandbox's own worktree.
 wt_ownership() {
-  local p="$1" want="$2" gd got list nl   # $3 (recorded branch) is no longer consulted
+  local p="$1" want="$2" gd got list nl _gl   # $3 (recorded branch) is no longer consulted
   # Builtins only from here down. The first version parsed `git worktree list`
   # with awk, so a missing awk read as "not ours"; swapping awk for `cat` only
   # moved that hole. Any external command on this path can fail, and a failed
@@ -254,7 +254,33 @@ wt_ownership() {
       # `.git` as a DIRECTORY, and that one really is absent as far as this
       # sandbox is concerned — `-e` would manufacture a permanent exit 4 over a
       # user's own repository.
-      if [ -f "$p/.git" ]; then printf 'unknown'; else printf 'absent'; fi
+      # Three states, not two. `-f` false can mean "no worktree here" or "this
+      # process cannot look". An unreadable admin dir alone is not enough to get
+      # here — git still LISTS an inaccessible worktree — but an unreadable admin
+      # dir together with an unsearchable PARENT is, and that pair has one
+      # plausible cause: a sandbox created by another account on a shared box,
+      # which is the scenario the finding names. `-x` on the parent is the "can I
+      # look at all" test, and `${p%/*}` keeps this function builtins-only as its
+      # header requires.
+      #
+      # A `.git` FILE is not by itself a linked worktree: `git init
+      # --separate-git-dir`, a submodule checkout and a plain file of that name
+      # all have one. Only a linked worktree of THIS repo points into
+      # `$TOP/.git/worktrees/`, so that is what makes it ours — without the
+      # check, a user's own --separate-git-dir repo parked at the freed path
+      # reads as `unknown` and earns a permanent exit 4, with a diagnosis
+      # ("the registry could not be read") that is false: it read fine.
+      if [ -f "$p/.git" ]; then
+        _gl=""
+        IFS= read -r _gl < "$p/.git" 2>/dev/null
+        case "$_gl" in
+          "gitdir: $TOP/.git/worktrees/"*) printf 'unknown'; return ;;
+          "") printf 'unknown'; return ;;   # present but unreadable — cannot tell
+        esac
+        printf 'absent'; return             # someone else's .git file
+      fi
+      if [ -e "$p" ]; then printf 'absent'; return; fi
+      if [ -x "${p%/*}" ]; then printf 'absent'; else printf 'unknown'; fi
       return ;;
   esac
   # Registered, but the directory is gone. This is the one case where ownership
@@ -333,10 +359,20 @@ if [ -f "$PIDS_FILE" ]; then
   # prints 0, so it exits through the `-gt 1` test below.
   LOOP_PROCFS="${LOOP_TESTING_PROCFS:-/proc}"   # test seam; never set in normal use
   WALK_COMPLETE=0
+  PIDS_UNACTED=0   # recorded services this run declined to stop; see the purge
+                   # keep-case — leaving the ledger "for a later run" is only
+                   # true if something keeps the directory it lives in.
   SELF_CHAIN=" $$ $PPID "
   _sp="$PPID"
   _hops=0
-  while [ "$_hops" -lt 64 ]; do
+  # The bound is a backstop, not the terminator: the cycle check below breaks on
+  # any repeated PID, so a real tree always ends at the `-gt 1` arm. It was 64,
+  # which a deep chain can legitimately exceed — measured at 77 hops of nested
+  # shells — and falling out of the loop leaves WALK_COMPLETE=0, so the stage was
+  # skipped while the message asserted that "ps gave no answer and procfs had
+  # none either" when both had answered every hop. Past any real process tree,
+  # so WALK_COMPLETE=0 means what the message says it means.
+  while [ "$_hops" -lt 4096 ]; do
     [ "$_sp" -gt 1 ] 2>/dev/null || { WALK_COMPLETE=1; break; }   # reached the top
     _spp="$(ps -o ppid= -p "$_sp" 2>/dev/null | tr -dc '0-9')"
     # `ps -p` exits non-zero for "no such process" and for a ps that could not
@@ -383,6 +419,7 @@ if [ -f "$PIDS_FILE" ]; then
     # place (see the guarded clear below) so a later run on a host where the walk
     # works can still stop these services.
     if [ "$WALK_COMPLETE" = 0 ]; then
+      PIDS_UNACTED=$(( PIDS_UNACTED + 1 ))
       echo_info "refusing to signal PID $pid from .pids (this run could not walk its own ancestry — ps gave no answer and procfs had none either — so it cannot prove this PID is not one of its own ancestors; $PIDS_FILE is left for a later run)"
       continue
     fi
@@ -398,11 +435,13 @@ if [ -f "$PIDS_FILE" ]; then
 $(collect_tree "$pid")"
   done < "$PIDS_FILE"
   TARGETS=$(printf '%s\n' "$TARGETS" | grep -E '^[0-9]+$' | sort -un)
-  # Backstop. The guard above rejects a RECORDED pid that is one of our own;
-  # this rejects anything `collect_tree` pulled in while expanding one. They are
-  # not the same set: a recorded PID that is an ancestor of this script has this
-  # script among its descendants, so the expansion is the second way our own PID
-  # reaches the kill list. pgrep output is unpadded, and so is SELF_CHAIN.
+  # Backstop, and defensive rather than load-bearing: the per-PID guard above
+  # `continue`s before `collect_tree` ever runs, and with WALK_COMPLETE=1 any PID
+  # whose descendants include us is already in SELF_CHAIN — so no input reaches
+  # this filter today. It stays because a future reordering of those two steps
+  # would silently re-open the path, and the cost is one comparison per target.
+  # (An earlier version of this comment described that path as live, which it is
+  # not.) pgrep output is unpadded, and so is SELF_CHAIN.
   _kept=""
   for _t in $TARGETS; do
     case "$SELF_CHAIN" in
@@ -486,7 +525,16 @@ if [ -n "$CREATED_WORKTREE" ]; then
           # Removal is --force: uncommitted AND untracked work would go with it.
           echo_info "kept worktree $CREATED_WORKTREE — it is not this sandbox's (its ownership stamp does not match), so this run will not remove it" ;;
         unknown)
-          echo_info "kept worktree $CREATED_WORKTREE — this run could not confirm it belongs to this sandbox and will not force-remove a worktree it cannot identify; if it is the sandbox's, remove it with 'git worktree remove --force $CREATED_WORKTREE' — check it first, --force discards anything uncommitted or untracked in there" ;;
+          # No removal command here, and the omission is deliberate. `foreign`
+          # above is an ANSWER — the stamp was read and it is somebody else's —
+          # and it offers none either. `unknown` is the absence of an answer, so
+          # offering one here was the inverse of the split sandbox-setup.sh uses,
+          # and the qualifier does not rescue it: "if it is the sandbox's" reads
+          # as a yes exactly when the probe failed, which is when the worktree
+          # usually IS the sandbox's and --force would discard its uncommitted
+          # and untracked work. This arm also became reachable from more states
+          # when a failed registry read started producing `unknown`.
+          echo_info "kept worktree $CREATED_WORKTREE — this run could not confirm whether it belongs to this sandbox: either the worktree registry or the worktree's own ownership record could not be read (an unreadable .git/worktrees is the usual cause). Fix that and run clean again. No removal command is offered here on purpose — --force discards anything uncommitted or untracked, and this run cannot tell you whose work that would be" ;;
         legacy)
           # Marker predates ownership stamping, so nothing here records which
           # worktree this sandbox created. The pre-stamp behavior was to remove
@@ -702,6 +750,16 @@ if [ "$PURGE" = 1 ]; then
     # worktree nothing can identify — the orphan the fail-closed design exists to
     # prevent. Resolve the worktree first; purge again afterwards.
     echo_info "purge: kept evidence dir $LT_DIR — a worktree this run could not claim is still registered at $CREATED_WORKTREE, and the marker here is the only record that can identify it; deal with that worktree first, then purge again"
+  elif [ "${PIDS_UNACTED:-0}" -gt 0 ]; then
+    # The .pids stage declined to signal services it could not prove were not
+    # this cleanup's own ancestors, and said the ledger was "left for a later
+    # run". On a purge that sentence is only true if something keeps the
+    # directory the ledger lives in — otherwise the same run that promised a
+    # later one deletes the evidence of what it skipped, and closes at exit 0
+    # with the services still running. Keeping `.pids` alone inside an otherwise
+    # deleted directory is worse than useless: its meaning depends on the marker
+    # that would have gone with the dir.
+    echo_info "purge: kept evidence dir $LT_DIR — this run could not walk its own ancestry, so it left ${PIDS_UNACTED} recorded service(s) running rather than risk signalling itself; $PIDS_FILE names them, and the marker here is what a later run needs to finish the job"
   elif [ "$REFS_KEPT" = 1 ]; then
     # Same rule as the worktree above, for the stage that learned to stop short
     # later. A ref was kept — it holds unharvested fix commits, it is checked
@@ -796,6 +854,11 @@ if [ "$PURGE" = 1 ]; then
   if [ "$WT_KEPT" = 1 ]; then
     PURGE_VERB="purge incomplete: the worktree above is still there, so this run stopped short of removing everything it owns. Deal with that worktree, then run --purge again."
     PURGE_EXIT=4
+  elif [ "${PIDS_UNACTED:-0}" -gt 0 ]; then
+    # Same reason, different stage. Exit 0 here would report a run that left
+    # services alive as a completed teardown.
+    PURGE_VERB="purge incomplete: ${PIDS_UNACTED} recorded service(s) are still running because this run could not prove they were not its own ancestors. Stop them, or re-run from a shell whose ancestry can be walked, then --purge again."
+    PURGE_EXIT=4
   else
     PURGE_VERB="purge done."
     PURGE_EXIT=0
@@ -814,5 +877,13 @@ if [ "$WT_KEPT" = 1 ]; then
   echo_info "done. Kept: the worktree named above, the qa branch, baseline tag, docs/looptesting/ evidence."
 else
   echo_info "done. Kept: qa branch, baseline tag, docs/looptesting/ evidence."
+fi
+# A run that declined to stop recorded services has not finished either, and the
+# refusals above go to stdout where a caller reading only the exit code never
+# sees them. Same shape as the worktree case: "ran but stopped short" is exit 4,
+# and the closing line has to name the stage rather than say "done." over it.
+if [ "${PIDS_UNACTED:-0}" -gt 0 ]; then
+  echo_info "clean incomplete: ${PIDS_UNACTED} recorded service(s) in $PIDS_FILE are still running — this run could not walk its own ancestry, so it could not prove they were not its own. The ledger is kept; re-run from a shell whose ancestry can be walked, or stop them by hand."
+  exit 4
 fi
 exit 0

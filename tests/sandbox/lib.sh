@@ -20,9 +20,15 @@ FAIL=0
 # in a subdir so worktree sibling paths ($WS/proj-qa-loop) stay inside $WS.
 mk_ws() {
   local ws
-  ws=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-sb.XXXXXX")
+  # Both checks are load-bearing. There is no `set -e` here, so an unchecked
+  # `mktemp` leaves $ws empty, the unchecked `cd ""` fails with "null directory"
+  # and CONTINUES, and everything below then runs in the caller's cwd — which for
+  # run-all.sh is the repository root, where `mkdir proj; git init` is the last
+  # thing anyone wants. A deleted TMPDIR is only one way to get there; a full or
+  # read-only TMPDIR is another.
+  ws=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-sb.XXXXXX") || return 1
   (
-    cd "$ws"
+    cd "$ws" || exit 1
     mkdir proj
     cd proj
     git init -q

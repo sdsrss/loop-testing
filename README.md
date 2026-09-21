@@ -310,7 +310,7 @@ A finished run (after `sandbox-clean.sh`) **deliberately keeps** these artifacts
 
 | Artifact | Where | Why it is kept |
 |---|---|---|
-| `docs/looptesting/` evidence dir — STATE / ISSUES / PLAN / FEATURE_MATRIX / SUGGESTIONS / `runs/` / `decisions/` / FINAL_REPORT.md, plus `driver.log`, an emptied `.pids`, and `.sandbox/ownership.env` (stamped `CLEANED_AT`) | target project | the run's audit trail and the resume contract |
+| `docs/looptesting/` evidence dir — STATE / ISSUES / PLAN / FEATURE_MATRIX / SUGGESTIONS / `runs/` / `decisions/` / FINAL_REPORT.md, plus `driver.log`, `.pids` (emptied — unless `clean` could not walk its own ancestry, in which case it still names the services it declined to signal and the run exits 4), and `.sandbox/ownership.env` (stamped `CLEANED_AT`) | target project | the run's audit trail and the resume contract |
 | the qa worktree, when `clean` could not establish that it owns it (a sandbox created before v0.10.0, or one whose ownership stamp is unreadable) | target repo's sibling dir | removing it is `--force`, which would discard anything uncommitted or untracked in it — so `clean` names it and leaves the call to you |
 | `qa/loop-testing` branch | target repo | **holds the fix commits — they exist nowhere else** |
 | `qa-baseline` tag | target repo | marks the pre-run baseline for diffing |

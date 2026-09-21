@@ -11,23 +11,28 @@ set -u
 #   * the trap at the WSD site referenced $WSB and $WSC, whose first assignments
 #     are 27 and 40 lines further down. Under `set -u` an early exit anywhere in
 #     between killed the trap on its first unbound reference and nothing at all
-#     was removed — measured at 11 leaked workspaces against 1 for the control;
+#     was removed. Measured by injecting `exit 7` into that window: 11 leaked
+#     workspaces before this change, 0 after it, with the injection diffed to
+#     prove it landed and rc=7 confirming it executed;
 #   * the two traps that follow it never listed WSD, so an early exit there
 #     dropped that one workspace silently.
 #
 # That is audit T-10. The commit that claimed it changed a different file for a
 # different defect, and this file — the one the finding names — was never touched.
 #
-# Newline-delimited rather than space-split: the space-split accumulator four
-# other suites use is not safe for a $TMPDIR containing a space.
-WS_ALL=""
-track_ws() { WS_ALL="${WS_ALL}$1
-"; }
+# An array, not a delimited string. The eight suites still using the space-split
+# form are unsafe for any $TMPDIR containing a space, a tab, a newline or a glob
+# character; a newline-delimited string fixes three of those and still splits
+# `/tmp/qa<newline>root` into `/tmp/qa` and `root/loop-testing-sb.XXXXXX`, and
+# `set -f` does not close that. An array is the only form that is correct for
+# every path and removes the need to reason about IFS at all.
+#
+# bash 3.2 under `set -u`: `${#A[@]}` on an empty array is safe, `"${A[@]}"` is
+# the one that errors — so the count test has to short-circuit before it.
+WS_ALL=()
+track_ws() { WS_ALL+=("$1"); }
 cleanup_all() {
-  [ -n "$WS_ALL" ] || return 0
-  local IFS='
-'
-  rm -rf -- $WS_ALL
+  if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi
 }
 trap cleanup_all EXIT
 

@@ -263,7 +263,7 @@ hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 
 | 产物 | 位置 | 保留原因 |
 |---|---|---|
-| `docs/looptesting/` 证据目录——STATE / ISSUES / PLAN / FEATURE_MATRIX / SUGGESTIONS / `runs/` / `decisions/` / FINAL_REPORT.md,及 `driver.log`、清空的 `.pids`、盖了 `CLEANED_AT` 的 `.sandbox/ownership.env` | 目标项目 | 运行审计线索 + 断点续跑契约 |
+| `docs/looptesting/` 证据目录——STATE / ISSUES / PLAN / FEATURE_MATRIX / SUGGESTIONS / `runs/` / `decisions/` / FINAL_REPORT.md,及 `driver.log`、`.pids`（已清空——除非 `clean` 走不完自己的祖先链，那时它会保留 ledger 点名未处理的服务并以 exit 4 结束）、盖了 `CLEANED_AT` 的 `.sandbox/ownership.env` | 目标项目 | 运行审计线索 + 断点续跑契约 |
 | qa worktree,当 `clean` 无法确认其归属时(v0.10.0 之前创建的沙箱,或归属标记不可读) | 目标仓库的同级目录 | 删除它要用 `--force`,会连同其中未提交/未跟踪的内容一起丢弃——所以 `clean` 只报出它,由你决定 |
 | `qa/loop-testing` 分支 | 目标仓库 | **承载全部修复 commit——只存在于该分支** |
 | `qa-baseline` tag | 目标仓库 | 标记跑前基线,便于 diff |

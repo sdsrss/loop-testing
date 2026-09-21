@@ -37,23 +37,49 @@ tests_found=0
 suites=0
 asserts=0
 afails=0
+_ra_rcfail=0   # set when any suite failed through its exit code, so the
+               # assertion gate below does not name a cause that is false
 # Each suite's last tally line is "<suite>: <N> passed, <M> failed". Capturing
 # the run lets us sum those into one TOTAL, so a published assertion count is
 # recomputable from `bash tests/run-all.sh | tail -1` instead of being summed by
 # hand over whichever suites happened to print a number (audit T-04).
 _ra_out="$(mktemp "${TMPDIR:-/tmp}/loop-runall.XXXXXX")" || { echo "FAILED: mktemp"; exit 1; }
 # Give this run its own TMPDIR. Every suite resolves its fixtures through
-# `${TMPDIR:-/tmp}` — the four lib helpers and the ~30 suites that call mktemp
-# directly alike — so exporting one here puts all of them inside a single
-# directory this runner owns, with no suite edits at all. That containment IS the
-# fixture identity: what leaked is what is still in here, established by position
-# rather than by name.
+# `${TMPDIR:-/tmp}` — the seven helpers across five test libs, and the 14 suites
+# that call mktemp directly, alike — so exporting one here puts all of them
+# inside a single directory this runner owns, with no suite edits at all. That
+# containment IS the fixture identity: what leaked is what is still in here,
+# established by position rather than by name.
 #
 # `_ra_out` is created BEFORE the root on purpose, so this runner's own capture
 # file sits outside the watched directory and cannot register as residue.
 _ra_root="$(mktemp -d "${TMPDIR:-/tmp}/loop-runroot.XXXXXX")" || { echo "FAILED: mktemp -d"; exit 1; }
 export TMPDIR="$_ra_root"
-trap 'rm -f "$_ra_out"; rm -rf "${_ra_root:?}"' EXIT INT TERM HUP
+# One cleanup path on bare EXIT, and the signal arms only `exit` into it. A bash
+# trap handler RETURNS to the interrupted point unless it exits, so handling the
+# signals directly here deleted the directory every suite is using as $TMPDIR and
+# then carried on running the remaining suites against a path that no longer
+# exists — with the mk_* helpers' unchecked `cd "$ws"` turning that into `mkdir
+# proj; git init` in the runner's own cwd, which is the repository root.
+#
+# This repo already documents this exact shape twice, in driver-limits.test.sh
+# and codex-limits.test.sh ("the handler ran and RETURNED into the loop, so the
+# signal only dropped the lock while the driver kept launching sessions"), and
+# all three shipped scripts use the form below. This was the one site that did
+# not; 128+n matches them.
+# `chmod -R u+w` first: the worktree-identity cases that make `.git/worktrees`
+# unreadable restore the mode themselves, but an interrupted run does not reach
+# that line, and `rm -rf` over a 000 subtree fails with its status discarded —
+# stranding the whole root rather than the one directory.
+_ra_cleanup() {
+  rm -f "$_ra_out"
+  chmod -R u+w "${_ra_root:?}" 2>/dev/null
+  rm -rf "${_ra_root:?}"
+}
+trap _ra_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 # Fixture-leak gate. Every suite builds its workspaces under $TMPDIR and removes
 # them in an EXIT trap. A trap that misses one leaks silently: the suite is green,
 # the tally is right, and the only evidence is a directory nobody looks at — one
@@ -92,7 +118,7 @@ while IFS= read -r -d '' t; do
   # stopped early while still printing ALL GREEN: 12 of 35 suites ran.
   if bash "$t" </dev/null >"$_ra_out" 2>&1; then rc=0; else rc=1; fi
   cat "$_ra_out"
-  if [ "$rc" -eq 0 ]; then echo "  ok: $t"; else echo "  TEST FAIL: $t"; overall=1; fi
+  if [ "$rc" -eq 0 ]; then echo "  ok: $t"; else echo "  TEST FAIL: $t"; overall=1; _ra_rcfail=1; fi
   # A helper the suite's lib does not define is not a failing assertion — it is
   # an assertion that never ran. `assert_path` lived in one lib and was called
   # from a suite sourcing another, so two checks printed "command not found" to
@@ -190,8 +216,14 @@ fi
 # printed its failure one line above ALL GREEN. Unreachable today only because
 # every suite ends in report/finish, which returns non-zero when FAIL>0; it
 # becomes reachable the moment any suite gains a command after that line.
-[ "$afails" -eq 0 ] || {
-  echo "  GATE FAIL: $afails assertion(s) failed but no suite reported it through its exit code"
-  overall=1; }
+if [ "$afails" -ne 0 ]; then
+  overall=1
+  # Only claim the exit-code route was missed when it actually was. A suite that
+  # reports "1 failed" AND exits non-zero is already caught by TEST FAIL above,
+  # and telling the reader it went unreported names a cause that is false.
+  if [ "$_ra_rcfail" -eq 0 ]; then
+    echo "  GATE FAIL: $afails assertion(s) failed but no suite reported it through its exit code"
+  fi
+fi
 if [ "$overall" -eq 0 ]; then echo "ALL GREEN"; else echo "FAILED"; fi
 exit "$overall"

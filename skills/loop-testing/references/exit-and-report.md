@@ -47,7 +47,7 @@
 
 1. 实例化并写完 `FINAL_REPORT.md`（结构见 §5）。**本步与第 2 步之间存在一个窗口**：报告已落盘而机器 `status:` 仍是 `RUNNING`，崩溃停在这里时现场看起来像「已经收敛了」。它的判读规则（按报告完整性决定是接着写终态，还是删掉半成品继续跑）在 `references/round-0.md` §0 第 2 条，不要在这里自行发明。
 2. **把 `STATE.md` 机器 `status:` 字段写为终态**（`CONVERGED` / `INCOMPLETE` / `BLOCKED`，映射见 §2）。stop-gate 一旦读到终态即自行解除哨兵 `.active` 并放行——此刻起会话可安全停止；即使后续清理被硬中断，也不会留下「哨兵已除但 `status:` 仍 RUNNING」的失护窗口（那会让 Claude Code 无护栏停在未收敛态、让无人值守驱动续跑到 `--max-sessions` 误报 INCOMPLETE）。
-3. 执行 `bash "$SKILL_DIR"/scripts/sandbox-clean.sh`（`$SKILL_DIR` = 本技能安装目录，定位与内联兜底见 SKILL.md「脚本与模板定位」）：停掉**自己启动的**进程（`docs/looptesting/.pids` 记录）、移除**自己创建且能确认归属的** worktree/临时数据；**保留 `docs/looptesting/` 全部证据与状态文档，保留 qa 分支（含修复 commit）与基线标记，绝不碰用户数据**。无归属标记时**失败即拒清**（fail-closed）。clean 会再删一次 `.active`——终态时它已被 stop-gate 移除，重复删除幂等无害。**禁止加 `--purge`**：彻底清理（删证据目录/分支/tag）是**用户**收割修复后的手动动作（见 README「运行后残留物与彻底清理」），不属于退出序。
+3. 执行 `bash "$SKILL_DIR"/scripts/sandbox-clean.sh`（`$SKILL_DIR` = 本技能安装目录，定位与内联兜底见 SKILL.md「脚本与模板定位」）：停掉**自己启动的**进程（`docs/looptesting/.pids` 记录）、移除**自己创建且能确认归属的** worktree/临时数据；**若 clean 无法走完自己的祖先链**（`ps` 与 procfs 都答不出），它不会盲发信号——那样可能杀掉清理进程自己的父进程，在 worktree 移除之前中断整个退出序——而是跳过 `.pids` 阶段、保留 ledger、以 **exit 4** 结束并打印 `clean incomplete`。**exit 4 不是失败，是「跑了但没跑完」**：此时记录的服务仍在运行，按提示换一个祖先链可走的 shell 重跑，或手动停掉它们；**保留 `docs/looptesting/` 全部证据与状态文档，保留 qa 分支（含修复 commit）与基线标记，绝不碰用户数据**。无归属标记时**失败即拒清**（fail-closed）。clean 会再删一次 `.active`——终态时它已被 stop-gate 移除，重复删除幂等无害。**禁止加 `--purge`**：彻底清理（删证据目录/分支/tag）是**用户**收割修复后的手动动作（见 README「运行后残留物与彻底清理」），不属于退出序。
 
 ## 5. FINAL_REPORT.md 结构（模板见 templates/）
 

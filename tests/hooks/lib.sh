@@ -18,7 +18,9 @@ FAIL=0
 # mk_lt: throwaway workspace with a docs/looptesting/ skeleton. Echoes its path.
 mk_lt() {
   local ws
-  ws=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-hooks.XXXXXX")
+  # Unchecked, an empty $ws turns the mkdir below into `mkdir -p /docs/…` and
+  # every later path into an absolute one outside any fixture.
+  ws=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-hooks.XXXXXX") || return 1
   mkdir -p "$ws/docs/looptesting/runs"
   printf '# ISSUES\n' > "$ws/docs/looptesting/ISSUES.md"
   echo "$ws"

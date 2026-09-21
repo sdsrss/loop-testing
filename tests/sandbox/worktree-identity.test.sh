@@ -698,6 +698,15 @@ else
       FAIL=$((FAIL+1))
       echo "  FAIL: the sandbox branch was deleted while its worktree could not be identified" >&2
     fi
+    # Same rule case 34 applies to setup. `foreign` is an ANSWER and offers no
+    # removal command; `unknown` is the absence of one and must not offer one
+    # either — clean's copy had those two the other way round, and this arm
+    # became reachable from more states once a failed registry read started
+    # producing `unknown`. `--` because the needle begins with a dash.
+    if grep -qF -- "worktree remove --force" "$WS32/clean.out"; then
+      FAIL=$((FAIL+1))
+      echo "  FAIL: clean handed the user --force for a worktree it had just said it could not identify" >&2
+    else PASS=$((PASS+1)); fi
   else
     FAIL=$((FAIL+1))
     echo "  FAIL: fixture could not make git omit the entry at exit 0 — case 32 tested nothing" >&2
@@ -773,5 +782,34 @@ else
   fi
   chmod 755 "$WS34/proj/.git/worktrees" 2>/dev/null
 fi
+
+# --- case 35: a user's --separate-git-dir repo at the freed path is `absent` --
+# Case 33 pins `-f` against a plain repo, whose `.git` is a DIRECTORY. This pins
+# the other half: `git init --separate-git-dir` — and equally a submodule
+# checkout, or a plain file called `.git` — has `.git` as a FILE, so `-f` alone
+# reads the user's own repository as a worktree this sandbox cannot identify.
+# The consequence is not a deletion, it is the opposite and just as wrong: a
+# permanent exit 4 over something that is not a worktree at all, with a
+# diagnosis ("the registry could not be read") that is false, and removal advice
+# aimed at the user's repo. What makes a `.git` file OURS is that its `gitdir:`
+# points into this repo's own .git/worktrees/.
+WS35=$(mk_ws); WS_ALL="$WS_ALL $WS35"
+( cd "$WS35/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? 'fixture: setup for the separate-git-dir case'
+( cd "$WS35/proj" && git worktree remove --force "$WS35/proj-qa-loop" ) >/dev/null 2>&1
+assert_absent "$WS35/proj-qa-loop" "fixture: the sandbox worktree is gone and the path is free"
+git init -q --separate-git-dir "$WS35/elsewhere-gitdir" "$WS35/proj-qa-loop" >/dev/null 2>&1
+# The case only means something if git really produced a .git FILE here.
+if [ -f "$WS35/proj-qa-loop/.git" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1))
+  echo "  FAIL: fixture: --separate-git-dir did not produce a .git file, so case 35 discriminates nothing" >&2
+fi
+echo "my own work" > "$WS35/proj-qa-loop/mine.txt"
+( cd "$WS35/proj" && bash "$CLEAN" ) > "$WS35/clean.out" 2>&1
+rc35=$?
+assert_eq 0 "$rc35" "clean exits 0 — a user's --separate-git-dir repo is not an unidentifiable worktree"
+assert_file_contains "$WS35/clean.out" "already gone" \
+  "and reports the sandbox worktree as gone rather than as one it could not identify"
+assert_exists "$WS35/proj-qa-loop/mine.txt" "the user's file at that path was not touched"
 
 report "worktree-identity.test.sh"

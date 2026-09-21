@@ -33,7 +33,9 @@ assert_contains(){ if printf '%s' "$1" | grep -qF -- "$2"; then pass "$3"; else 
 # Make a fresh sandbox skills dir; echo its path. Registers cleanup via trap.
 make_sandbox() {
   local d
-  d="$(mktemp -d "${TMPDIR:-/tmp}/loop-install-test.XXXXXX")"
+  # Unchecked, an empty $d makes every caller's --target an absolute path outside
+  # any fixture — and this one hands that path to an installer.
+  d="$(mktemp -d "${TMPDIR:-/tmp}/loop-install-test.XXXXXX")" || return 1
   printf '%s\n' "$d"
 }
 

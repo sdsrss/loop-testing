@@ -14,7 +14,9 @@ FAIL=0
 
 mk_proj() {
   local ws
-  ws=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-driver.XXXXXX")
+  # Unchecked, an empty $ws turns the mkdir below into `mkdir -p /docs/…` and
+  # every later path into an absolute one outside any fixture.
+  ws=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-driver.XXXXXX") || return 1
   mkdir -p "$ws/docs/looptesting"
   echo "$ws"
 }
