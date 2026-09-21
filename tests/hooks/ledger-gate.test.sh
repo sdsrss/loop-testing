@@ -678,5 +678,14 @@ assert_rc $? 0 "subpackage: a nested notes/ISSUES.md is not the ledger either (F
 # simply switched the widening off everywhere.
 ( cd "$MONOL" && printf '%s' "$json_bare" | CLAUDE_PROJECT_DIR="$MONOL" bash "$LEDGER" ) >/dev/null 2>&1
 assert_rc $? 2 "anchored at the project root, a bare ISSUES.md IS still the ledger"
+# Delta review D2: the same two-states-one-flag defect as stop-gate's HH, in the
+# false-deny direction. With NO anchor supplied the walk-up stopped firing, so
+# the replay footprint at the toplevel became invisible and a correctly-replayed
+# VERIFIED write was denied — carrying the red-line accusation at a model doing
+# the right thing.
+( cd "$MONOL/pkgs/app" && printf '%s' "$json_bash" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" ) >/dev/null 2>&1
+assert_rc $? 0 "no anchor supplied: the toplevel replay footprint is still found (D2)"
+( cd "$MONOL/pkgs/app" && printf '%s' "$json_bash2" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" ) >/dev/null 2>&1
+assert_rc $? 2 "no anchor supplied: an unreplayed VERIFIED write is still denied"
 
 report "ledger-gate.test.sh"

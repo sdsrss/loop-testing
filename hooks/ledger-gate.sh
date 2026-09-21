@@ -115,9 +115,13 @@ fi
 if [ -z "$BASE" ]; then
   BASE=$(printf '%s' "$INPUT" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 fi
-BASE_OK=0
-if [ -n "$BASE" ] && [ -d "$BASE" ]; then
-  if cd "$BASE" 2>/dev/null; then BASE_OK=1; fi   # unresolvable -> stay in cwd (legacy)
+# TWO states, not one — see the note in stop-gate.sh (delta review D1/D2). Here
+# the cost of conflating them lands as a FALSE DENY: with no anchor supplied the
+# walk-up stopped firing, the toplevel replay footprint went invisible, and a
+# correctly-replayed VERIFIED write was refused with the red-line accusation.
+ANCHOR_FAILED=0
+if [ -n "$BASE" ]; then
+  if [ -d "$BASE" ] && cd "$BASE" 2>/dev/null; then :; else ANCHOR_FAILED=1; fi
 fi
 
 # --- and up to the git toplevel when the anchor is a subpackage (audit K-14) ---
@@ -131,7 +135,7 @@ fi
 # note in stop-gate.sh for the first (review F3), and ARMED below for the second
 # (review F2). The P-05 residual is stated there too and applies here unchanged.
 LT_WALKED=0
-if [ "$BASE_OK" = 1 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
+if [ "$ANCHOR_FAILED" = 0 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
   # Budgeted, like the STATE grep below (review F7). This is the only subprocess
   # the walk-up adds to a gate whose header requires every addition to be O(1) or
   # capped: on a stale NFS mount or a hung gitdir an unbounded `git rev-parse`

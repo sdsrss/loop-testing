@@ -438,4 +438,37 @@ gerr=$( cd "$MONO4/pkgs/app" && printf '{"stop_hook_active": false}' | CLAUDE_PR
 assert_rc "$grc" 0 "no git on PATH: the walk-up is skipped, not attempted (legacy allow)"
 assert_eq "" "$gerr" "no git on PATH produces no error output"
 
+# HH. The anchor states are TWO, not one (delta review D1). "No anchor supplied"
+#     and "an anchor was supplied and would not resolve" are different facts, and
+#     the first repair of F3 gated the walk-up on a single flag that could not
+#     tell them apart — so a session with no $CLAUDE_PROJECT_DIR and no "cwd"
+#     key, the documented legacy path, stopped reaching the toplevel evidence
+#     dir at all and K-14 was undone for it. Nothing caught that because every
+#     case here sets the anchor, and run_stop's own payload carries no cwd but
+#     always runs from a workspace root that already holds docs/looptesting.
+MONO5=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-mono.XXXXXX"); track_ws "$MONO5"
+git init -q "$MONO5" >/dev/null 2>&1
+mkdir -p "$MONO5/pkgs/app" "$MONO5/docs/looptesting/runs"
+arm "$MONO5"; write_state "$MONO5" RUNNING 1
+if [ ! -d "$MONO5/pkgs/app/docs/looptesting" ] \
+   && [ "$( cd "$MONO5/pkgs/app" && git rev-parse --show-toplevel 2>/dev/null )" = "$( cd "$MONO5" && pwd -P )" ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: fixture: subpackage must be evidence-free and inside the repo THIS case created" >&2
+fi
+( cd "$MONO5/pkgs/app" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 2 "no anchor supplied at all: the walk-up still reaches the toplevel and blocks (D1)"
+
+# II. The other half, and the one F3 was about: an anchor WAS supplied and did
+#     not resolve. The fallback is "stay in cwd (legacy)", and the walk-up must
+#     not turn that into authority over whatever repo the inherited cwd happens
+#     to sit in — this gate removes .active and .gate-count.
+MONO6=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-mono.XXXXXX"); track_ws "$MONO6"
+git init -q "$MONO6" >/dev/null 2>&1
+mkdir -p "$MONO6/pkgs/app" "$MONO6/docs/looptesting/runs"
+arm "$MONO6"; write_state "$MONO6" RUNNING 1
+( cd "$MONO6/pkgs/app" && printf '{"stop_hook_active": false}' | CLAUDE_PROJECT_DIR="$MONO6/no-such-dir-here" bash "$STOP" ) >/dev/null 2>&1
+assert_rc $? 0 "an anchor that was supplied and did not resolve gains no authority (F3)"
+assert_exists "$MONO6/docs/looptesting/.active" "…and the sentinel of the repo it was standing in is untouched"
+
 report "stop-gate.test.sh"

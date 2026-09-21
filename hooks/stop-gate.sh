@@ -58,9 +58,17 @@ fi
 if [ -z "$BASE" ]; then
   BASE=$(printf '%s' "$STDIN_JSON" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 fi
-BASE_OK=0
-if [ -n "$BASE" ] && [ -d "$BASE" ]; then
-  if cd "$BASE" 2>/dev/null; then BASE_OK=1; fi   # unresolvable -> stay in cwd (legacy)
+# TWO states, not one (delta review D1/D2). An anchor that was SUPPLIED and
+# would not resolve must gain nothing — that is review F3, and it is what the
+# flag below records. "No anchor supplied at all" is a different fact: it is the
+# documented legacy path, the cwd is what the platform handed this process, and
+# the walk-up has to work from it or K-14 is undone for every session that
+# reaches here without $CLAUDE_PROJECT_DIR and without a "cwd" key. The first
+# repair of F3 used one flag for both and traded the second away in silence:
+# measured, a Stop from a subpackage with no anchor went from rc 2 to rc 0.
+ANCHOR_FAILED=0
+if [ -n "$BASE" ]; then
+  if [ -d "$BASE" ] && cd "$BASE" 2>/dev/null; then :; else ANCHOR_FAILED=1; fi
 fi
 
 # --- and up to the git toplevel when the anchor is a subpackage (audit K-14) ---
@@ -91,13 +99,14 @@ fi
 # same .active. That is the price of the gate working at all in this topology;
 # the guard below narrows it to anchors that resolved, but does not remove it.
 #
-# Gated on the anchor having RESOLVED (review F3). When $BASE is empty, or names
-# something `cd` refuses, the documented fallback is "stay in cwd (legacy)" —
-# inert while resolution was cwd-relative, because the cwd then had to literally
-# contain docs/looptesting. The walk-up turns that same fallback into "find any
+# Gated on $ANCHOR_FAILED, which is set only when an anchor was SUPPLIED and
+# would not resolve (review F3). That fallback documents itself as "stay in cwd
+# (legacy)" — inert while resolution was cwd-relative, because the cwd then had
+# to literally contain docs/looptesting. The walk-up turns it into "find any
 # enclosing repo running a loop and act on it", and this gate's actions include
-# removing .active and .gate-count. An anchor that did not resolve must not
-# acquire authority it never had.
+# removing .active and .gate-count, so an anchor that was named and did not
+# resolve must not acquire authority it never had. An anchor that was never
+# named is NOT that case and still walks up — see the note beside ANCHOR_FAILED.
 #
 # Residual, stated rather than closed (review P-05): `command -v git` says git is
 # installed, not that it can answer. A git that refuses the repo — dubious
@@ -106,8 +115,7 @@ fi
 # the noise: `git rev-parse` exits 128 both for "refused" and for "not a repo",
 # so telling them apart needs a predicate over git's message text, which is the
 # shape that produced H-01 in this very tree.
-LT_WALKED=0
-if [ "$BASE_OK" = 1 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
+if [ "$ANCHOR_FAILED" = 0 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
   # Budgeted, like the STATE grep below (review F7). This is the only subprocess
   # the walk-up adds to a gate whose header requires every addition to be O(1) or
   # capped: on a stale NFS mount or a hung gitdir an unbounded `git rev-parse`
@@ -119,7 +127,7 @@ if [ "$BASE_OK" = 1 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 
     GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
   fi
   if [ -n "$GTOP" ] && [ -d "$GTOP/docs/looptesting" ]; then
-    if cd "$GTOP" 2>/dev/null; then LT_WALKED=1; fi
+    cd "$GTOP" 2>/dev/null || :
   fi
 fi
 
