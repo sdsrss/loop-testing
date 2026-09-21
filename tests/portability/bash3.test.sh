@@ -46,6 +46,49 @@ done <<EOF
 $CONSTRUCTS
 EOF
 
+# --- bare $WS_ALL anywhere under tests/ (review T-1 / P-03) ------------------
+# tests/ is out of scope for the bash-4 scan above, deliberately. It is IN scope
+# for this one, which is a different failure: `WS_ALL` was a space-delimited
+# string in ten suites and is now an array in all of them, and an array read as
+# bare `$WS_ALL` expands to element 0 ALONE — silently, with no error, no matter
+# how many fixtures are registered. 2371122 converted the accumulators and left
+# one consumer behind at tests/driver/shutdown.test.sh, where the loop that
+# kills stray processes before `rm -rf` went from ~30 fixtures to 1.
+#
+# The ERE matches only the bare form: the array form is written `${WS_ALL[@]}`,
+# where `$` is followed by `{`, so `\$WS_ALL` cannot match it.
+# This file is excluded by path, not by pattern: it necessarily contains the
+# construct it hunts for — in the grep above, in the self-probe below, and in
+# the failure message. A gate in this tree that reads source text and forgets to
+# exempt itself fails the fix instead of the bug, which has happened here before
+# (the comment-scanning half of the portability suite, audit round 16).
+bare_hits=$(grep -rnE -- '\$WS_ALL' tests/ 2>/dev/null \
+  | grep -v '^tests/portability/bash3\.test\.sh:' \
+  | grep -v '^[^:]*:[0-9]*:[[:space:]]*#')
+if [ -z "$bare_hits" ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "  FAIL: bare \$WS_ALL in a suite where WS_ALL is an array — expands to element 0 only" >&2
+  printf '%s\n' "$bare_hits" | sed 's/^/    /' >&2
+fi
+
+# Self-probe for the check above, same reasoning as the one below it: a pattern
+# that stopped matching would report green forever. Prove it fires on the exact
+# construct it exists to catch, and does NOT fire on the correct array form.
+bprobe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-arrprobe.XXXXXX")
+printf 'for ws in $WS_ALL; do :; done\n' > "$bprobe"
+bp_bad=$(grep -cE -- '\$WS_ALL' "$bprobe")
+printf 'rm -rf -- "${WS_ALL[@]}"\n' > "$bprobe"
+bp_good=$(grep -cE -- '\$WS_ALL' "$bprobe")
+if [ "$bp_bad" = 1 ] && [ "$bp_good" = 0 ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "  FAIL: self-probe — the bare-\$WS_ALL pattern must match the bare form ($bp_bad) and not the array form ($bp_good)" >&2
+fi
+rm -f "$bprobe"
+
 # The scan is only meaningful if the pattern actually fires; a silently-broken ERE
 # would make this suite a green no-op forever (same zero-discovery reasoning as
 # tests/run-all.sh). Prove the case-modification pattern matches a known-positive.

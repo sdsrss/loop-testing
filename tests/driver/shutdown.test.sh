@@ -40,13 +40,23 @@ track_ws() { WS_ALL+=("$1"); }
 KILL_ON_EXIT=""
 cleanup_all() {
   # Kill anything still beating in a fixture before removing it.
-  for ws in $WS_ALL; do
-    for p in $(pgrep -f "$ws/heartbeat-stub.sh" 2>/dev/null) $(pgrep -f "$ws/stubborn-stub.sh" 2>/dev/null); do
-      pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')
-      [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null
-      kill -KILL "$p" 2>/dev/null
+  #
+  # The count guard is not decoration and the quotes are not style (review
+  # T-1 / P-03). WS_ALL became an array in 2371122 and this consumer was left
+  # reading it bare, which expands to element 0 ALONE — so the sweep covered the
+  # first of ~30 fixtures and said nothing. It is also `set -u`-fatal when the
+  # array is empty, and an error here aborts the whole EXIT trap, taking the
+  # `rm -rf` below with it. Measured on the verbatim body over three fixtures
+  # each holding a live stub: bare form leaves 2 alive, quoted form leaves 0.
+  if [ "${#WS_ALL[@]}" -gt 0 ]; then
+    for ws in "${WS_ALL[@]}"; do
+      for p in $(pgrep -f "$ws/heartbeat-stub.sh" 2>/dev/null) $(pgrep -f "$ws/stubborn-stub.sh" 2>/dev/null); do
+        pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')
+        [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null
+        kill -KILL "$p" 2>/dev/null
+      done
     done
-  done
+  fi
   for p in $KILL_ON_EXIT; do kill -KILL "$p" 2>/dev/null; done
   if [ "${#WS_ALL[@]}" -gt 0 ]; then rm -rf -- "${WS_ALL[@]}"; fi
   return 0
