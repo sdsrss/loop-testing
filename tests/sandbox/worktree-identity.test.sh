@@ -163,8 +163,53 @@ if grep -qF -- "worktree remove --force" "$WS9/clean.out"; then
   FAIL=$((FAIL+1))
   echo "  FAIL: clean handed the user --force for a worktree it had just said it could not identify" >&2
 else PASS=$((PASS+1)); fi
-assert_file_contains "$WS9/clean.out" "will refuse" \
-  "clean says git itself will refuse while there is uncommitted or untracked work there"
+assert_file_contains "$WS9/clean.out" "only refuses over" \
+  "clean states the LIMIT of git's refusal rather than selling it as a blanket check"
+
+# --- case 9b: the refusal that advice leaned on does not cover ignored files --
+# Case 9's fixture holds UNTRACKED work, and git does refuse over that. A
+# finished loop sandbox does not look like that: round-N commits its fixes, so
+# what remains is build output, .env and logs — matched by the project's own
+# .gitignore, invisible to `git status --porcelain`, and not enough to make
+# `git worktree remove` refuse anything. The advice told the user that refusal
+# was their check. In the state a finished sandbox is actually in, there is no
+# refusal to read, and following the advice destroys the lot at exit 0.
+WS9B=$(mk_ws); track_ws "$WS9B"; WT9B="$WS9B/proj-qa-loop"
+printf 'node_modules/\n.env\n*.log\n' >> "$WS9B/proj/.gitignore"
+( cd "$WS9B/proj" && git add .gitignore && git commit -qm 'ignore build output' ) >/dev/null 2>&1
+( cd "$WS9B/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? "setup for the ignored-only case"
+MK9B="$WS9B/proj/docs/looptesting/.sandbox/ownership.env"
+grep -v '^WORKTREE_STAMP=' "$MK9B" > "$MK9B.tmp" && mv "$MK9B.tmp" "$MK9B"
+GD9B=$( cd "$WT9B" && git rev-parse --absolute-git-dir 2>/dev/null )
+rm -f "$GD9B/loop-testing-owner"
+printf 'API_KEY=local-dev-secret\n' > "$WT9B/.env"
+mkdir -p "$WT9B/node_modules" && echo x > "$WT9B/node_modules/p.js"
+echo y > "$WT9B/server.log"
+# Fixture self-probe, and it needs both halves: git must call this worktree
+# CLEAN while the files are demonstrably in it. Either half alone would let the
+# case pass over a fixture that never reached the state it is about.
+if [ -z "$( cd "$WT9B" && git status --porcelain )" ] \
+   && [ "$( cd "$WT9B" && git status --porcelain --ignored 2>/dev/null | grep -c '^!!' )" -ge 2 ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: fixture: worktree must look clean to git while holding ignored files" >&2
+fi
+( cd "$WS9B/proj" && bash "$CLEAN" ) > "$WS9B/clean.out" 2>&1
+assert_ok $? "clean over a legacy marker with ignored-only content exits 0"
+assert_exists "$WT9B" "clean itself still leaves the worktree alone"
+assert_file_contains "$WS9B/clean.out" "--ignored" \
+  "the advice names an inspection that can actually see what is in there"
+if grep -qF "that refusal is the check" "$WS9B/clean.out"; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the advice still sells git's refusal as the check, in the state where git does not refuse" >&2
+else PASS=$((PASS+1)); fi
+# Pin git's real behaviour here, so this advice can never again be written
+# against a premise nobody measured. This removal is the LAST thing case 9b
+# does — it consumes the fixture.
+( cd "$WS9B/proj" && git worktree remove "$WT9B" ) >/dev/null 2>&1
+assert_eq 0 "$?" "git does NOT refuse a worktree whose only content is ignored"
+assert_absent "$WT9B" "…it is taken silently, .env and all"
 
 # Resuming is NOT the destructive half. Adopting a worktree to continue a run is
 # reversible — at worst QA commits land on a branch and can be undone — while a

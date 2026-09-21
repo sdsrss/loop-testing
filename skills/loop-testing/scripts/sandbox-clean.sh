@@ -547,11 +547,20 @@ if [ -n "$CREATED_WORKTREE" ]; then
           # never written, so there is no answer to read, and this arm went on
           # printing a ready-to-paste `--force` long after the other two stopped.
           # "check it first" next to the command that skips the check is not a
-          # check. Name the command that REFUSES instead: plain `git worktree
-          # remove` takes a clean worktree and declines a dirty one, so git makes
-          # the determination this run cannot, on the only machine that has the
-          # evidence — the user's.
-          echo_info "kept worktree $CREATED_WORKTREE — its ownership marker predates worktree stamping, so nothing records that this sandbox created it and this run cannot tell it from one of yours. Once you have established it is the sandbox's, remove it with 'git worktree remove $CREATED_WORKTREE': git will refuse that while anything in there is uncommitted or untracked, and that refusal is the check — read what it names before overriding it. No --force is printed here on purpose; this run cannot tell you whose work it would discard" ;;
+          # check.
+          #
+          # The first repair substituted git's own refusal for that check, and
+          # that was wrong in the case that matters most (review F1). `git
+          # worktree remove` refuses over tracked-modified and untracked files;
+          # it does NOT refuse over IGNORED ones. A finished loop sandbox is
+          # exactly that state — round-N commits its fixes, so what is left is
+          # build output, .env and logs, all matched by the project's own
+          # .gitignore and all invisible to `git status`. Measured: such a
+          # worktree reports zero porcelain lines and `git worktree remove`
+          # takes it at exit 0 with the .env in it. So the advice cannot lean on
+          # a refusal; it has to name the inspection that can see the files, and
+          # state where the refusal stops. Pinned by worktree-identity case 9b.
+          echo_info "kept worktree $CREATED_WORKTREE — its ownership marker predates worktree stamping, so nothing records that this sandbox created it and this run cannot tell it from one of yours. Look before you remove: 'git -C \"$CREATED_WORKTREE\" status --porcelain --ignored' lists what is actually in there, including the build output, .env files and logs a finished loop leaves behind, which plain 'git status' does not show. Then, if it is the sandbox's, remove it with 'git worktree remove -- \"$CREATED_WORKTREE\"'. Note what that does NOT protect: git only refuses over tracked-modified or untracked files, never over ignored ones, so once the loop has committed its fixes it will take this worktree silently. No --force is printed here on purpose; this run cannot tell you whose work it would discard" ;;
         *)  # ours
           if git -C "$TOP" worktree remove --force "$CREATED_WORKTREE" >/dev/null 2>&1; then
             echo_info "removed worktree $CREATED_WORKTREE"
