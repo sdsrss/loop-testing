@@ -770,12 +770,20 @@ while true; do
   session_err_open
   ERR_TARGET=/dev/null
   [ -n "$SESSION_ERR" ] && ERR_TARGET="$SESSION_ERR"
+  # Strip the git environment before launching the session (delta review D5).
+  # git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE to its own hooks, to
+  # `rebase --exec` and to `bisect run`, so a driver started from any of those
+  # hands them on, and `git init` / `git rev-parse` inside the session then
+  # address a different repository. unattended-loop.sh strips them inside its
+  # existing SANITIZE_ENV; this driver has no such array, so the `env` goes on
+  # the exec line. One process per session, nothing per hook invocation.
+  GIT_SANITIZE=(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_CEILING_DIRECTORIES)
   if [ -n "$TIMEOUT_BIN" ]; then
     ( trap - INT QUIT; cd "$PROJECT" && exec "$TIMEOUT_BIN" -k 15 "$sess_budget" \
-      "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" >/dev/null 2>"$ERR_TARGET" ) \
+      "${GIT_SANITIZE[@]}" "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" >/dev/null 2>"$ERR_TARGET" ) \
       <&0 &
   else
-    ( trap - INT QUIT; cd "$PROJECT" && exec "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" >/dev/null 2>"$ERR_TARGET" ) \
+    ( trap - INT QUIT; cd "$PROJECT" && exec "${GIT_SANITIZE[@]}" "$CODEX_BIN" exec -s danger-full-access -C "$PROJECT" "$RESUME_PROMPT" >/dev/null 2>"$ERR_TARGET" ) \
       <&0 &
   fi
   CHILD=$!

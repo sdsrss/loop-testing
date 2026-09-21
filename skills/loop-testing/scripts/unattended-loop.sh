@@ -764,8 +764,18 @@ while true; do
   # or honestly BLOCK. Unset them so the child gets the standard tool set.
   # Verified empirically 2026-07-11: inherited env → 4 orchestration tools;
   # sanitized → full set incl. Bash/Edit/Read/Write/Skill.
+  # The GIT_* entries are a second leak of the same kind (delta review D5). git
+  # exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE to its own hooks, to
+  # `rebase --exec` and to `bisect run`, so a driver launched from any of those
+  # hands them to the session — where `git init`, `git rev-parse` and the hooks'
+  # K-14 walk-up all silently address a different repository. Stripping them
+  # here costs one `env` argument per session and nothing per hook invocation,
+  # which is why it is here and not in the gates: those must stay O(1). It does
+  # not reach a human's interactive session launched the same way; that is
+  # outside what this driver can sanitise.
   SANITIZE_ENV=(env -u CLAUDE_CODE_COORDINATOR_MODE -u CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
-                -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID)
+                -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID
+                -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_CEILING_DIRECTORIES)
   # Background + `wait`, never a foreground subshell: see the shutdown note above
   # the traps. `exec` makes $! the watchdog's own pid (and therefore its pgid),
   # so stop_child can address the session's whole process group. `timeout` stays

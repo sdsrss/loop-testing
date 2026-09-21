@@ -116,13 +116,19 @@ fi
 # so telling them apart needs a predicate over git's message text, which is the
 # shape that produced H-01 in this very tree.
 if [ "$ANCHOR_FAILED" = 0 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
-  # Budgeted, like the STATE grep below (review F7). This is the only subprocess
-  # the walk-up adds to a gate whose header requires every addition to be O(1) or
-  # capped: on a stale NFS mount or a hung gitdir an unbounded `git rev-parse`
-  # blocks until the platform kills the hook, and a killed Stop hook resolves as
-  # ALLOW — a fail-open path inside a fail-closed gate.
+  # Budgeted, like the STATE grep below (review F7) — and the bound is narrower
+  # than the first version of this comment claimed (delta review D4). Measured:
+  # `timeout N` without `-k` sends SIGTERM at the deadline and then waits, so a
+  # child that ignores TERM is not bounded at all; `-k` is what makes the budget
+  # real. With it, every state a healthy `git rev-parse` can be in IS bounded —
+  # the control run came back at exactly the budget. What nothing here reaches
+  # is uninterruptible D-state on a stale mount, where neither TERM nor KILL is
+  # deliverable until the syscall returns; that case is the one the old comment
+  # named as its justification, and no timeout flag covers it. Kept because a
+  # killed Stop hook resolves as ALLOW, so a fail-open path inside a fail-closed
+  # gate is worth the one subprocess.
   if command -v timeout >/dev/null 2>&1; then
-    GTOP=$(timeout 5 git rev-parse --show-toplevel 2>/dev/null)
+    GTOP=$(timeout -k 1 5 git rev-parse --show-toplevel 2>/dev/null)
   else
     GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
   fi

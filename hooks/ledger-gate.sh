@@ -136,13 +136,19 @@ fi
 # (review F2). The P-05 residual is stated there too and applies here unchanged.
 LT_WALKED=0
 if [ "$ANCHOR_FAILED" = 0 ] && [ ! -d docs/looptesting ] && command -v git >/dev/null 2>&1; then
-  # Budgeted, like the STATE grep below (review F7). This is the only subprocess
-  # the walk-up adds to a gate whose header requires every addition to be O(1) or
-  # capped: on a stale NFS mount or a hung gitdir an unbounded `git rev-parse`
-  # blocks until the platform kills the hook, and a killed Stop hook resolves as
-  # ALLOW — a fail-open path inside a fail-closed gate.
+  # Budgeted, like the STATE grep below (review F7) — and the bound is narrower
+  # than the first version of this comment claimed (delta review D4). Measured:
+  # `timeout N` without `-k` sends SIGTERM at the deadline and then waits, so a
+  # child that ignores TERM is not bounded at all; `-k` is what makes the budget
+  # real. With it, every state a healthy `git rev-parse` can be in IS bounded —
+  # the control run came back at exactly the budget. What nothing here reaches
+  # is uninterruptible D-state on a stale mount, where neither TERM nor KILL is
+  # deliverable until the syscall returns; that case is the one the old comment
+  # named as its justification, and no timeout flag covers it. Kept because a
+  # killed Stop hook resolves as ALLOW, so a fail-open path inside a fail-closed
+  # gate is worth the one subprocess.
   if command -v timeout >/dev/null 2>&1; then
-    GTOP=$(timeout 5 git rev-parse --show-toplevel 2>/dev/null)
+    GTOP=$(timeout -k 1 5 git rev-parse --show-toplevel 2>/dev/null)
   else
     GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
   fi
@@ -210,9 +216,24 @@ $CONTENT"
     # and no lexer process for the overwhelming majority of Bash calls.
     if printf '%s' "$CMD" | grep -qaF 'ISSUES.md'; then
       # ARMED does one job: it widens the ledger match to a BARE `ISSUES.md`
-      # basename (norm() below, and $LP on the regex leg). That widening is only
-      # sound when the anchor IS the project root — there, a bare ISSUES.md in a
-      # command is the ledger. After a walk-up it is not: cwd moved to the
+      # basename (norm() below, and $LP on the regex leg).
+      #
+      # It is a flag standing in for a question it cannot express: what is the
+      # effective cwd of the command segment naming that bare path? So it is
+      # wrong in BOTH directions, and the narrowing below only fixes one of
+      # them. Measured at the repo root, where ARMED=1 and this widening is
+      # supposed to be sound: a project's own `<top>/ISSUES.md` — a different
+      # file from the ledger, which lives at docs/looptesting/ISSUES.md — is
+      # DENIED a VERIFIED write. Identical at v0.14.1, so PRE-EXISTING and not
+      # this batch's; filed, not fixed here, because the honest repair is to
+      # thread a cwd through the lexer's segment loop (it already splits on
+      # `;`/`&&`/`|` and sees `cd` as a token) and resolve candidates against
+      # the absolute ledger path — which would retire ARMED entirely.
+      # Conversely a `cd docs/looptesting && sed -i … ISSUES.md` is NOT caught
+      # once the walk-up has fired; that shape was closed only by accident,
+      # and the narrowing below restores v0.14.1's behaviour for it.
+      #
+      # After a walk-up the widening is flatly wrong: cwd moved to the
       # toplevel while the command was written against a subpackage, so every
       # path ending in ISSUES.md anywhere in the tree became the ledger, whether
       # or not it exists. Measured against v0.14.1: rc 0 there, rc 2 here, on a

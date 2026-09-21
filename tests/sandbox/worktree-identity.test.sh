@@ -198,8 +198,23 @@ fi
 ( cd "$WS9B/proj" && bash "$CLEAN" ) > "$WS9B/clean.out" 2>&1
 assert_ok $? "clean over a legacy marker with ignored-only content exits 0"
 assert_exists "$WT9B" "clean itself still leaves the worktree alone"
-assert_file_contains "$WS9B/clean.out" "--ignored" \
-  "the advice names an inspection that can actually see what is in there"
+assert_file_contains "$WS9B/clean.out" "--ignored -uall" \
+  "the advice names an inspection that lists ignored files one by one"
+# Pin why `-uall` is in that command, the same way the rc-0 assertion below pins
+# why the advice cannot lean on a refusal (delta review D6): `--ignored` alone
+# reports an ignored DIRECTORY as one collapsed entry and never names the file
+# inside it, which for this tool is exactly the `.env` the case is about.
+mkdir -p "$WT9B/cfgdir" && printf 'API_KEY=inside-an-ignored-dir\n' > "$WT9B/cfgdir/.env"
+printf 'cfgdir/\n' >> "$WS9B/proj/.gitignore"
+( cd "$WS9B/proj" && git add .gitignore && git commit -qm 'ignore cfgdir' ) >/dev/null 2>&1
+n_plain=$( cd "$WT9B" && git status --porcelain --ignored 2>/dev/null | grep -c 'cfgdir/\.env' )
+n_uall=$( cd "$WT9B" && git status --porcelain --ignored -uall 2>/dev/null | grep -c 'cfgdir/\.env' )
+if [ "$n_plain" -eq 0 ] && [ "$n_uall" -ge 1 ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the premise for -uall no longer holds — plain=$n_plain uall=$n_uall (expected 0 and >=1)" >&2
+fi
 if grep -qF "that refusal is the check" "$WS9B/clean.out"; then
   FAIL=$((FAIL+1))
   echo "  FAIL: the advice still sells git's refusal as the check, in the state where git does not refuse" >&2
