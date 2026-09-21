@@ -136,8 +136,11 @@ fi
 # tests/driver/lib.sh and tests/driver/codex-lib.sh are independent copies, not
 # a lib and a wrapper, and codex-lib.sh's note says the three wait helpers are
 # identical to the other's. A comment claiming that is worth nothing — the
-# previous one claimed byte-identity of the whole block and diff refuted it over
-# 13 lines. Check the part that actually matters instead.
+# previous one claimed byte-identity of the whole block and diff refutes it (at
+# 7a7d27c: 49 differing lines whole-file, 24 within the block). That note also
+# carried "13 lines", a figure no extraction boundary reproduces; it was struck
+# rather than corrected (delta review D-6), because a number a reader cannot
+# re-derive is not a claim. Check the part that actually matters instead.
 LIB_A="tests/driver/lib.sh"; LIB_B="tests/driver/codex-lib.sh"
 # `declare -f` in a subshell, not a sed range over the source text (delta review
 # T-C and T-G). Two defects in the text approach, one in each direction:

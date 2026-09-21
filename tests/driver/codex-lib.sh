@@ -148,12 +148,17 @@ sessions_in_log() {
 # --- waiting for a state, on a wall-clock budget (audit T-08) -----------------
 # The three FUNCTIONS below are identical to tests/driver/lib.sh's; the notes
 # around them are not. An earlier version of this line claimed byte-identity of
-# the whole block, which `diff` refuted over 13 lines (review T-7) — and the
-# claim was load-bearing, since it was the stated reason to believe the two
-# copies had not drifted. What is checkable is checked: tests/portability/
-# bash3.test.sh diffs the function bodies.
+# the whole block, which `diff` refutes (review T-7) — and the claim was
+# load-bearing, since it was the stated reason to believe the two copies had
+# not drifted. It also carried a line count that no boundary reproduces: the
+# blobs at 7a7d27c differ over 49 lines whole-file and 24 within the block, so
+# the figure was struck rather than restated (delta review D-6). What is
+# checkable is checked: tests/portability/bash3.test.sh compares the function
+# bodies via `declare -f`, which is bash's own parse — comments discarded, body
+# re-printed canonically, so what it compares is what will run.
 # This file is a separate lib, not a wrapper around tests/driver/lib.sh, so a
-# helper added on one side does not exist on the other. Adding these there first and running the codex suites is what said so:
+# helper added on one side does not exist on the other. Adding these there
+# first and running the codex suites is what said so:
 # `$(test_wait_budget)` expanded to nothing, the budget arithmetic yielded an
 # immediate expiry, and both setsid cases failed. That is the `assert_path`
 # shape from the T-05 round (a helper reached from the wrong lib) caught by a
