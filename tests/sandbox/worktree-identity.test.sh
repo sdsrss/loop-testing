@@ -641,4 +641,98 @@ if grep -qF "UNCLAIMED_WORKTREE=$WS31/shared-wt" "$MK31"; then
   FAIL=$((FAIL+1)); echo "  FAIL: a path that no longer exists was carried forward" >&2
 else PASS=$((PASS+1)); fi
 
+# --- case 32: `git worktree list` exiting 0 while OMITTING an entry (S-04) ----
+# Case 29 covers the failure git REPORTS. This is the one it does not report: an
+# unreadable `.git/worktrees` makes `git worktree list --porcelain` exit 0, print
+# nothing on stderr, and silently drop the entry. An exit-status-only guard never
+# fires, so a live worktree still reads `absent` and purge deletes the tag, the
+# branch, the evidence dir and the marker over a sandbox still standing — closing
+# at PURGE_RC=0, the success code. Measured on git 2.53.0: rc=0, empty stderr,
+# entry gone.
+#
+# The positive test that survives it is the checkout's own `.git` FILE. A linked
+# worktree's `.git` is a regular file holding `gitdir: …`; it lives inside the
+# checkout, not in the admin dir, so it outlives both an unreadable
+# `.git/worktrees` and a missing `gitdir` file. It must be `-f` and not `-e`: a
+# plain `git init` repo parked at the freed path has `.git` as a DIRECTORY, and
+# that one really is absent as far as this sandbox is concerned.
+WS32=$(mk_ws); WS_ALL="$WS_ALL $WS32"
+( cd "$WS32/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? 'fixture: setup for the silently-omitted worktree case'
+assert_exists "$WS32/proj-qa-loop" "fixture: the worktree really is there"
+# --purge is refused outside a terminal STATE, and that refusal lands before the
+# worktree stage — without this the case would pass on exit 3 having tested
+# nothing. Not `sed -i`: BSD sed needs an argument there.
+S32="$WS32/proj/docs/looptesting/STATE.md"
+sed 's/^status: RUNNING/status: CONVERGED/' "$S32" > "$S32.new" && mv "$S32.new" "$S32"
+assert_file_contains "$S32" "status: CONVERGED" "fixture: STATE is terminal so --purge is allowed to run"
+
+if [ "$(id -u 2>/dev/null)" = 0 ]; then
+  echo "  skip: running as root — an unreadable .git/worktrees is still readable, so git cannot be made to omit the entry"
+else
+  chmod 000 "$WS32/proj/.git/worktrees" 2>/dev/null
+  # The fixture must prove it created the condition under test: exit 0 AND the
+  # entry missing. If it did not, this case has to say so — a case that quietly
+  # tests nothing is the defect class this suite exists to catch.
+  probe32=""; probe32_rc=0
+  probe32="$( cd "$WS32/proj" && git worktree list --porcelain 2>/dev/null )" || probe32_rc=$?
+  if [ "$probe32_rc" = 0 ] && ! printf '%s\n' "$probe32" | grep -qxF "worktree $WS32/proj-qa-loop"; then
+    PASS=$((PASS+1))   # fixture self-probe: git really does exit 0 and omit it
+    ( cd "$WS32/proj" && bash "$CLEAN" --purge ) > "$WS32/clean.out" 2>&1
+    rc32=$?
+    if grep -qF "already gone" "$WS32/clean.out"; then
+      FAIL=$((FAIL+1)); echo "  FAIL: an entry omitted at exit 0 was reported as 'already gone'" >&2
+    else PASS=$((PASS+1)); fi
+    assert_eq 4 "$rc32" "purge exits 4 (stopped short), not 0, when the registry could not be read"
+    assert_exists "$WS32/proj-qa-loop" "the live worktree is still on disk"
+    assert_exists "$WS32/proj/docs/looptesting/.sandbox/ownership.env" \
+      "purge kept the ownership marker that still names the worktree"
+    # `git branch -D` refuses a branch checked out in another worktree, and it
+    # reads that fact out of the SAME unreadable admin dir — so the refusal does
+    # not fire either, and the branch goes with everything else. The marker was
+    # the only record of the worktree's path; the branch is the only record of
+    # its commits. Both have to be gated on the same verdict.
+    if ( cd "$WS32/proj" && git show-ref --verify --quiet refs/heads/qa/loop-testing ); then
+      PASS=$((PASS+1))
+    else
+      FAIL=$((FAIL+1))
+      echo "  FAIL: the sandbox branch was deleted while its worktree could not be identified" >&2
+    fi
+  else
+    FAIL=$((FAIL+1))
+    echo "  FAIL: fixture could not make git omit the entry at exit 0 — case 32 tested nothing" >&2
+  fi
+  chmod 755 "$WS32/proj/.git/worktrees" 2>/dev/null
+fi
+
+# --- case 33: a plain repo parked at the freed path is `absent`, not `unknown` -
+# Case 32's positive test is `[ -f "$p/.git" ]`, and the `-f` is load-bearing: a
+# linked worktree's `.git` is a FILE holding `gitdir: …`, an ordinary
+# repository's is a DIRECTORY. Under `-e` the two are indistinguishable, and a
+# user who reused the freed path for a repository of their own would put this
+# sandbox into a permanent exit 4 — "could not identify the worktree", forever,
+# over something that is not a worktree at all. That is the failure mode the
+# widened guard would have introduced, so it gets an assertion of its own.
+WS33=$(mk_ws); WS_ALL="$WS_ALL $WS33"
+( cd "$WS33/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_ok $? 'fixture: setup for the reused-path case'
+( cd "$WS33/proj" && git worktree remove --force "$WS33/proj-qa-loop" ) >/dev/null 2>&1
+assert_absent "$WS33/proj-qa-loop" "fixture: the sandbox worktree is gone and the path is free"
+git init -q "$WS33/proj-qa-loop" >/dev/null 2>&1
+# The whole case turns on this being a directory. If a future git made `.git` a
+# file for ordinary repos too, the case would still pass while testing nothing.
+if [ -d "$WS33/proj-qa-loop/.git" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1))
+  echo "  FAIL: fixture: a plain repo's .git must be a DIRECTORY for this case to discriminate" >&2
+fi
+( cd "$WS33/proj" && bash "$CLEAN" ) > "$WS33/clean.out" 2>&1
+rc33=$?
+assert_eq 0 "$rc33" "clean exits 0 — a plain repo at the freed path is absent, not an unidentifiable worktree"
+# The message assertion is the one that carries this case: measured under the
+# `-f` -> `-e` mutation, the exit code stays 0 and only the wording changes, so
+# the rc assertion above documents the contract without discriminating on it.
+assert_file_contains "$WS33/clean.out" "already gone" \
+  "clean reports the worktree as gone rather than as one it could not identify"
+assert_exists "$WS33/proj-qa-loop/.git" "the user's own repository at that path was not touched"
+
 report "worktree-identity.test.sh"

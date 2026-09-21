@@ -233,15 +233,29 @@ wt_ownership() {
   # cannot allocate. Its empty output used to flow straight into the match below
   # and come out as `absent` — a live worktree reported "already gone", purge
   # closing with exit 0 over a sandbox still standing (audit S-04). A failed
-  # command is not a verdict: `unknown` is, and every caller already treats it as
-  # "cannot tell, so touch nothing".
+  # command is not a verdict: `unknown` is. What each caller does with it differs
+  # — clean keeps the worktree and stops short at exit 4, setup refuses and asks
+  # for another path — so this comment does not get to speak for "every caller";
+  # what holds is that none of them deletes on it.
   if ! list="$(git -C "$TOP" worktree list --porcelain 2>/dev/null)"; then
     printf 'unknown'; return
   fi
   list="$list$nl"
   case "$nl$list" in
     *"${nl}worktree $p${nl}"*) : ;;
-    *) printf 'absent'; return ;;
+    *)
+      # Not listed is not the same as not there. `git worktree list` ALSO exits 0
+      # and silently omits an entry whose admin dir is unreadable or whose
+      # `gitdir` file is missing (measured on git 2.53.0: rc=0, empty stderr,
+      # entry gone), so the exit status above cannot be the only liveness signal
+      # — audit S-04, second arm. A linked checkout owns its own `.git` FILE: it
+      # lives inside the checkout, not in the admin dir, and outlives both
+      # failures. `-f`, not `-e`: a plain repo parked at the freed path has
+      # `.git` as a DIRECTORY, and that one really is absent as far as this
+      # sandbox is concerned — `-e` would manufacture a permanent exit 4 over a
+      # user's own repository.
+      if [ -f "$p/.git" ]; then printf 'unknown'; else printf 'absent'; fi
+      return ;;
   esac
   # Registered, but the directory is gone. This is the one case where ownership
   # does not matter: there is nothing on disk to lose, and leaving the phantom
@@ -546,7 +560,16 @@ if [ "$PURGE" = 1 ]; then
         case "$fixes" in ''|*[!0-9]*) fixes=-1 ;; esac
       fi
     fi
-    if [ "$cur" = "$P_BRANCH" ]; then
+    if [ "${WT_STATE:-}" = unknown ] && [ "$P_BRANCH" = "$SANDBOX_BRANCH" ]; then
+      # `git branch -D` refuses a branch that is checked out in another worktree
+      # — and it reads that fact out of `.git/worktrees`, the same admin dir this
+      # run could not read. So on an `unknown` verdict the refusal is not a
+      # protection that happens to be there; it is a probe that failed silently,
+      # and the deletion goes through. The worktree is left on a dangling ref and
+      # the branch was the only record of its commits (audit S-04, second arm).
+      # WT_STATE is only assigned when the worktree stage ran, hence `:-`.
+      REFS_KEPT=1; kept_branch="$P_BRANCH (this run could not identify the worktree holding it, and git's own 'checked out elsewhere' refusal reads the same registry this run could not read — delete it by hand once the worktree is resolved)"
+    elif [ "$cur" = "$P_BRANCH" ]; then
       REFS_KEPT=1; kept_branch="$P_BRANCH (currently checked out — switch away, then delete it by hand)"
     elif [ "$descends" = 0 ]; then
       if [ "$base_ok" = 1 ]; then
