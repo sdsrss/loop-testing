@@ -79,6 +79,22 @@ set -u
   echo "unattended-loop: cannot source lib.sh beside this script — the install is incomplete." >&2
   exit 2
 }
+# `.` succeeding says the file PARSED, not that it is whole — see lib.sh's
+# sentinel. A driver missing session_err_redact would still run and would write
+# the session's stderr into driver.log unredacted, which is the leak that file
+# exists to stop; a missing release_lock would leave the lock dir behind. Refuse
+# before taking the lock rather than discover it at teardown.
+_lt_missing=""
+[ "${LT_LIB_LOADED:-}" = 1 ] || _lt_missing=" the completion sentinel"
+for _lt_f in is_uint release_lock holder_state proc_start poll_sleep runs_sig \
+             bootstrap_sig session_err_close session_err_redact; do
+  declare -F "$_lt_f" >/dev/null 2>&1 || _lt_missing="$_lt_missing ${_lt_f}()"
+done
+if [ -n "$_lt_missing" ]; then
+  echo "unattended-loop: lib.sh beside this script sourced but is missing:$_lt_missing — a truncated or partial install; refusing before taking a lock." >&2
+  exit 2
+fi
+unset _lt_missing _lt_f
 
 
 PROJECT=""

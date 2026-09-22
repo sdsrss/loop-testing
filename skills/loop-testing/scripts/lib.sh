@@ -378,3 +378,26 @@ session_err_redact() {
     `# path segments and branch names out of the diagnostics this exists to keep.` \
     -e 's#[A-Za-z0-9_+=-]{32,}#***REDACTED***#g' 2>/dev/null
 }
+
+# --- completion sentinel ------------------------------------------------------
+# Set LAST, on purpose. A consumer's `. lib.sh || exit` proves the file PARSED,
+# not that it is whole, and those are different things here: this file is several
+# hundred lines with long prose blocks between functions, so a copy truncated by
+# an interrupted transfer, a full disk or a partial checkout is still valid bash
+# at most cut points. Measured on the cut one line above `wt_ownership() {`:
+# `bash -n` clean, rc 0 from `.`, wt_ownership undefined — and sandbox-clean's
+# ownership switch then read the empty output of a command that does not exist as
+# a verdict and force-removed the worktree, rc 0, printing "done".
+#
+# So consumers check this variable AND the names they need. Neither alone is
+# enough: the sentinel misses a hand-edited file that dropped one function, and a
+# name list misses nothing today but says nothing about what was added later.
+#
+# Unused HERE and that is the point: the four consumers read it after sourcing,
+# and shellcheck cannot follow a source it was told to ignore (SC1091 is excluded
+# repo-wide). Left as a bare `disable=` this would be the shape the raised gate
+# exists to catch, so the coupling is written down instead of papered over —
+# sandbox-setup.sh, sandbox-clean.sh, unattended-loop.sh and unattended-codex.sh
+# each test `[ "${LT_LIB_LOADED:-}" = 1 ]` immediately after their source block.
+# shellcheck disable=SC2034
+LT_LIB_LOADED=1

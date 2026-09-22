@@ -35,9 +35,9 @@
 # branch and the path must be cleared · 7 branch-mode sandbox is on
 # another branch · 8 the
 # evidence dir could not be created/written (refused before touching git) · 9 the
-# ownership marker is present but unreadable (missing or malformed
-# SANDBOX_VERSION / MODE / TOP): nothing in it can be trusted, so nothing was
-# done — inspect docs/looptesting/.sandbox/ownership.env.
+# ownership marker is present but unreadable (missing/malformed SANDBOX_VERSION /
+# MODE / TOP), or its worktree-ownership verdict is one this version does not
+# recognise: nothing was done — inspect docs/looptesting/.sandbox/ownership.env.
 #
 # git floors: 2.5 (`worktree add`), 2.7 (`worktree list --porcelain`). Everything
 # newer is probed and falls back (`--absolute-git-dir` -> `--git-dir`,
@@ -54,6 +54,22 @@ set -u
   echo "sandbox-setup: cannot source lib.sh beside this script — the install is incomplete." >&2
   exit 2
 }
+# `.` succeeding says the file PARSED, not that it is whole — see lib.sh's
+# sentinel. Here the cost is the other half of S-01: a missing wt_ownership makes
+# WT_STATE empty, setup announces "already initialized" and exits 0 with no
+# isolation established, which round-0.md §7 tells the agent means isolation
+# holds. Both halves of the pair are required in both scripts on purpose: a lib
+# that lost one function is broken whether or not THIS run would have called it.
+_lt_missing=""
+[ "${LT_LIB_LOADED:-}" = 1 ] || _lt_missing=" the completion sentinel"
+for _lt_f in mval marker_key wt_gitdir_of wt_ownership; do
+  declare -F "$_lt_f" >/dev/null 2>&1 || _lt_missing="$_lt_missing ${_lt_f}()"
+done
+if [ -n "$_lt_missing" ]; then
+  echo "sandbox-setup: lib.sh beside this script sourced but is missing:$_lt_missing — a truncated or partial install; refusing rather than reporting isolation this run cannot establish." >&2
+  exit 2
+fi
+unset _lt_missing _lt_f
 
 MODE="worktree"
 BRANCH="qa/loop-testing"
@@ -407,6 +423,17 @@ if [ -f "$MARKER" ]; then
     # and an unattended run would hit the isolation gate and report BLOCKED. The
     # protection lives in sandbox-clean, which will not delete what it cannot
     # identify.
+    ours|legacy) : ;;
+    *)
+      # There was no default arm here, so a verdict none of the above names left
+      # REBUILD_WHY empty and fell through to the short-circuit below: "already
+      # initialized", .active armed, exit 0 — with nothing isolated. That is S-01
+      # exactly, and round-0.md §7 tells the agent exit 0 means isolation holds.
+      # The empty string is the case that matters: it is what a call to a function
+      # that does not exist returns, which the guard at the top of this file now
+      # refuses outright. This arm is the second line, for a verdict added to
+      # lib.sh and not wired up here.
+      die "the worktree ownership check returned '$WT_STATE', which this version of sandbox-setup does not recognise — refusing rather than reporting an isolation it cannot confirm. Inspect docs/looptesting/.sandbox/ownership.env and the worktree recorded at $RECORDED_WT." 9 ;;
   esac
   # Rebuild rather than refuse. A refusal here was a dead end: the gate reads only
   # marker fields, so none of the advice it could give changed the outcome, and
