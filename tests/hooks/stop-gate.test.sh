@@ -289,10 +289,13 @@ arm "$WS23"
 # nothing to assert — premise-guarded rather than run unbounded, since an
 # unbounded parse is the fail-open this case exists to catch. These three sites
 # called bare `timeout` until now, which is GNU-only: on stock macOS or a
-# gtimeout-only host it returned 127, and all three assertions failed, blaming
-# the hook for a binary the harness had not looked for (review T-D's shape,
-# six sites its fix did not reach). `env` cannot run a shell function, so this
-# takes $TIMEOUT_BIN directly rather than bounded().
+# gtimeout-only host it returned 127. TWO of this case's three assertions failed,
+# blaming the hook for a binary the harness had not looked for — and the third,
+# `assert_exists` on the sentinel, PASSED, because an armed sentinel survives a
+# hook that never ran. That is this block's own subject arriving in its own
+# measurement, and an earlier version of this comment said all three failed
+# (review T-D's shape, six sites its fix did not reach). `env` cannot run a shell
+# function, so this takes $TIMEOUT_BIN directly rather than bounded().
 if [ -n "$TIMEOUT_BIN" ]; then
   ( cd "$WS23" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR "$TIMEOUT_BIN" 5 bash "$STOP" ) >/dev/null 2>&1
   RC23=$?

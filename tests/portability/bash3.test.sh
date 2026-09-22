@@ -183,7 +183,8 @@ fi
 # those six were worse than a failure: `setup.test.sh`'s dangling-flag guards
 # assert `rc != 124`, which 127 satisfies, so they PASSED on a host where the
 # script never ran. The binary belongs behind TIMEOUT_BIN / bounded() in
-# tests/lib-watchdog.sh, the one file this scan exempts.
+# tests/lib-watchdog.sh. Two files are exempt by path; that one currently matches
+# zero times, so its exemption is defensive rather than load-bearing.
 #
 # What this can and cannot see, measured rather than assumed — an earlier draft of
 # this paragraph got it wrong in both directions, so the rule below is the one a
@@ -208,7 +209,10 @@ fi
 # The instrument that cannot be fooled is running the suite on a PATH holding
 # neither binary. That is a host arm rather than a gate, which is why the TOTAL
 # line names the arm.
-BARE_TO='(^|[;|&(]|[[:space:]]env[[:space:]][^;|&]*[[:space:]])[[:space:]]*g?timeout[[:space:]]+[0-9]'
+# `(^|[[:space:]])env`, not `[[:space:]]env`: a line BEGINNING with the wrapper —
+# `env -u FOO timeout 5 bash y` at column 0 — was missed, which the disclosure
+# above did not mention either. Still missed and now listed: `then timeout 5`.
+BARE_TO='(^|[;|&(]|(^|[[:space:]])env[[:space:]][^;|&]*[[:space:]])[[:space:]]*g?timeout[[:space:]]+[0-9]'
 # Discovery and reading are both checked, because "we saw at least one file" is not
 # the same claim as "we read the files we meant to". Three ways this scan goes
 # blind over a NON-empty file set, all of them measured:
@@ -356,10 +360,11 @@ else
   # arrived at without constructing one; %s keeps the coverage while leaving
   # nothing here for the pattern to find.
   #
-  # Seven routes, one line each: line start, then each of `;` `|` `&` `(`
-  # separately, then the `env …` prefix, then `g?` via gtimeout.
-  printf '%s 3 bash foo.sh\ncd x; %s 5 bash y\nprintf x | %s 5 bash y\ncd x && %s 5 bash y\n( %s 5 bash y )\nprintf x | env -u FOO %s 5 bash y\ncd x; g%s 5 bash y\n' \
-    timeout timeout timeout timeout timeout timeout timeout > "$bt_probe"
+  # Eight routes, one line each: line start, then each of `;` `|` `&` `(`
+  # separately, then the `env …` prefix both mid-line and at column 0, then `g?`
+  # via gtimeout.
+  printf '%s 3 bash foo.sh\ncd x; %s 5 bash y\nprintf x | %s 5 bash y\ncd x && %s 5 bash y\n( %s 5 bash y )\nprintf x | env -u FOO %s 5 bash y\nenv -u FOO %s 5 bash y\ncd x; g%s 5 bash y\n' \
+    timeout timeout timeout timeout timeout timeout timeout timeout > "$bt_probe"
   bt_pos=$(grep -cE "$BARE_TO" "$bt_probe")
   # Negatives are the forms this tree really contains, including the two that
   # escape by one character: a backtick before the word, and a `"` before it
@@ -375,11 +380,11 @@ else
     'json='"'"'{"command":"timeout 5 grep foo"}'"'"'' > "$bt_probe"
   bt_neg=$(grep -cE "$BARE_TO" "$bt_probe")
   rm -f "$bt_probe"
-  if [ "${bt_pos:-0}" -eq 7 ] && [ "${bt_neg:-1}" -eq 0 ]; then
+  if [ "${bt_pos:-0}" -eq 8 ] && [ "${bt_neg:-1}" -eq 0 ]; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
-    echo "  FAIL: self-probe — the bare-timeout scan matched ${bt_pos:-?}/7 positives and ${bt_neg:-?}/0 negatives" >&2
+    echo "  FAIL: self-probe — the bare-timeout scan matched ${bt_pos:-?}/8 positives and ${bt_neg:-?}/0 negatives" >&2
   fi
 fi
 

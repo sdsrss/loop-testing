@@ -338,7 +338,7 @@ SHIM
     --skill-dir "$FAKE19" --max-sessions 1 >/dev/null 2>&1 &
   DRV19="$(wait_lock_pid "$WS19")"
   # The lock is written immediately before the protect chmod (unattended-codex.sh:
-  # acquire_lock at 628, DID_PROTECT=1 and the chmod at 632-635), so the driver is
+  # acquire_lock at 628, DID_PROTECT=1 at 635 and the chmod at 645), so the driver is
   # inside the shimmed, slow chmod right now. That ordering also means this case
   # stays meaningful on a host with no watchdog binary: the refusal is later still,
   # at 701-719, so the shim fires, the driver sleeps in it, and the SIGTERM below
