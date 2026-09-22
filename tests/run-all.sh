@@ -37,8 +37,18 @@ tests_found=0
 suites=0
 asserts=0
 afails=0
+skipped=0      # suites that declared a host precondition this runner verified
 _ra_rcfail=0   # set when any suite failed through its exit code, so the
                # assertion gate below does not name a cause that is false
+
+# Which watchdog binary this host has, resolved ONCE. Two things read it: the
+# precondition gate inside the loop, and the arms clause on the TOTAL line. They
+# must not be able to disagree — a gate that honours "no watchdog here" while the
+# line printed below says `timeout` would be the same drift between a number and
+# its qualification that put the arms on that line in the first place.
+_ra_wd=""
+if command -v timeout >/dev/null 2>&1; then _ra_wd=timeout
+elif command -v gtimeout >/dev/null 2>&1; then _ra_wd=gtimeout; fi
 # Each suite's last tally line is "<suite>: <N> passed, <M> failed". Capturing
 # the run lets us sum those into one TOTAL, so a published assertion count is
 # recomputable from `bash tests/run-all.sh | tail -1` instead of being summed by
@@ -116,9 +126,75 @@ while IFS= read -r -d '' t; do
   # `</dev/null` is load-bearing, not hygiene. The loop reads the file list on
   # stdin, so a suite that reads stdin ate the rest of that list and the runner
   # stopped early while still printing ALL GREEN: 12 of 35 suites ran.
-  if bash "$t" </dev/null >"$_ra_out" 2>&1; then rc=0; else rc=1; fi
+  #
+  # The real exit status, not a collapsed 0-or-1: the precondition protocol below
+  # distinguishes 77 from every other non-zero code, and cannot if the status is
+  # flattened on the way in.
+  bash "$t" </dev/null >"$_ra_out" 2>&1; rc=$?
   cat "$_ra_out"
-  if [ "$rc" -eq 0 ]; then echo "  ok: $t"; else echo "  TEST FAIL: $t"; overall=1; _ra_rcfail=1; fi
+  # --- suite-level precondition protocol ---------------------------------------
+  # A suite whose host cannot run it AT ALL may stop before its first case by
+  # printing one line — `PRECONDITION NOT MET: <token>` — and exiting 77
+  # (automake's SKIP convention). The driver suites use it for the host with
+  # neither `timeout` nor `gtimeout`: there the driver REFUSES to start, which is
+  # correct, so every case needing a running driver measures that refusal instead
+  # of its own subject. How many suites and how many assertions that is are
+  # deliberately NOT written here — the SKIP lines and the TOTAL line carry them,
+  # and a count hand-written beside a mechanism is the drift this release is
+  # about. Per-case skips were the rejected alternative.
+  #
+  # The line is matched at column 0, so a suite that needs to print the literal
+  # (a future test OF this protocol) must indent it.
+  #
+  # Skipping is the direction that hides things here — this runner once printed
+  # ALL GREEN having run 12 of 35 suites — so none of it is taken on the suite's
+  # word. Four checks, each fail-closed:
+  #   * the line and the exit status must agree, in both directions;
+  #   * the token must be one this runner knows, so a typo cannot buy silence;
+  #   * the precondition is re-evaluated HERE, against this host. A suite
+  #     claiming the watchdog is missing where one exists is a gate failure —
+  #     that check is what stops a suite from quietly excusing itself forever;
+  #   * a skipped suite must report no assertions (enforced at the tally below):
+  #     one that ran cases and then bailed is not a skip.
+  # Read the tally here rather than after the verdict: one of the four checks is
+  # about the tally, and a claim rejected for reporting assertions must not first
+  # be announced as a suite that "ran nothing".
+  tally=$(grep -E '^[^ ]+: [0-9]+ passed, [0-9]+ failed$' "$_ra_out" | tail -1)
+  _ra_pre=""
+  _ra_preline=$(grep '^PRECONDITION NOT MET: ' "$_ra_out" | head -1)
+  [ -n "$_ra_preline" ] && _ra_pre=${_ra_preline#PRECONDITION NOT MET: }
+  _ra_skip_this=0
+  _ra_pre_seen=0
+  if [ -n "$_ra_pre" ] || [ "$rc" -eq 77 ]; then
+    _ra_pre_seen=1
+    if [ -z "$_ra_pre" ]; then
+      echo "  GATE FAIL: $t exited 77 (skip) but declared no precondition"; overall=1
+    elif [ "$rc" -ne 77 ]; then
+      echo "  GATE FAIL: $t declared precondition [$_ra_pre] but exited $rc, not 77"; overall=1
+    elif [ -n "$tally" ]; then
+      echo "  GATE FAIL: $t declared precondition [$_ra_pre] but also reported assertions [$tally] — a suite that ran cases and then declared the host unfit is not a skip"
+      overall=1
+    else
+      case "$_ra_pre" in
+        watchdog-binary)
+          if [ -n "$_ra_wd" ]; then
+            echo "  GATE FAIL: $t skipped for a missing watchdog binary, but $_ra_wd is on PATH"
+            overall=1
+          else
+            _ra_skip_this=1
+          fi
+          ;;
+        *)
+          echo "  GATE FAIL: $t declared an unknown precondition [$_ra_pre]"; overall=1
+          ;;
+      esac
+    fi
+  fi
+  if [ "$_ra_skip_this" -eq 1 ]; then
+    echo "  SKIP: $t — precondition [$_ra_pre] not met on this host; it ran nothing"
+    skipped=$((skipped + 1))
+  elif [ "$rc" -eq 0 ]; then echo "  ok: $t"
+  else echo "  TEST FAIL: $t"; overall=1; _ra_rcfail=1; fi
   # A helper the suite's lib does not define is not a failing assertion — it is
   # an assertion that never ran. `assert_path` lived in one lib and was called
   # from a suite sourcing another, so two checks printed "command not found" to
@@ -135,8 +211,13 @@ while IFS= read -r -d '' t; do
     overall=1
   fi
   _leak_before=$_leak_after
-  tally=$(grep -E '^[^ ]+: [0-9]+ passed, [0-9]+ failed$' "$_ra_out" | tail -1)
-  if [ -z "$tally" ]; then
+  if [ "$_ra_pre_seen" -eq 1 ]; then
+    # Either a verified skip, which reports no tally by contract, or a claim the
+    # block above already rejected by name. Adding "printed no assertion tally"
+    # to a rejected claim would hand the reader a second cause that is true and
+    # not the reason.
+    :
+  elif [ -z "$tally" ]; then
     # A suite that reports no tally cannot be counted, and a suite that cannot be
     # counted is where a zero-assertion suite hides. Fail rather than skip.
     echo "  GATE FAIL: $t printed no assertion tally"; overall=1
@@ -207,8 +288,17 @@ fi
 # BY DESIGN rather than by failure:
 #   * node absent          -> the moa suites do not run at all (the original
 #                             case this line already handled);
-#   * neither timeout nor gtimeout -> the watchdog cases skip, so the total is
-#                             lower with nothing having failed;
+#   * neither timeout nor gtimeout -> the two driver suites declare a host
+#                             precondition and are skipped WHOLE, so the total
+#                             drops by their assertions and `skipped` says how
+#                             many files did not run. This clause used to read
+#                             "the watchdog cases skip, so the total is lower
+#                             with nothing having failed", and both halves were
+#                             false: nothing skipped, and those suites reported
+#                             38 failures — every one of them the driver
+#                             correctly refusing to start without a watchdog.
+#                             The drift this line exists to prevent had been
+#                             written into the line's own comment;
 #   * a $TMPDIR containing a space -> several suites take a different path, and
 #                             `update-check` currently fails five there.
 # Printing them here instead of hand-writing them into a release note is the
@@ -219,13 +309,13 @@ fi
 # This is not a toolchain inventory and should not become one. Which `grep` or
 # `coreutils` produced the run is not an axis that moves these counts; whether a
 # skip branch fired is. Name the arms, not the userland.
-if command -v timeout >/dev/null 2>&1; then
-  _ra_arm_to="timeout"
-elif command -v gtimeout >/dev/null 2>&1; then
-  _ra_arm_to="gtimeout-only"
-else
-  _ra_arm_to="no timeout/gtimeout — watchdog cases skipped"
-fi
+# Same $_ra_wd the precondition gate honoured, not a second resolution: the arm
+# named here and the arm the gate acted on are then the same fact.
+case "$_ra_wd" in
+  timeout)  _ra_arm_to="timeout" ;;
+  gtimeout) _ra_arm_to="gtimeout-only" ;;
+  *)        _ra_arm_to="no timeout/gtimeout" ;;
+esac
 case "${TMPDIR:-/tmp}" in
   *\ *) _ra_arm_tmp='spaced $TMPDIR' ;;
   *)    _ra_arm_tmp='space-free $TMPDIR' ;;
@@ -235,8 +325,12 @@ if [ "$node_counted" -eq 1 ]; then
 else
   _ra_arm_node="shell only — node not run"
 fi
-printf 'TOTAL: %d suites, %d assertions, %d failed (%s; %s; %s)\n' \
-  "$suites" "$asserts" "$afails" "$_ra_arm_tmp" "$_ra_arm_to" "$_ra_arm_node"
+# `skipped` is printed unconditionally, including as `0 skipped`. A field that
+# appears only when non-zero makes the line's shape depend on the run, and a
+# release note quoting one shape cannot then be compared with another — the same
+# reason the arms are always present rather than mentioned only when unusual.
+printf 'TOTAL: %d suites, %d assertions, %d failed, %d skipped (%s; %s; %s)\n' \
+  "$suites" "$asserts" "$afails" "$skipped" "$_ra_arm_tmp" "$_ra_arm_to" "$_ra_arm_node"
 # A failed assertion has to reach the verdict, not just the TOTAL line. `afails`
 # was summed from every suite's tally and then printed, while `overall` — the
 # only thing ALL GREEN consults — was set by suite exit codes and the gates and
@@ -253,5 +347,17 @@ if [ "$afails" -ne 0 ]; then
     echo "  GATE FAIL: $afails assertion(s) failed but no suite reported it through its exit code"
   fi
 fi
-if [ "$overall" -eq 0 ]; then echo "ALL GREEN"; else echo "FAILED"; fi
+# A bare "ALL GREEN" over a run that skipped suites is the sentence this repo has
+# the most reason to distrust: it is what was printed over 12 of 35 suites. The
+# exit status stays 0 — a host without the binary has done everything it can — but
+# the word does not stand unqualified.
+if [ "$overall" -eq 0 ]; then
+  if [ "$skipped" -gt 0 ]; then
+    echo "ALL GREEN ($skipped suite(s) skipped on an unmet precondition — see the SKIP lines)"
+  else
+    echo "ALL GREEN"
+  fi
+else
+  echo "FAILED"
+fi
 exit "$overall"
