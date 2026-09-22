@@ -74,6 +74,27 @@ for st in NEEDS_CONFIRMATION BLOCKED WONT_FIX CANNOT_REPRODUCE; do
   has "$RULES" "$st" "issue-rules.md §7 still defines $st"
 done
 
+# --- §7 must say WHICH states can reach those four ----------------------------
+# Naming the four is not enough, and the loop above is satisfied by a document
+# that names them and says nothing about how an issue gets there. §7 used to be
+# an arrow diagram with `↓` hanging under FIXED_UNVERIFIED, which reads as "only
+# an issue somebody worked on can be parked" — while criterion 3 requires EVERY
+# P0-P2 that is not VERIFIED at round end to land in one of the four, an issue
+# still at OPEN included. Under that reading the two documents order opposite
+# things and criterion 3 is unsatisfiable for an untouched P1.
+#
+# The transition table can state the sources and the diagram could not, so these
+# are the discriminating phrases: a revert to the diagram loses exactly them.
+has "$RULES" "不在表内的迁移不存在" "§7 states its own closure (a table, not a sketch)"
+has "$RULES" "\`OPEN\` · \`FIXING\` · \`FIXED_UNVERIFIED\`" \
+  "§7 names OPEN and FIXING as sources of the parking transition, not just FIXED_UNVERIFIED"
+hasnt "$RULES" "OPEN → FIXING → FIXED_UNVERIFIED → VERIFIED" \
+  "the arrow diagram that could not express that source set is gone"
+# The other end: VERIFIED is terminal and a regression opens a new entry. Without
+# this the table would be read as licensing an edit back to OPEN, which hides the
+# regression that criterion 1's zero-list is supposed to catch.
+has "$RULES" "另立新条" "§7 says a later regression opens a NEW entry instead of reopening VERIFIED"
+
 # FIXED_UNVERIFIED is the other half: it must be named and refused, or the model
 # has to guess whether "fixed but not replayed" counts as resolved.
 has "$S1" "FIXED_UNVERIFIED" "criterion 3 says what FIXED_UNVERIFIED means for convergence"

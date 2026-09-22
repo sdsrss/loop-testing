@@ -49,17 +49,27 @@
 
 同一根因最多做 **3 次有实质差异**的修复尝试。仍失败 → 记录尝试、证据与下一步，标 `BLOCKED` 或 `NEEDS_CONFIRMATION`，转去测试其他区域。**禁止无变化地反复试错。** 转移前**先回滚工作树中失败尝试的残留改动**——「修一验一提一」保证已提交部分干净，但未提交的半成品 diff 同样不得跨问题遗留，残留会污染后续轮次的复现与证据。
 
-## 7. 状态机
+## 7. 状态机（迁移表）
 
-```
-OPEN → FIXING → FIXED_UNVERIFIED → VERIFIED
-                       ↓
-   NEEDS_CONFIRMATION / BLOCKED / WONT_FIX / CANNOT_REPRODUCE
-```
+本表是状态的**唯一权威**：`ISSUES.md` 模板的状态列表与 `exit-and-report.md` 判据 3 都按它取值。一行 = 一次允许的迁移；**不在表内的迁移不存在**。
 
-- `VERIFIED` **只能由原样重放复现步骤产生**（重放命令与输出同轮记录于 `runs/round-N.md`）；未重放不得标 VERIFIED。**次序（勿颠倒）**：重放命令与输出必须**先**写入 `runs/round-N.md`，再把 `ISSUES.md` 该条状态改为 `VERIFIED`。这条次序由纪律保证，`ledger-gate.sh` 只是**提高作弊成本的软门**：它 fail-**open**（解析不了就放行），只查该 ID 是否在 `runs/` 出现过，且无法看穿把写入间接化的命令（解释器内部的重定向、运行时拼出的路径、包装动词）。门放行 ≠ 重放做过；这条规则对你的约束不因门的能力而放松。
-- `NEEDS_CONFIRMATION` / `BLOCKED` / `WONT_FIX` / `CANNOT_REPRODUCE` **必须有完整证据与明确下一步**，不能当作方便停止的「问题停车场」。
-- `CANNOT_REPRODUCE` 必须附尝试记录，不许编故事。
+| 从 | 到 | 迁移成立的前置（写下来才算数） |
+|---|---|---|
+| （新发现） | `OPEN` | 发现即立案：先写进 `ISSUES.md` 再处理，禁止静默修复 |
+| `OPEN` | `FIXING` | 开始一次「有实质差异」的修复尝试（同一根因至多 3 次，§6） |
+| `FIXING` | `FIXED_UNVERIFIED` | 改动已按「修一验一提一」提交，但**尚未原样重放**复现步骤 |
+| `FIXED_UNVERIFIED` | `VERIFIED` | 重放命令与输出**先**写入 `runs/round-N.md`，**再**改本条状态；次序颠倒即不成立 |
+| `OPEN` · `FIXING` · `FIXED_UNVERIFIED` | `NEEDS_CONFIRMATION` · `BLOCKED` · `WONT_FIX` · `CANNOT_REPRODUCE` | 如实改判，附完整复现、影响、尝试记录与**明确下一步**；`CANNOT_REPRODUCE` 另须附尝试记录，不许编故事 |
+| `NEEDS_CONFIRMATION` · `BLOCKED` · `WONT_FIX` · `CANNOT_REPRODUCE` | `FIXING` | 该条记录的「下一步」变为可执行（阻塞解除、确认到手） |
+| `VERIFIED` | —— | 终态。日后再次出现**另立新条**并引用原 ID，不改回旧条 |
+
+三件本表说了、而旧的箭头图没说的事：
+
+- **四个终态不是只能从 `FIXED_UNVERIFIED` 出发。** 旧图把 `↓` 画在 `FIXED_UNVERIFIED` 下面，读起来像只有动过手的问题才能归档；而 `exit-and-report.md` 判据 3 要求轮末仍未 `VERIFIED` 的 P0-P2 **全部**落进那四者，其中当然包括还停在 `OPEN` 和 `FIXING` 的。按旧图读，那条判据无解。
+- **那四个状态可以再打开。** 它们都要求写「明确下一步」；下一步能走了就回 `FIXING`。它们是待办的分类，不是方便停止的「问题停车场」。
+- **`VERIFIED` 不回头。** 回归另立新条：总账只追加（`round-0.md` §0），而收敛判据要按「重要回归」把 `converged_streak` 归零——改回旧条等于把这次回归藏进历史里。
+
+`VERIFIED` 那一行的次序由**纪律**保证，`ledger-gate.sh` 只是**提高作弊成本的软门**：它 fail-**open**（解析不了就放行），只查该 ID 是否在 `runs/` 出现过，且无法看穿把写入间接化的命令（解释器内部的重定向、运行时拼出的路径、包装动词）。门放行 ≠ 重放做过；这条规则对你的约束不因门的能力而放松。
 
 ## 8. 疑似密钥 / 敏感数据（FR-6.6）
 
