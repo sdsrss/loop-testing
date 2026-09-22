@@ -93,7 +93,9 @@ if [ -n "$_lt_missing" ]; then
   echo "sandbox-setup: lib.sh beside this script sourced but is missing:$_lt_missing — a truncated or partial install; refusing rather than reporting isolation this run cannot establish." >&2
   exit 2
 fi
-unset _lt_missing _lt_f _lt_self _lt_hops _lt_d _lt_dir
+unset _lt_missing _lt_f _lt_self _lt_hops _lt_d
+# Kept: _lt_dir is the RESOLVED script dir, and SCRIPT_DIR below must be it —
+# `dirname "$0"` names a symlink's directory and echoes under CDPATH.
 
 MODE="worktree"
 BRANCH="qa/loop-testing"
@@ -277,7 +279,7 @@ if [ -n "$GCD" ] && [ "$GD" != "$GCD" ]; then
   fi
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$_lt_dir"
 TEMPLATES_DIR="$(cd "$SCRIPT_DIR/../templates" && pwd 2>/dev/null)" || TEMPLATES_DIR=""
 
 LT="$TOP/docs/looptesting"

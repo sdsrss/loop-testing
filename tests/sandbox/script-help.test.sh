@@ -101,6 +101,34 @@ for _s in sandbox-setup.sh sandbox-clean.sh unattended-loop.sh unattended-codex.
   # CDPATH, bare-relative invocation — the only shape that consults it.
   out=$( cd "$SCRIPTS_DIR/.." && CDPATH=. bash "scripts/$_s" --help 2>&1 ); rc=$?
   assert_eq 0 "$rc" "$_s answers --help with CDPATH=. set — output: $(printf '%s' "$out" | head -1)"
+  # A RELATIVE link, reached through a relative path under CDPATH=.: the only
+  # shape that exercises the resolver's relative-target arm and the CDPATH='' on
+  # its in-loop `cd`. Review measured both deletable with every case above green.
+  mkdir -p "$WS/rel/a b" "$WS/rel/c"
+  ln -sf "$SCRIPTS_DIR/$_s" "$WS/rel/a b/$_s"
+  ln -sf "../a b/$_s" "$WS/rel/c/$_s"
+  out=$( cd "$WS/rel" && CDPATH=. bash "c/$_s" --help 2>&1 ); rc=$?
+  assert_eq 0 "$rc" "$_s answers --help through a relative link chain under CDPATH=. — output: $(printf '%s' "$out" | head -1)"
+done
+
+# --- ...and past --help, the script must still know where it lives -----------
+# The resolver above only locates lib.sh. sandbox-setup.sh derived its templates
+# dir from its own `dirname "$0"`, so through a symlink or under CDPATH=. it got
+# past the lib.sh gate, exited 0, and seeded none of the templates — silently.
+for _how in symlink cdpath; do
+  WS2=$(mk_ws) || { FAIL=$((FAIL+1)); echo "  FAIL: mk_ws for the $_how setup case" >&2; continue; }
+  # setup works on its cwd, so CDPATH needs a bare-relative path FROM the project:
+  # a directory link to the skill, excluded so the tree stays clean.
+  case "$_how" in
+    symlink) ( cd "$WS2/proj" && bash "$LINKDIR/sandbox-setup.sh" ) >/dev/null 2>&1; rc=$? ;;
+    cdpath)  ln -s "$SCRIPTS_DIR/.." "$WS2/proj/lt-skill" && echo lt-skill >> "$WS2/proj/.git/info/exclude"
+             ( cd "$WS2/proj" && CDPATH=. bash lt-skill/scripts/sandbox-setup.sh ) >/dev/null 2>&1; rc=$? ;;
+  esac
+  assert_eq 0 "$rc" "sandbox-setup via $_how exits 0"
+  for _t in STATE.md PLAN.md ISSUES.md; do
+    assert_exists "$WS2/proj/docs/looptesting/$_t" "sandbox-setup via $_how seeds $_t"
+  done
+  rm -rf "${WS2:?}"
 done
 
 report "script-help.test.sh"

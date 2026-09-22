@@ -475,8 +475,9 @@ rm -f "$probe"
 #     tests/sandbox/purge.test.sh:41 explains the `-i.bak` form and contains the
 #     literal spelling — it passes only because its `#` starts the line.
 # DISCOVERY is filesystem + extension over four roots (skills tests hooks
-# install), not `git ls-files`. Every tracked shell file is inside them today —
-# 59 of 59, verified — but a tracked `.sh` added at the repo root would fall
+# install), not `git ls-files`. Every tracked shell file is inside them today
+# (no count here: the last one written was wrong the day it landed) — but a
+# tracked `.sh` added at the repo root would fall
 # outside silently, so the roots are the claim, not "everything tracked".
 # Like the bare-timeout scan above, this is a tripwire for the forms this tree
 # actually writes, not a parser.
