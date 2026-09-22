@@ -71,6 +71,16 @@
 #      outlived SIGKILL, which the message on stderr names.
 set -u
 
+# Shared with unattended-codex.sh: the nine helpers that were byte-identical in
+# both drivers, redaction set included. See lib.sh's driver section for what did
+# NOT move. Fail-closed: a driver that cannot read its own helpers must not go on
+# to take a lock and launch full-permission sessions.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh" || {
+  echo "unattended-loop: cannot source lib.sh beside this script — the install is incomplete." >&2
+  exit 2
+}
+
+
 PROJECT=""
 MAX_SESSIONS=15
 MAX_MINUTES=240
@@ -83,7 +93,6 @@ NO_WATCHDOG=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 die() { echo "unattended-loop: $*" >&2; exit 2; }
-is_uint() { case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -139,27 +148,6 @@ issue_count() {
   # exit WITHOUT a second echo (|| echo 0 would double-print "0").
   grep -acE '^### ISSUE-' "$ISSUES" 2>/dev/null || true
 }
-runs_sig() { # "<file-count>:<total-bytes>" of runs/*.md — evidence-growth signal
-  local d="$LT/runs" n b
-  [ -d "$d" ] || { echo "0:0"; return; }
-  n=$(find "$d" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
-  # Byte total via wc on the PATHS (a stat, not a full content read — audit DR-8;
-  # `cat | wc -c` re-read every evidence byte each session). Multi-file output
-  # ends with a "total" line, single-file has none: take the last line's leading
-  # number either way; empty (glob no-match) -> 0.
-  b=$(wc -c "$d"/*.md 2>/dev/null | tail -1 | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
-  [ -n "$b" ] || b=0
-  echo "$n:$b"
-}
-bootstrap_sig() { # bytes of round-0 artifacts (PLAN + FEATURE_MATRIX)
-  # Round 0 fills PLAN.md + FEATURE_MATRIX.md BEFORE any runs/round-N.md exists, so
-  # without this a round 0 that spans sessions on a large target fingerprints as
-  # static (round/issues/streak/runs all 0) and false-trips NO_PROGRESS (audit PL-2).
-  local b
-  b=$(wc -c "$LT/PLAN.md" "$LT/FEATURE_MATRIX.md" 2>/dev/null | tail -1 | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
-  [ -n "$b" ] || b=0
-  echo "$b"
-}
 progress_sig() { # composite fingerprint: round|issues|streak|runsN:runsB|bootstrapB
   local s
   s="$(state_field converged_streak)"; [ -n "$s" ] || s=-1
@@ -191,58 +179,6 @@ fi
 # live holder is refused (audit DR-4). Kept identical to unattended-codex.sh.
 LOCK_DIR="$LT/.driver.lock"
 LOCK_OWNED=0
-release_lock() { [ "$LOCK_OWNED" = 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null; LOCK_OWNED=0; }
-# Prints alive | gone | unknown for a PID. `kill -0` alone cannot answer this:
-# it fails for ESRCH (the process is gone) AND for EPERM (it is alive, owned by
-# another user), and reading the second as death stole the lock from a LIVE
-# driver — two sessions with bypassPermissions then writing the same STATE.md,
-# ISSUES.md and worktree, which is the one thing this guard exists to prevent
-# (audit D-06). A holder owned by another account is ordinary: a driver started
-# by root, by a systemd unit, or by a teammate on a shared box.
-#
-# procfs and `ps -p` answer "does this PID exist" without needing permission to
-# signal it — the question actually being asked. `ps` is already required here
-# (proc_start uses it). Where neither exists the answer is `unknown`, which this
-# path refuses, because it has always refused ambiguity rather than stealing.
-holder_state() { # pid
-  # Test seam. Never set in normal use; it exists because on Linux `[ -d /proc/self ]`
-  # is always true, so the `ps` arm below — the ONLY liveness path on macOS — can
-  # otherwise never be reached by any test this project can run (CI is ubuntu-only).
-  local procfs="${LOOP_TESTING_PROCFS:-/proc}"
-  kill -0 "$1" 2>/dev/null && { printf 'alive'; return; }
-  # `kill -0` just failed, which is ESRCH (gone) or EPERM (alive, owned by
-  # someone else) — indistinguishable from the shell, which is why the probes
-  # below exist. Each must prove it COULD have answered before its negative
-  # answer is believed: `gone` is the verdict that authorises stealing the lock,
-  # so a probe that cannot see the process says `unknown`, not `gone`.
-  if [ -d "$procfs/self" ]; then
-    if [ -e "$procfs/$1" ]; then printf 'alive'; return; fi
-    # Absent from procfs means "gone" only if this procfs shows us other
-    # accounts' processes at all. Under hidepid=2 — ordinary hardening on a
-    # shared box, which is the very case this fix names — it does not, and a live
-    # holder owned by another account is simply invisible. PID 1 always exists,
-    # so it is the canary: an invisible canary means the probe is blind, not that
-    # the holder died.
-    if [ -e "$procfs/1" ]; then printf 'gone'; else printf 'unknown'; fi
-    return
-  fi
-  if command -v ps >/dev/null 2>&1; then
-    if ps -p "$1" >/dev/null 2>&1; then printf 'alive'; return; fi
-    # Same rule, same reason: `ps -p` exits non-zero both for "no such process"
-    # and for a `ps` that could not answer at all — and `ps -o ppid= -p 999999`
-    # even prints nothing while exiting 0, so status alone is not a signal here.
-    #
-    # The canary is PID 1, not `$$`. The whole point of a canary here is to
-    # detect a probe that cannot see processes belonging to OTHER accounts —
-    # which is the case the holder is in. Our own process is visible to us under
-    # every such restriction, so `ps -p $$` succeeds exactly when the probe is
-    # blind and would have confirmed nothing. PID 1 always exists and belongs to
-    # root, so it is the smallest thing that tests the right property.
-    if ps -p 1 >/dev/null 2>&1; then printf 'gone'; else printf 'unknown'; fi
-    return
-  fi
-  printf 'unknown'
-}
 acquire_lock() {
   # LOCK_OWNED is set BEFORE the pid write, at both mkdir sites: a signal landing
   # between them now terminates (the handlers exit), and with the flag still unset
@@ -308,24 +244,10 @@ CHILD=""              # pid of the running session (the watchdog leads its group
 SESSION_ERR=""        # this session's stderr capture file, "" when off (audit D-05)
 CHILD_START=""        # its start time — a pid alone is not an identity
 CHILD_SURVIVED=""     # set only when that pid outlives SIGKILL
+# Read by poll_sleep, which now lives in lib.sh — the coupling the linter is
+# pointing at is real and is the price of one copy instead of two.
+# shellcheck disable=SC2034
 POLL_STEP=auto
-poll_sleep() {
-  local rc
-  if [ "$POLL_STEP" = auto ]; then
-    sleep 0.2 2>/dev/null; rc=$?
-    # Exit >= 128 means the sleep was INTERRUPTED by a second stop signal, not
-    # that this platform rejects a fractional argument — only the latter should
-    # downgrade the poll to whole seconds.
-    if [ "$rc" -eq 0 ] || [ "$rc" -ge 128 ]; then POLL_STEP=0.2; else POLL_STEP=1; sleep 1; fi
-    return 0
-  fi
-  sleep "$POLL_STEP" 2>/dev/null || true
-}
-# The kernel reuses pids. Across a 20 s wait the session's number could come
-# back as an unrelated process, and this code signals a whole process GROUP at
-# the bound — so pair the pid with its start time and read a mismatch as "the
-# session is gone", never as "something to kill".
-proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' ' '; }
 child_alive() { # pid start-time
   local st
   kill -0 "$1" 2>/dev/null || return 1
@@ -403,11 +325,6 @@ session_err_open() {
   # launched the agent at all, reported as a bare exit=1.
   return 0
 }
-session_err_close() {
-  [ -n "$SESSION_ERR" ] && rm -f "$SESSION_ERR"
-  SESSION_ERR=""
-  return 0
-}
 # What shutdown_handler does with whatever the CURRENT session left. The loop
 # removes each session's file once it has been logged, so at most one is
 # outstanding here; there is no `.part` sibling to clean, because the redirect
@@ -440,79 +357,6 @@ session_err_dispose() {
   fi
   SESSION_ERR=""
   return 0
-}
-session_err_redact() {
-  # Order matters: specific shapes first, so a partially masked value cannot
-  # re-match. Case is spelled out rather than using a `I` flag — BSD sed has no
-  # such flag, and both drivers must run on macOS.
-  local q="'" dq='"'
-  sed -E \
-    -e 's/(sk-[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+/\1***REDACTED***/g' \
-    -e 's/(gh[pousr]_)[A-Za-z0-9]{8,}/\1***REDACTED***/g' \
-    -e 's/(xox[baprs]-)[A-Za-z0-9-]{8,}/\1***REDACTED***/g' \
-    -e 's/AKIA[0-9A-Z]{16}/AKIA***REDACTED***/g' \
-    `# userinfo in a URL: https://ci-bot:glpat-…@host` \
-    -e "s#(://[^/[:space:]:@]+:)[^@[:space:]/]+@#\\1***REDACTED***@#g" \
-    `# any whitespace after the scheme word, not a literal space (a TAB got through)` \
-    -e 's#([Bb]earer[[:space:]]+)[A-Za-z0-9._~+/-]{8,}=*#\1***REDACTED***#g' \
-    `# Authorization, QUOTED form, before the bare one. Every JSON, Python-dict` \
-    `# and Ruby-hash rendering puts a quote between the name and the colon, which` \
-    `# the bare rule's literal ':' cannot match — review got 'ci-bot:supersecret'` \
-    `# back out of {"headers":{"authorization":"Basic …"}}, and the base64 of a` \
-    `# short credential pair is under the 32-char fallback. Stops at the closing` \
-    `# quote rather than running to end of line, so the rest of the JSON (status` \
-    `# codes, retry-after, the message itself) survives.` \
-    `# The leading [A-Za-z-]* and the optional > cover the renderings review found` \
-    `# still leaking afterwards: "x-authorization", "proxy-authorization", and` \
-    `# Ruby/Perl "authorization" => "Basic …".` \
-    `# Residual: sed is line-based, so a value on the NEXT line (pretty-printed` \
-    `# JSON) is an orphaned 24-character run that no rule here can attribute.` \
-    -e "s#([$dq$q][A-Za-z-]*[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][$dq$q][[:space:]]*[:=]>?[[:space:]]*[$dq$q])([A-Za-z]+[[:space:]]+)?[^$dq$q]*#\\1\\2***REDACTED***#g" \
-    `# Authorization: take the REST OF THE LINE past an optional scheme word.` \
-    `# Taking the next token instead redacted "Basic" and published the base64.` \
-    `# Rest-of-line is deliberate for the bare header form — the value IS the` \
-    `# rest — and costs any diagnostic printed after it on the same line.` \
-    -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*[:=][[:space:]]*([A-Za-z]+[[:space:]]+)?).*/\1***REDACTED***/' \
-    `# Glued <prefix>Token / <prefix>Secret / <prefix>Password names, FIRST because` \
-    `# it is the narrower rule. The rule below wants a separator before the secret` \
-    `# word, so every camelCase and PascalCase form slipped past it: review found` \
-    `# twelve lowerCamelCase leaks (accessToken, clientSecret, dbPassword…) and,` \
-    `# after the first attempt at this rule, nine PascalCase ones — .NET` \
-    `# appsettings.json is PascalCase by convention, and Go's %+v on oauth2.Config` \
-    `# and oauth2.Token prints exported fields, which are necessarily capitalised.` \
-    `#` \
-    `# The prefix is ENUMERATED, and that is the second attempt at this rule. The` \
-    `# first tried to do it structurally, on the case of the first letter:` \
-    `# lowercase meant a credential field, uppercase a type name. Measured, case` \
-    `# carries no such information — accessToken and nextToken are both` \
-    `# lowerCamelCase, AccessToken and SyntaxToken are both PascalCase — so the` \
-    `# structural rule failed in BOTH directions at once: it leaked the nine` \
-    `# PascalCase credentials and redacted thirteen lexer-API names (nextToken:,` \
-    `# peekToken:, readToken:, expectToken:…), which are exactly the diagnostics` \
-    `# this feature exists to carry. A list that fails by missing an unlisted` \
-    `# prefix beats a structure that fails at both ends.` \
-    `# Residual, stated: an unlisted prefix (twilioToken=) is not matched here.` \
-    -e "s#(^|[^A-Za-z0-9])(([Aa]ccess|[Rr]efresh|[Ss]ession|[Ii]d|[Bb]earer|[Cc]lient|[Aa]pi|[Aa]uth|[Oo]auth|[Bb]ot|[Uu]ser|[Aa]dmin|[Ww]ebhook|[Ss]lack|[Nn]pm|[Gg]it[Hh]ub|[Gg]it[Ll]ab|[Ss]tripe|[Dd]b)(Token|Secret|Password))([$dq$q]?[[:space:]]*[:=][[:space:]]*[$dq$q]?)[A-Za-z0-9._~+/=-]{10,}#\\1\\2\\5***REDACTED***#g" \
-    `# name=value whose NAME says secret/token/password/key. Three bounds, each` \
-    `# one a defect the pulled round shipped: the word must START at a` \
-    `# non-alphanumeric boundary (it matched 'key' inside 'monKEY'), it must END` \
-    `# at one (inside 'KEYboard'), and the value must be 10+ characters (it took` \
-    `# ANY value, so 'token: expected ;' became 'token: ***REDACTED***' — the` \
-    `# feature deleting the diagnostics it exists to deliver). Glued compounds` \
-    `# that really are key names (apikey, authkey, accesskey…) are listed rather` \
-    `# than inferred.` \
-    `# Known holes, measured and left open rather than chased: a glued SUFFIX` \
-    `# (keyId=) is an identifier more often than a credential; hyphenated CSS` \
-    `# spec names (ident-token:, delim-token:) satisfy the start boundary and are` \
-    `# redacted; and the 10-character floor sits between 'expected' (8) and` \
-    `# 'unexpected' (10), so 'token: unexpected end of input' loses one word.` \
-    `# Every floor that saves that word also lets an all-letter credential` \
-    `# through, and this file is attached to bug reports — over-redaction costs a` \
-    `# word, under-redaction costs a key.` \
-    -e "s#(^|[^A-Za-z0-9])([Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|([Aa][Pp][Ii]|[Aa][Uu][Tt][Hh]|[Aa][Cc][Cc][Ee][Ss][Ss]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee])?[Kk][Ee][Yy])(([_.-][A-Za-z0-9_.-]*)?[$dq$q]?[[:space:]]*[:=][[:space:]]*[$dq$q]?)[A-Za-z0-9._~+/=-]{10,}#\\1\\2\\4***REDACTED***#g" \
-    `# last resort: an unlabelled opaque run. 32, not 24: at 24 it ate ordinary` \
-    `# path segments and branch names out of the diagnostics this exists to keep.` \
-    -e 's#[A-Za-z0-9_+=-]{32,}#***REDACTED***#g' 2>/dev/null
 }
 session_err_log() { # <session-number>
   [ -n "$SESSION_ERR" ] || return 0
