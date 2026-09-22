@@ -79,16 +79,22 @@ wt_gitdir_of() {
 #   stale    registered, but the directory is gone — a dangling registration
 #   legacy   the marker records no stamp (sandbox predates stamping) — caller
 #            keeps the old path-only behavior rather than inventing a refusal
-#   ours     stamp matches, or the stamp file is gone but the branch still matches
-#   foreign  something else is standing there
+#   ours     the stamp file is present and matches
+#   foreign  something else is standing there — INCLUDING a worktree whose stamp
+#            file is gone while the branch still matches (see the tail of this
+#            function: that branch-name fallback was removed because it fired on
+#            the harvest workflow this tool tells users to perform)
 #   unknown  the question could not be answered — never a licence to delete
 #
-# `stale` is the correction this extraction carried in: BOTH copies of this
-# header listed five verdicts and the code has printed six since the dangling-
-# registration branch was added, while both callers already had an explicit
-# `stale)` arm (sandbox-setup.sh, sandbox-clean.sh). A contract under-reporting
-# its own return values, in the function whose entire job is to be trusted about
-# ownership, duplicated so the drift had to be found twice to be fixed once.
+# Two corrections have now travelled through this header, both the same shape —
+# a contract under-reporting the code beneath it, in the function whose entire
+# job is to be trusted about ownership. `stale` came with the extraction: both
+# copies listed five verdicts while the code had printed six since the
+# dangling-registration branch was added, with both callers already carrying an
+# explicit `stale)` arm. `ours` came from the review of that extraction: the line
+# still promised the branch-name fallback that the code twenty-five lines below
+# says, at length, was deleted. Duplication is why the first took two fixes; only
+# reading the code against the comment catches the second.
 wt_ownership() {
   local p="$1" want="$2" gd got list nl _gl   # $3 (recorded branch) is no longer consulted
   # Builtins only from here down. The first version parsed `git worktree list`

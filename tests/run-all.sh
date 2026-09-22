@@ -143,6 +143,32 @@ _leak_n() {
   find "$_ra_tmp" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' '
 }
 _leak_before=$(_leak_n)
+# The OTHER place a fixture lands, and the one this scan could not see. The
+# comment 50 lines up already names it — "`mkdir proj; git init` in the runner's
+# own cwd, which is the repository root" — and nothing checked it. A run of this
+# suite left `run-clean.sh`, `sentinel.pid` and `shim7/ps` at the top of the
+# working tree, every gate green, and they were caught by `git status` at commit
+# time rather than by anything here. `$TMPDIR` residue is watched by position;
+# this is watched by git, so .gitignore'd build output does not register and a
+# suite MODIFYING a tracked file is caught too — no suite has business doing
+# either.
+#
+# Three states, not two: inside a checkout with git working (check runs), outside
+# a checkout (check does not apply — say so once, do not pretend it passed), and
+# git present but failing (a probe that could not answer, which is a GATE FAIL
+# rather than a pass).
+_ra_wt_watch=0
+_ra_wt_before=""
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if _ra_wt_before="$(git status --porcelain 2>/dev/null)"; then
+    _ra_wt_watch=1
+  else
+    echo "  GATE FAIL: inside a git checkout but 'git status --porcelain' failed — cannot tell whether a suite writes into the repository"
+    overall=1
+  fi
+else
+  echo "== working-tree residue check skipped: not a git checkout =="
+fi
 while IFS= read -r -d '' t; do
   tests_found=1
   suites=$((suites + 1))
@@ -297,6 +323,23 @@ while IFS= read -r -d '' t; do
     overall=1
   fi
   _leak_before=$_leak_after
+  if [ "$_ra_wt_watch" -eq 1 ]; then
+    if _ra_wt_after="$(git status --porcelain 2>/dev/null)"; then
+      if [ "$_ra_wt_after" != "$_ra_wt_before" ]; then
+        echo "  GATE FAIL: $t wrote into the repository working tree:"
+        printf '%s\n' "$_ra_wt_after" \
+          | grep -Fxv -f <(printf '%s\n' "$_ra_wt_before") 2>/dev/null \
+          | sed 's/^/      /'
+        overall=1
+        # Re-baseline so the next suite is blamed for its own writes only.
+        _ra_wt_before="$_ra_wt_after"
+      fi
+    else
+      echo "  GATE FAIL: 'git status --porcelain' failed after $t — the working-tree residue check cannot answer from here on"
+      overall=1
+      _ra_wt_watch=0
+    fi
+  fi
   # Per-case skips, the OTHER way assertions stop running. A suite that guards a
   # block on a missing premise prints `  skip: …` and counts nothing, which is the
   # right thing to do and was invisible in every summary: on a host with no
