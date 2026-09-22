@@ -4,6 +4,10 @@
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
+# Without timeout/gtimeout the driver refuses to start (DR-7), so every case here
+# would measure that refusal; skip the file whole via the run-all protocol.
+require_watchdog_binary
+
 # A. terminal status already present -> exit 0, launch zero sessions
 WS=$(mk_proj); trap 'rm -rf "$WS"' EXIT
 stub=$(write_stub "$WS")

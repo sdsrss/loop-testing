@@ -19,6 +19,10 @@
 # runs the real sandbox-setup.sh inside the fixture, --no-protect on codex.
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/../sandbox/lib.sh"
+
+# Without timeout/gtimeout the driver refuses to start (DR-7), so every case here
+# would measure that refusal; skip the file whole via the run-all protocol.
+require_watchdog_binary
 DRIVER="$REPO_ROOT/skills/loop-testing/scripts/unattended-loop.sh"
 CODEX_DRIVER="$REPO_ROOT/skills/loop-testing/scripts/unattended-codex.sh"
 

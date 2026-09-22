@@ -13,6 +13,10 @@
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/codex-lib.sh"
 
+# Without timeout/gtimeout the driver refuses to start (DR-7), so every case here
+# would measure that refusal; skip the file whole via the run-all protocol.
+require_watchdog_binary
+
 WS=$(mk_proj); trap 'rm -rf "$WS"' EXIT
 mkdir -p "$WS/proj/docs/looptesting"
 # A stub that honors `-C <dir>` the way `codex exec` does: chdir there, fail

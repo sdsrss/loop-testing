@@ -29,6 +29,10 @@
 set -u
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
+# Without timeout/gtimeout the driver refuses to start (DR-7), so every case here
+# would measure that refusal; skip the file whole via the run-all protocol.
+require_watchdog_binary
+
 LOG=docs/looptesting/driver.log
 CLEAN=""
 cleanup() { [ -n "$CLEAN" ] && chmod -R u+rwX $CLEAN 2>/dev/null; rm -rf $CLEAN; }  # unquoted: a list

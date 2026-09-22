@@ -33,6 +33,10 @@ set -u
 # whoever runs it, so detach here too.
 exec </dev/null
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+
+# Without timeout/gtimeout the driver refuses to start (DR-7), so every case here
+# would measure that refusal; skip the file whole via the run-all protocol.
+require_watchdog_binary
 CODEX_DRIVER="$REPO_ROOT/skills/loop-testing/scripts/unattended-codex.sh"
 
 WS_ALL=()
