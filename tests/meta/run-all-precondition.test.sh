@@ -30,7 +30,8 @@ cd "$(cd "$(dirname "$0")" && pwd)/../.." || { echo "FAILED: cannot cd to repo r
 # is refused — and this file is itself run on the binary-less arm, where that
 # premise does not hold. Resolved from the shared lib rather than re-derived here,
 # so there is still one answer to the question in this tree.
-. "$(cd "$(dirname "$0")" && pwd)/../lib-watchdog.sh"
+. "$(cd "$(dirname "$0")" && pwd)/../lib-watchdog.sh" || {
+  echo "FAILED: cannot source tests/lib-watchdog.sh" >&2; exit 1; }
 
 PASS=0
 FAIL=0
@@ -178,6 +179,18 @@ fi
 
 printf '#!/usr/bin/env bash\necho "mut.test.sh: 9 passed, 4 failed"\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
 scenario "skipped yet reported assertions" farm "FAILED" "but also reported assertions"
+
+# The two dodges that made the arm above pass VACUOUSLY. The runner's tally regex
+# is anchored and space-free, so a suite whose tally it cannot parse left `tally`
+# empty and the skip was honoured over a run that had printed four failures — exit
+# 1 at v0.15.0, exit 0 and ALL GREEN with the protocol as first written. Neither
+# shape is reachable in this tree today, which is exactly why they belong here: the
+# thing that made them unreachable is a naming habit, not a check.
+printf '#!/usr/bin/env bash\necho "  FAIL: case one — expected rc 5 got 2"\necho "atk suite: 9 passed, 4 failed"\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
+scenario "a tally with a space in its name buys no skip" farm "FAILED" "carries case results"
+
+printf '#!/usr/bin/env bash\necho "  FAIL: case one — expected rc 5 got 2"\necho "  atk: 9 passed, 4 failed"\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
+scenario "an indented tally buys no skip" farm "FAILED" "carries case results"
 
 # --- and the four repairs the review produced --------------------------------
 # The failures of a rejected claim must reach the TOTAL line. This is the defect

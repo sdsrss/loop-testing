@@ -195,6 +195,24 @@ while IFS= read -r -d '' t; do
     elif [ -n "$tally" ]; then
       echo "  GATE FAIL: $t declared precondition [$_ra_pre] but also reported assertions [$tally] — a suite that ran cases and then declared the host unfit is not a skip"
       overall=1
+    elif grep -qaE 'FAIL:|[0-9]+ passed|[0-9]+ failed' "$_ra_out"; then
+      # The arm above only sees a tally this runner can PARSE. A suite whose tally
+      # does not match — a name with a space in it, an indented line, a CRLF — left
+      # `tally` empty, so the check passed vacuously and the skip was honoured over
+      # a run that had printed four failures. Measured on a fixture named
+      # `atk suite:`: exit 1 at v0.15.0 (TEST FAIL plus the no-tally gate), exit 0
+      # and ALL GREEN once 77 stopped being a failure and the no-tally gate stopped
+      # being consulted. Two separate changes composed into it; neither alone did.
+      #
+      # So the last word on an accepted claim is a residual scan of the output,
+      # unanchored, for anything that looks like a case result. This is a substring
+      # heuristic and not accounting — stated plainly, because the arm above is the
+      # one that counts. The false-positive control was run before the patch, not
+      # after: all eleven real skipping suites under a binary-less PATH produce five
+      # lines each and none of them match.
+      echo "  GATE FAIL: $t declared precondition [$_ra_pre] and printed no tally this runner can parse, yet its output carries case results — a skip that ran cases is not a skip"
+      grep -aE 'FAIL:|[0-9]+ passed|[0-9]+ failed' "$_ra_out" | head -3 | sed 's/^/      /'
+      overall=1
     else
       case "$_ra_pre" in
         watchdog-binary)
@@ -335,17 +353,18 @@ fi
 # BY DESIGN rather than by failure:
 #   * node absent          -> the moa suites do not run at all (the original
 #                             case this line already handled);
-#   * neither timeout nor gtimeout -> the two driver suites declare a host
+#   * neither timeout nor gtimeout -> the driver suites declare a host
 #                             precondition and are skipped WHOLE, so the total
-#                             drops by their assertions and `skipped` says how
-#                             many files did not run. This clause used to read
-#                             "the watchdog cases skip, so the total is lower
-#                             with nothing having failed", and both halves were
-#                             false: nothing skipped, and those suites reported
-#                             38 failures — every one of them the driver
-#                             correctly refusing to start without a watchdog.
-#                             The drift this line exists to prevent had been
-#                             written into the line's own comment;
+#                             drops by their assertions while `skipped` and
+#                             `case-skips` report what did not run. How many of
+#                             each is deliberately not written here, for the
+#                             reason this whole line exists — and this clause has
+#                             now carried a stale count TWICE: first "the watchdog
+#                             cases skip, so the total is lower with nothing
+#                             having failed", false in both halves, then a repair
+#                             that said "the two driver suites" and "38 failures"
+#                             when the measurement was eleven suites and 202.
+#                             Whatever the numbers are, the run prints them;
 #   * a $TMPDIR containing a space -> several suites take a different path, and
 #                             `update-check` currently fails five there.
 # Printing them here instead of hand-writing them into a release note is the
