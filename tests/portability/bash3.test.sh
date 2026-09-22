@@ -18,9 +18,38 @@ PASS=0
 FAIL=0
 
 # Shipped runtime scripts, NUL-delimited so odd paths are safe.
-mapfile -d '' -t SHIPPED < <(find skills hooks install -name '*.sh' -type f -print0 2>/dev/null)
+#
+# find's status and stderr are KEPT, and every file is checked readable before the
+# scan runs. This arm had exactly the two blindnesses the bare-timeout scan 200
+# lines below was repaired for, and it is the older and more important of the two —
+# it guards SHIPPED scripts. Measured on a scratch copy: a `${v,,}` in a shipped
+# script reports 11 passed / 1 failed while readable, and `12 passed, 0 failed`
+# once that one file is chmod 000; a `${v^^}` inside a subdirectory of skills/
+# does the same once the directory cannot be descended. Zero discovery was the only
+# case checked, and neither of those is zero discovery.
+_sh_list=$(mktemp "${TMPDIR:-/tmp}/loop-testing-shiplist.XXXXXX") || {
+  echo "  GATE FAIL: mktemp for the shipped-script list failed" >&2; exit 1; }
+_sh_err=$(mktemp "${TMPDIR:-/tmp}/loop-testing-shiperr.XXXXXX") || {
+  echo "  GATE FAIL: mktemp for find's stderr failed" >&2; rm -f "$_sh_list"; exit 1; }
+find skills hooks install -name '*.sh' -type f -print0 > "$_sh_list" 2>"$_sh_err"
+_sh_find_rc=$?
+mapfile -d '' -t SHIPPED < "$_sh_list"
+if [ "$_sh_find_rc" -ne 0 ] || [ -s "$_sh_err" ]; then
+  echo "  GATE FAIL: discovery of shipped scripts failed (find rc $_sh_find_rc) — a subtree it cannot descend contributes no files and reads exactly like a clean tree" >&2
+  [ -s "$_sh_err" ] && sed 's/^/    /' "$_sh_err" >&2
+  rm -f "$_sh_list" "$_sh_err"; exit 1
+fi
+rm -f "$_sh_list" "$_sh_err"
 if [ "${#SHIPPED[@]}" -eq 0 ]; then
   echo "  GATE FAIL: no shipped *.sh discovered (wrong cwd, or the tree moved)" >&2
+  exit 1
+fi
+_sh_unreadable=""
+for f in "${SHIPPED[@]}"; do
+  [ -r "$f" ] || _sh_unreadable="$_sh_unreadable $f"
+done
+if [ -n "$_sh_unreadable" ]; then
+  echo "  GATE FAIL: shipped script(s) this gate cannot read:$_sh_unreadable — grep reports rc 2 and no output for them, which is indistinguishable from a file with nothing to find" >&2
   exit 1
 fi
 
@@ -271,6 +300,14 @@ elif [ "$bt_find_rc" -ne 0 ] || [ -s "$bt_err" ]; then
 elif [ "$bare_to_seen" -eq 0 ]; then
   FAIL=$((FAIL+1))
   echo "  FAIL: the bare-timeout scan read no files at all — a clean tree and a broken discovery print the same thing" >&2
+elif [ "$bare_to_exempt" -ne 2 ]; then
+  # Two, hard-coded on purpose: here the number IS the policy, not documentation of
+  # it, so it is a tripwire and is meant to redden when the exemption list changes.
+  # Without it, broadening the `case` above satisfies the equality below — scanned
+  # equals discovered-minus-exempt either way — while fifteen files go unscanned,
+  # a live bare `timeout` among them.
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the bare-timeout scan exempted $bare_to_exempt files, not 2 — if the exemption list changed, this number changes with it and the change gets read" >&2
 elif [ "$bare_to_seen" -ne "$(( $(wc -l < "$bt_list") - bare_to_exempt ))" ]; then
   # Two counts computed independently, the way tests/run-all.sh compares `suites`
   # with `_ra_files`. A non-zero file count says the loop STARTED; only the
@@ -291,20 +328,13 @@ else
   PASS=$((PASS+1))
 fi
 
-# The real-file positive control. With the probe's positives assembled at runtime
-# and this file exempt by path, nothing in the code re-established that the ERE
-# fires against a file ON DISK — that rested on the gate's historical first run.
-# The exempt file is the control: it carries the over-match examples from the
-# comment above, which are matching lines by construction. If this ever reports
-# zero, either the ERE stopped matching or the documentation stopped showing the
-# real shape, and both are worth a red.
-bt_self=$(grep -cE "$BARE_TO" tests/portability/bash3.test.sh 2>/dev/null)
-if [ "${bt_self:-0}" -ge 1 ]; then
-  PASS=$((PASS+1))
-else
-  FAIL=$((FAIL+1))
-  echo "  FAIL: the bare-timeout ERE matches nothing in the file that documents its own over-matches — it is no longer demonstrated against a real file" >&2
-fi
+# There was a further "real-file positive control" here, asserting that this file —
+# exempt by path, and carrying the over-match examples from the comment above —
+# still matched the ERE at least once. Removed: its stated premise was false (the
+# probe's own fixture IS a file on disk, so the probe already demonstrates that),
+# and its only real effect was to make two lines of COMMENT PROSE load-bearing, so
+# rewording an explanation reddened the suite. A check that fires on documentation
+# edits buys noise, not evidence.
 rm -f "$bt_list" "$bt_err"
 
 # --- the harness must resolve the watchdog binary the way the DRIVER does ------

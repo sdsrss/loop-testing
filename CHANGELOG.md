@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+`tests/portability/bash3.test.sh` repaired the bare-`timeout` scan's discovery and
+read blindness in `0.16.0` and left exactly those two blindnesses in the scan 200
+lines ABOVE it in the same file — the older one, which guards SHIPPED scripts for
+bash-3.2 portability rather than test hygiene. Measured on a scratch copy at
+`v0.16.0`:
+
+```
+a shipped script containing ${v,,}, readable      ->  11 passed, 1 failed
+the same file, chmod 000                          ->  12 passed, 0 failed
+a ${v^^} inside a subdirectory of skills/         ->  11 passed, 1 failed
+the same subdirectory, chmod 000                  ->  12 passed, 0 failed
+```
+
+Those lines are original, so this is not a regression from that batch. It is the
+same shape one level up: the repair went in beside the defect, twice, and neither
+scan read against the other. Both arms now keep find's exit status and its stderr,
+and every shipped script is checked readable before the scan runs, because `grep`
+rc 2 on an unreadable file is indistinguishable from a file with nothing to find.
+Each condition above now produces a named GATE FAIL.
+
+- **fix(tests)**: the bare-timeout scan's exemption count is asserted. Broadening
+  the exemption `case` satisfied the scanned-equals-discovered equality — scanned
+  equals discovered-minus-exempt either way — while hiding fifteen files. Measured:
+  exempting `tests/driver/*` and `tests/hooks/*` now reports "exempted 22 files, not
+  2". The 2 is hard-coded on purpose; here the number is the policy rather than
+  documentation of it, so it is a tripwire and is meant to redden when the list
+  changes.
+- **fix(tests)**: the "real-file positive control" added in `38dfdf3` is removed. Its
+  stated premise was false — the probe's own fixture is a file on disk, so the probe
+  already demonstrated what the control claimed to add — and its only real effect was
+  to make two lines of comment PROSE load-bearing, so rewording an explanation
+  reddened the suite. A check that fires on documentation edits buys noise.
+
+```
+TOTAL: 44 suites, 1839 assertions, 0 failed, 0 skipped, 0 case-skips (space-free $TMPDIR; timeout; node present)
+TOTAL: 44 suites, 1315 assertions, 0 failed, 11 skipped, 5 case-skips (space-free $TMPDIR; no timeout/gtimeout; node present)
+TOTAL: 44 suites, 1834 assertions, 5 failed, 0 skipped, 0 case-skips (spaced $TMPDIR; timeout; node present)
+```
+
+bash3.test.sh goes 12 assertions to 11: two added, three removed with the control.
+
 ## 0.16.0 — 2026-09-22
 
 The two residuals `0.15.0` filed for a release of its own, and what measuring them
