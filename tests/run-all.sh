@@ -38,8 +38,18 @@ suites=0
 asserts=0
 afails=0
 skipped=0      # suites that declared a host precondition this runner verified
+caseskips=0    # `skip:` lines suites printed from inside themselves — see below
 _ra_rcfail=0   # set when any suite failed through its exit code, so the
                # assertion gate below does not name a cause that is false
+
+# A run that skipped suites must not exit 0 unless somebody said so. The
+# qualification on the verdict line is stdout, and nothing reads stdout: CI, a
+# git hook and a release script all read the exit status, so without this a host
+# missing a precondition looks exactly like a host that ran all 43 suites. The
+# acknowledgement is per-run and explicit; any value other than 1 — including a
+# typo — leaves it refused, because this is the fail-closed direction.
+_ra_allow_skip=0
+case "${LOOP_TESTING_ALLOW_SKIP:-0}" in 1) _ra_allow_skip=1 ;; esac
 
 # Which watchdog binary this host has, resolved ONCE. Two things read it: the
 # precondition gate inside the loop, and the arms clause on the TOTAL line. They
@@ -229,6 +239,20 @@ while IFS= read -r -d '' t; do
     overall=1
   fi
   _leak_before=$_leak_after
+  # Per-case skips, the OTHER way assertions stop running. A suite that guards a
+  # block on a missing premise prints `  skip: …` and counts nothing, which is the
+  # right thing to do and was invisible in every summary: on a host with no
+  # watchdog binary two suites that were NOT skipped stopped running 14 assertions
+  # between them, and `skipped` — which counts whole suites — said nothing about it.
+  #
+  # This counts NOTICES, not assertions, and the name says so. One `skip:` line
+  # can stand for a block of any size and the runner cannot know how large; a
+  # field claiming to count assertions would be a number nobody can check, which
+  # is the shape this release exists to remove. Two reviewers reached this
+  # independently.
+  _ra_caseskip=$(grep -c '^  skip: ' "$_ra_out")
+  case "${_ra_caseskip:-0}" in ''|*[!0-9]*) _ra_caseskip=0 ;; esac
+  caseskips=$((caseskips + _ra_caseskip))
   # A tally is ACCOUNTED whenever one exists, including for a suite whose
   # precondition claim was just rejected. Skipping the accounting there dropped
   # that suite's whole tally out of TOTAL, failures included: a suite reporting
@@ -348,12 +372,20 @@ if [ "$node_counted" -eq 1 ]; then
 else
   _ra_arm_node="shell only — node not run"
 fi
-# `skipped` is printed unconditionally, including as `0 skipped`. A field that
+# Both skip counts are printed unconditionally, including as zeroes. A field that
 # appears only when non-zero makes the line's shape depend on the run, and a
 # release note quoting one shape cannot then be compared with another — the same
 # reason the arms are always present rather than mentioned only when unusual.
-printf 'TOTAL: %d suites, %d assertions, %d failed, %d skipped (%s; %s; %s)\n' \
-  "$suites" "$asserts" "$afails" "$skipped" "$_ra_arm_tmp" "$_ra_arm_to" "$_ra_arm_node"
+#
+# `skipped` is suites this runner verified as unable to run here. `case-skips` is
+# `skip:` lines suites printed from inside themselves: notices, not assertions,
+# because one line can stand for a block of any size. Between them the three
+# assertion counts on the arms this repo measures can be reconciled, which the
+# first version of this line could not do — it accounted for skipped suites and
+# left the guarded blocks inside running suites unmentioned.
+printf 'TOTAL: %d suites, %d assertions, %d failed, %d skipped, %d case-skips (%s; %s; %s)\n' \
+  "$suites" "$asserts" "$afails" "$skipped" "$caseskips" \
+  "$_ra_arm_tmp" "$_ra_arm_to" "$_ra_arm_node"
 # A failed assertion has to reach the verdict, not just the TOTAL line. `afails`
 # was summed from every suite's tally and then printed, while `overall` — the
 # only thing ALL GREEN consults — was set by suite exit codes and the gates and
@@ -370,13 +402,23 @@ if [ "$afails" -ne 0 ]; then
     echo "  GATE FAIL: $afails assertion(s) failed but no suite reported it through its exit code"
   fi
 fi
+# A run that skipped suites does not exit 0 unless the skip was acknowledged. The
+# first version of this left the exit status at 0 and put the caveat on stdout,
+# reasoning that a host without the binary has done all it can — which is true of
+# the host and false of the exit status, the only part of this output that CI, a
+# git hook or a release script reads. Unbounded and invisible, `skipped` could have
+# reached every shell suite in the tree with ALL GREEN still printed.
+if [ "$skipped" -gt 0 ] && [ "$_ra_allow_skip" -ne 1 ]; then
+  overall=1
+  echo "  GATE FAIL: $skipped suite(s) did not run on this host — not a test failure, and not a pass either."
+  echo "             Install the missing precondition (see the SKIP lines), or acknowledge it for this"
+  echo "             run with LOOP_TESTING_ALLOW_SKIP=1, which keeps the count on the TOTAL line."
+fi
 # A bare "ALL GREEN" over a run that skipped suites is the sentence this repo has
-# the most reason to distrust: it is what was printed over 12 of 35 suites. The
-# exit status stays 0 — a host without the binary has done everything it can — but
-# the word does not stand unqualified.
+# the most reason to distrust: it is what was printed over 12 of 35 suites.
 if [ "$overall" -eq 0 ]; then
   if [ "$skipped" -gt 0 ]; then
-    echo "ALL GREEN ($skipped suite(s) skipped on an unmet precondition — see the SKIP lines)"
+    echo "ALL GREEN ($skipped suite(s) skipped on an acknowledged precondition — see the SKIP lines)"
   else
     echo "ALL GREEN"
   fi
