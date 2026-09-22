@@ -17,7 +17,7 @@ export STOP LEDGER
 # they were calling bare `timeout`, which returns 127 on a host that has only
 # `gtimeout` or neither. Same shape as review T-D, six sites it did not reach.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh" || {
-  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN and bounded would be silently absent, and the guarded blocks would run unbounded" >&2
+  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN, bounded and the suite-level guard are then all absent. Measured, the outcome depends on which reference comes first: set -u aborts at a bare \$TIMEOUT_BIN (stop-gate stops with no tally at all), or bounded reports command-not-found and cases fail (driver-limits: 35 passed, 3 failed). Either way the precondition guard never applies, so on a host with no watchdog binary every case runs and the run fills with the failures this lib exists to prevent." >&2
   exit 1
 }
 

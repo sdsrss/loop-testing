@@ -22,7 +22,7 @@ FAIL=0
 # test libs, because two of them not having it is how review T-D's fix missed six
 # more sites of its own shape (see that file's header).
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh" || {
-  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN, bounded and the suite-level guard would all be silently absent, and the suite would report a green tally with none of them applied" >&2
+  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN, bounded and the suite-level guard are then all absent. Measured, the outcome depends on which reference comes first: set -u aborts at a bare \$TIMEOUT_BIN (stop-gate stops with no tally at all), or bounded reports command-not-found and cases fail (driver-limits: 35 passed, 3 failed). Either way the precondition guard never applies, so on a host with no watchdog binary every case runs and the run fills with the failures this lib exists to prevent." >&2
   exit 1
 }
 

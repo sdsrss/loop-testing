@@ -23,7 +23,7 @@ export SETUP CLEAN
 # calling bare `timeout`, and three of them assert `rc != 124` — which an absent
 # binary satisfies with 127, so those three PASSED without running anything.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh" || {
-  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN and bounded would be silently absent, and the guarded blocks would run unbounded" >&2
+  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN, bounded and the suite-level guard are then all absent. Measured, the outcome depends on which reference comes first: set -u aborts at a bare \$TIMEOUT_BIN (stop-gate stops with no tally at all), or bounded reports command-not-found and cases fail (driver-limits: 35 passed, 3 failed). Either way the precondition guard never applies, so on a host with no watchdog binary every case runs and the run fills with the failures this lib exists to prevent." >&2
   exit 1
 }
 

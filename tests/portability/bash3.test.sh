@@ -197,8 +197,11 @@ fi
 #   * OVER-matches. `# the old form was ( cd x && timeout 5 bash y )` is caught,
 #     at any indent — the claim that a comment is safe was simply false. So are
 #     `echo "sleep 1; timeout 5"` and a JSON payload `"cd x; timeout 5 grep foo"`.
-#     Two live lines escape only by luck: stop-gate.test.sh:282 because a backtick
-#     precedes, ledger-gate.test.sh:561,575 because a `"` does.
+#     Two live lines are missed, and NOT for the reason an earlier draft gave:
+#     removing the backtick before stop-gate.test.sh:282's call, or the `"` before
+#     ledger-gate.test.sh:561,575's, leaves both still unmatched. What saves them
+#     is the `#` and the `:` further left — neither is in the prefix class either.
+#     Naming the nearest character as the cause was a guess dressed as a reading.
 #   * UNDER-matches, because anything between the word and its duration hides it:
 #     `timeout --foreground 5`, `timeout -k 1 5`, `timeout "$SECS"`, `TO=timeout;
 #     $TO 5`, and any wrapper in front — `command`/`exec`/`nohup`/`sudo`/`time`/
@@ -366,11 +369,11 @@ else
   printf '%s 3 bash foo.sh\ncd x; %s 5 bash y\nprintf x | %s 5 bash y\ncd x && %s 5 bash y\n( %s 5 bash y )\nprintf x | env -u FOO %s 5 bash y\nenv -u FOO %s 5 bash y\ncd x; g%s 5 bash y\n' \
     timeout timeout timeout timeout timeout timeout timeout timeout > "$bt_probe"
   bt_pos=$(grep -cE "$BARE_TO" "$bt_probe")
-  # Negatives are the forms this tree really contains, including the two that
-  # escape by one character: a backtick before the word, and a `"` before it
-  # inside a JSON payload (stop-gate.test.sh:282 and ledger-gate.test.sh:561,575
-  # survive the scan for exactly those reasons, and would be false positives the
-  # day either character changed).
+  # Negatives are the forms this tree really contains, including the two live
+  # lines the scan misses — a comment quoting the call, and a JSON payload holding
+  # it (stop-gate.test.sh:282 and ledger-gate.test.sh:561,575). Measured: they stay
+  # missed with the nearest quoting character removed, so what keeps them out is
+  # the `#` and the `:`, not the backtick and the `"` an earlier note blamed.
   printf '%s\n' \
     'bounded 10 bash "$DRIVER" --project' \
     '  "$TIMEOUT_BIN" "$secs" "$@"' \
