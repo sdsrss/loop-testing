@@ -59,4 +59,49 @@ CWD="$LINKS" CDPATH=. run_case "relative chain, CDPATH=." bash c/drv.sh
 CWD="$REPO_ROOT/skills/loop-testing" CDPATH=. run_case "CDPATH=. bare-relative" \
   bash scripts/unattended-loop.sh
 
+# --- ...and the paths the USER hands it are resolved where the user is ---------
+# Relative --project under CDPATH=.: the driver's own `cd "$PROJECT"` consulted
+# CDPATH and echoed into the substitution, so PROJECT held two lines and the
+# sessions ran in a directory tree the driver had just invented.
+# The project is one level INSIDE the workspace: the stray tree lands beside it,
+# where the workspace cleanup reaches it, instead of in $TMPDIR itself.
+ws=$(mk_proj); mkdir -p "$ws/sub/docs/looptesting"; write_state "$ws/sub" RUNNING 0; stub=$(write_stub "$ws")
+( cd "$ws" && STUB_CONVERGE_AT=1 CDPATH=. bash "$DRIVER" --project sub \
+    --claude-bin "$stub" --max-sessions 1 --no-watchdog ) >/dev/null 2>&1
+assert_file_contains "$ws/sub/docs/looptesting/driver.log" "project=$(cd -P "$ws/sub" && pwd) " \
+  "CDPATH=. relative --project: driver.log names the real project"
+assert_file_contains "$ws/sub/docs/looptesting/STATE.md" "status: CONVERGED" \
+  "CDPATH=. relative --project: the session ran in the real project"
+rm -rf "${ws:?}"
+
+# A relative --plugin-dir was passed through verbatim, and the sessions start
+# after `cd "$PROJECT"` — so it named a directory under the PROJECT, not under
+# where the user typed it. Nonexistent there, so no plugin and no hooks, under
+# bypassPermissions. It must be resolved against the invocation cwd; and one
+# that is not a directory is a usage error, not a session without hooks.
+ws=$(mk_proj); write_state "$ws" RUNNING 0; stub=$(write_stub "$ws")
+( cd "$(dirname "$REPO_ROOT")" && STUB_CONVERGE_AT=1 bash "$DRIVER" --project "$ws" \
+    --plugin-dir "$(basename "$REPO_ROOT")" --claude-bin "$stub" --max-sessions 1 --no-watchdog ) >/dev/null 2>&1
+assert_file_contains "$ws/docs/looptesting/driver.log" "$WANT" \
+  "relative --plugin-dir is resolved against the invocation cwd"
+rm -rf "${ws:?}"
+ws=$(mk_proj); write_state "$ws" RUNNING 0; stub=$(write_stub "$ws")
+out=$( cd "$REPO_ROOT" && bash "$DRIVER" --project "$ws" --plugin-dir no-such-plugin-dir \
+    --claude-bin "$stub" --max-sessions 1 --no-watchdog 2>&1 ); rc=$?
+assert_eq 2 "$rc" "--plugin-dir that is not a directory is a usage error — output: $(printf '%s' "$out" | head -1)"
+[ -e "$ws/docs/looptesting/driver.log" ] && { FAIL=$((FAIL+1)); echo "  FAIL: a bad --plugin-dir must be refused before any session starts" >&2; } || PASS=$((PASS+1))
+rm -rf "${ws:?}"
+
+# Relative --claude-bin, same mechanism: `command -v` passed in the invocation
+# cwd, then every session exec'd it after `cd "$PROJECT"` and got "No such file",
+# and the driver exited 5 NO_PROGRESS. A bare NAME stays a PATH lookup.
+ws=$(mk_proj); mkdir -p "$ws/sub/docs/looptesting" "$ws/bin"; write_state "$ws/sub" RUNNING 0
+stub=$(write_stub "$ws"); mv "$stub" "$ws/bin/claude"
+( cd "$ws" && STUB_CONVERGE_AT=1 bash "$DRIVER" --project sub --claude-bin bin/claude \
+    --max-sessions 2 --no-watchdog ) >/dev/null 2>&1; rc=$?
+assert_eq 0 "$rc" "relative --claude-bin: the session finds the binary (exit 0)"
+assert_file_contains "$ws/sub/docs/looptesting/STATE.md" "status: CONVERGED" \
+  "relative --claude-bin: the stub actually ran in the project"
+rm -rf "${ws:?}"
+
 report "invocation-path.test.sh"

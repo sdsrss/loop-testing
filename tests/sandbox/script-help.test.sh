@@ -131,4 +131,24 @@ for _how in symlink cdpath; do
   rm -rf "${WS2:?}"
 done
 
+# --worktree-path under CDPATH=.: setup's `cd "$_wt_probe"` consulted CDPATH for
+# a bare-relative existing parent and echoed into the substitution, so the
+# worktree was created at a path containing a newline and the ownership marker
+# recorded the USER's own parent directory as CREATED_WORKTREE. Clean then kept
+# (leaked) the worktree and --purge stopped at rc 4. It failed safe — the user's
+# directory survived — but the marker must name what setup actually created.
+WS2=$(mk_ws) || { FAIL=$((FAIL+1)); echo "  FAIL: mk_ws for the worktree-path case" >&2; }
+if [ -n "${WS2:-}" ]; then
+  mkdir -p "$WS2/proj/wts"; echo keep > "$WS2/proj/wts/user-file"
+  echo wts >> "$WS2/proj/.git/info/exclude"
+  ( cd "$WS2/proj" && CDPATH=. bash "$SETUP" --worktree-path wts/qa ) >/dev/null 2>&1; rc=$?
+  assert_eq 0 "$rc" "setup --worktree-path wts/qa under CDPATH=. exits 0"
+  want="CREATED_WORKTREE=$(cd -P "$WS2/proj/wts" && pwd)/qa"
+  got=$(grep -a '^CREATED_WORKTREE=' "$WS2/proj/docs/looptesting/.sandbox/ownership.env" 2>/dev/null | head -1)
+  assert_eq "$want" "$got" "under CDPATH=. the marker names the worktree setup created, not its parent"
+  assert_exists "$WS2/proj/wts/qa/.git" "under CDPATH=. the worktree is where --worktree-path says"
+  git -C "$WS2/proj" worktree remove --force "$WS2/proj/wts/qa" >/dev/null 2>&1
+  rm -rf "${WS2:?}"
+fi
+
 report "script-help.test.sh"

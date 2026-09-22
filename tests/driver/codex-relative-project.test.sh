@@ -51,4 +51,29 @@ printf '# STATE\nround: 0\nconverged_streak: 0\nstatus: RUNNING\nmax_rounds: 12\
 assert_rc $? 0 "--project . : the loop converges (exit 0)"
 assert_file_contains "$WS2/docs/looptesting/stub-cwd.txt" "C-target: $WS2" "codex exec -C received the absolute path for ."
 
+# 3. Relative --project with CDPATH=. set. `PROJECT="$(cd "$PROJECT" && pwd)"`
+#    consults CDPATH for a bare-relative name, and cd ECHOES the directory it
+#    found into the substitution: PROJECT became "<abs>\n<abs>", the driver made
+#    that directory tree and ran its sessions there, in no project at all.
+WS3=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3"' EXIT
+mkdir -p "$WS3/proj/docs/looptesting"
+cp "$WS/stub-codex.sh" "$WS3/stub-codex.sh"
+printf '# STATE\nround: 0\nconverged_streak: 0\nstatus: RUNNING\nmax_rounds: 12\n' > "$WS3/proj/docs/looptesting/STATE.md"
+( cd "$WS3" && CDPATH=. bash "$CODEX_DRIVER" --project proj --codex-bin "$WS3/stub-codex.sh" --no-protect --max-sessions 2 ) >/dev/null 2>&1
+assert_rc $? 0 "CDPATH=. relative --project: the loop converges (exit 0)"
+assert_file_contains "$WS3/proj/docs/looptesting/stub-cwd.txt" "C-target: $WS3/proj" "CDPATH=. relative --project: codex exec -C received the real project"
+assert_eq "docs proj stub-codex.sh" "$(cd "$WS3" && ls -A | tr '\n' ' ' | sed 's/ $//')" "CDPATH=. relative --project: no stray directory beside the project"
+
+# 4. Relative --codex-bin with the project elsewhere. The preflight `command -v`
+#    ran in the invocation cwd and passed; the session execs it after
+#    `cd "$PROJECT"`, where the path names nothing — every session failed and the
+#    driver reported NO_PROGRESS (exit 5), blaming the loop for its own path.
+WS4=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4"' EXIT
+mkdir -p "$WS4/proj/docs/looptesting" "$WS4/bin"
+cp "$WS/stub-codex.sh" "$WS4/bin/codex"
+printf '# STATE\nround: 0\nconverged_streak: 0\nstatus: RUNNING\nmax_rounds: 12\n' > "$WS4/proj/docs/looptesting/STATE.md"
+( cd "$WS4" && bash "$CODEX_DRIVER" --project proj --codex-bin bin/codex --no-protect --max-sessions 2 ) >/dev/null 2>&1
+assert_rc $? 0 "relative --codex-bin: the session finds the binary and the loop converges (exit 0)"
+assert_file_contains "$WS4/proj/docs/looptesting/stub-cwd.txt" "C-target: $WS4/proj" "relative --codex-bin: the stub actually ran"
+
 report "codex-relative-project.test.sh"

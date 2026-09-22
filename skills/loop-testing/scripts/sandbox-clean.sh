@@ -62,6 +62,12 @@ set -u
 # what the two hand-kept copies cost. Fail-closed at exit 1 (internal abort, see
 # the exit codes above): a clean that cannot read its own helpers must not go on
 # to decide what to delete.
+# No path this script builds ever wants CDPATH. `cd` ECHOES its target into the
+# command substitution whenever CDPATH is consulted — for a bare-relative name,
+# which includes a relative --project and a relative --worktree-path, not just
+# the resolver below. Guarding site by site missed both, so it is unset once,
+# before the first `cd`. The resolver keeps its own `CDPATH=''` prefixes.
+unset CDPATH
 # Resolve THIS script's real directory before looking for lib.sh beside it.
 # Two shapes the plain `cd "$(dirname …)" && pwd` form got wrong, both measured
 # against `v0.16.0`, where they worked because there was nothing to find:
