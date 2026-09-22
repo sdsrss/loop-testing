@@ -95,7 +95,8 @@
 claude --plugin-dir .
 ```
 
-机制增强层(Stop-hook 强制续跑 + VERIFIED 防伪写的 best-effort 成本抬升)由 `hooks/` 提供,
+机制增强层(Stop-hook 拦截未收敛的停会话——有上限的软门,连挡 3 次后自行放行 + VERIFIED
+防伪写的 best-effort 成本抬升)由 `hooks/` 提供,
 随插件自动加载。已实测 `/plugin install` 与 `--plugin-dir` 两种模式下 Stop hook 均自动生效;
 极旧版本若不自动加载,按 `hooks/` 内说明手动注册。
 
@@ -252,8 +253,9 @@ QA 循环本体离线可用。只有 MoA 多模型决策需要 LLM API(`OPENROUT
 `FINAL_REPORT.md`。达轮次上限仍未收敛则如实标 `INCOMPLETE`,绝不把"用完轮次"写成"通过"。
 
 **Q:Claude Code 和 Codex 上体验一样吗?**
-核心技能与产物完全一致。区别:Claude Code 有 hooks 机制层(未收敛机制性禁止停止);Codex 无
-hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
+核心技能与产物完全一致。区别:Claude Code 有 hooks 机制层——Stop-hook 拦截未收敛的停会话,
+但它是**有上限的软门**:连挡 3 次后自行放行,缺哨兵则完全不生效。它抬高偷停的成本,并不禁止
+偷停。Codex 无 hooks,靠提示词纪律 + 无头驱动兜底(详见"已知限制")。
 
 ---
 
@@ -356,7 +358,7 @@ rm -rf ~/.cache/loop-testing     # 可选:更新检查节流文件,仅 Codex / -
 
 ## ⚠️ 已知限制
 
-- **Codex 无机制层 gate。** Codex 没有 Stop-hook,续跑与"未收敛禁止停止"仅靠提示词纪律。已实测
+- **Codex 无机制层 gate。** Codex 没有 Stop-hook,续跑与"不收敛就不停"全靠提示词纪律。已实测
   一次真实 Codex 会话把完整循环驱到合法收敛,但为单模型单样例;建议以 `unattended-codex.sh`
   多会话续跑兜底。
 - **Codex 侧 stale 安装。** 改了技能后必须重跑 `install-codex.sh`(无自动更新);`--check-update`

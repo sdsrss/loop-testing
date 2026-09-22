@@ -92,7 +92,7 @@ description: Autonomous QA self-test / self-fix / self-iterate loop. Use after a
 4. **退出与报告**：连续 2 轮收敛判据、四种最终状态、沙箱清理、`FINAL_REPORT.md` 结构。细则读 `references/exit-and-report.md`。
 5. **MoA 决策**：触发时机与 `DEC-NNN.md` 格式、`scripts/moa.mjs` 调用。细则读 `references/moa-decision.md`。
 
-## 红线（机制层第一，纪律层第二；违反即停）
+## 红线（纪律层为准，机制层只抬成本；违反即停）
 
 - **禁止** push / merge / 开 PR / 发布 / 部署 / force / amend / rebase 到远端。
 - **禁止** 触碰生产系统、真实账号、真实用户数据、付费接口、真实第三方写操作。
@@ -103,7 +103,7 @@ description: Autonomous QA self-test / self-fix / self-iterate loop. Use after a
 
 ## 平台差异
 
-- **Claude Code**：stop-gate hook 在机制层挡住「未收敛就停」，但它是**有上限的软门，不是保证**：连续挡 3 次后自行放行（平台在 8 次时也会强制放行），且哨兵 `docs/looptesting/.active` 缺失时它完全不生效而现场与正常续跑无异。`ledger-gate.sh` 同为软门且 fail-open（`issue-rules.md` §7）。机制层**提高偷停与作弊的成本**，约束你的是纪律层——红线与退出判据——而不是门。
+- **Claude Code**：stop-gate hook 在机制层挡住「未收敛就停」，但它是**有上限的软门，不是保证**：连续挡 3 次后自行放行（`MAX_BLOCKS=3`；平台在 8 次时也会强制放行）；哨兵 `docs/looptesting/.active` 缺失时它完全不生效，而现场与正常续跑无异；一次运行超过 24h 没有更新会被当作已废弃而自行解除哨兵（`LOOP_TESTING_GATE_STALE_SECONDS`）；人还可以用 `LOOP_TESTING_DISABLE_STOP_GATE=1` 直接关掉它。`ledger-gate.sh` 同为软门且 fail-open（`issue-rules.md` §7）。机制层**提高偷停与作弊的成本**，约束你的是纪律层——红线与退出判据——而不是门。
 - **Codex（无 hook）**：每轮末尾**强制自检退出条件**，未满足则显式声明「继续第 N+1 轮」并进入下一轮；中断后重新触发技能即从 `STATE.md` 续跑。
 
 现在开始：按上方「入口与参数分诊」先看 `$ARGUMENTS`。`status` / `report` 只读不跑；否则执行第 0 轮

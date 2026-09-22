@@ -59,15 +59,20 @@
 | `OPEN` | `FIXING` | 开始一次「有实质差异」的修复尝试（同一根因至多 3 次，§6） |
 | `FIXING` | `FIXED_UNVERIFIED` | 改动已按「修一验一提一」提交，但**尚未原样重放**复现步骤 |
 | `FIXED_UNVERIFIED` | `VERIFIED` | 重放命令与输出**先**写入 `runs/round-N.md`，**再**改本条状态；次序颠倒即不成立 |
+| `FIXED_UNVERIFIED` | `OPEN` | 原样重放**未通过**：本次重放的命令与输出同样写进 `runs/round-N.md`，退回重新定位（`loop-round.md` 第 5 步）。这不是改判，不需要「明确下一步」那套材料 |
 | `OPEN` · `FIXING` · `FIXED_UNVERIFIED` | `NEEDS_CONFIRMATION` · `BLOCKED` · `WONT_FIX` · `CANNOT_REPRODUCE` | 如实改判，附完整复现、影响、尝试记录与**明确下一步**；`CANNOT_REPRODUCE` 另须附尝试记录，不许编故事 |
+| `NEEDS_CONFIRMATION` · `BLOCKED` · `WONT_FIX` · `CANNOT_REPRODUCE` | 同组的另一个 | 依据变了就如实改判：决策落定为「保持现状 / 不做」、阻塞性质改变、重现条件变化。新状态同样要写完整证据与**明确下一步**，不因为「只是换个停留态」而免 |
 | `NEEDS_CONFIRMATION` · `BLOCKED` · `WONT_FIX` · `CANNOT_REPRODUCE` | `FIXING` | 该条记录的「下一步」变为可执行（阻塞解除、确认到手） |
 | `VERIFIED` | —— | 终态。日后再次出现**另立新条**并引用原 ID，不改回旧条 |
 
-三件本表说了、而旧的箭头图没说的事：
+本表说了、而旧的箭头图没说的事：
 
-- **四个终态不是只能从 `FIXED_UNVERIFIED` 出发。** 旧图把 `↓` 画在 `FIXED_UNVERIFIED` 下面，读起来像只有动过手的问题才能归档；而 `exit-and-report.md` 判据 3 要求轮末仍未 `VERIFIED` 的 P0-P2 **全部**落进那四者，其中当然包括还停在 `OPEN` 和 `FIXING` 的。按旧图读，那条判据无解。
-- **那四个状态可以再打开。** 它们都要求写「明确下一步」；下一步能走了就回 `FIXING`。它们是待办的分类，不是方便停止的「问题停车场」。
+- **四个停留态不是只能从 `FIXED_UNVERIFIED` 出发。** 旧图把 `↓` 画在 `FIXED_UNVERIFIED` 下面，读起来像只有动过手的问题才能归档；而 `exit-and-report.md` 判据 3 要求轮末仍未 `VERIFIED` 的 P0-P2 **全部**落进那四者，其中当然包括还停在 `OPEN` 和 `FIXING` 的。按旧图读，那条判据无解。
+- **重放不通过有去处。** 复验失败是常态而非异常，`loop-round.md` 第 5 步就写着「不通过退回 `OPEN` 并记录」。表里若没有这一行，闭合句会把这条日常路径判成不存在——那比被它替换掉的箭头图更糟。它与「改判进停留态」是两回事：退回 `OPEN` 只要求把这次重放写进轮次日志，不要求那套「明确下一步」的材料。
+- **那四个状态可以再打开，也可以互相改判。** 它们都要求写「明确下一步」；下一步能走了就回 `FIXING`。但结局不止「能做了」一种：`NEEDS_CONFIRMATION` 走完 MoA 得到的答案可能就是「保持现状 / 不做」（`moa-decision.md` 把它算作合法候选方案），那是 `WONT_FIX`，不该先假装开始一次修复尝试再停下。它们是待办的分类，不是方便停止的「问题停车场」。
 - **`VERIFIED` 不回头。** 回归另立新条：总账只追加（`round-0.md` §0），而收敛判据要按「重要回归」把 `converged_streak` 归零——改回旧条等于把这次回归藏进历史里。
+
+> **本表由 `tests/commands/convergence-criteria.test.sh` 解析着读**（不是按关键词匹配）：通往 `VERIFIED` 的行只许有一条且必须从 `FIXED_UNVERIFIED` 出发，停留迁移的来源集必须含 `OPEN` 与 `FIXING`，单元格里不许出现这八个之外的状态名。改表会红，改对才绿——这三条正是一次独立复审证明「只匹配词汇的断言」看不见的东西。
 
 `VERIFIED` 那一行的次序由**纪律**保证，`ledger-gate.sh` 只是**提高作弊成本的软门**：它 fail-**open**（解析不了就放行），只查该 ID 是否在 `runs/` 出现过，且无法看穿把写入间接化的命令（解释器内部的重定向、运行时拼出的路径、包装动词）。门放行 ≠ 重放做过；这条规则对你的约束不因门的能力而放松。
 
