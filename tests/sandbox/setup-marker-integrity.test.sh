@@ -177,29 +177,43 @@ assert_absent "$WT9" "clean removed the space-suffixed worktree"
 case "$OUT9c" in *"already gone"*) FAIL=$((FAIL+1)); echo "  FAIL: clean lost the path to whitespace stripping and called it gone — got: $OUT9c" >&2 ;;
   *) PASS=$((PASS+1)) ;; esac
 
-# --- J0. the two scripts' marker readers are literally the same line ----------
-# Both headers claim the readers are byte-identical. A claim a comment makes
-# about its own code is worth exactly as much as the check that holds it true:
-# six spaces of alignment padding were enough to make the sentence false while
-# every behavioural test still passed.
+# --- J0. ONE marker reader, and both scripts reach it -------------------------
+# This used to assert that the two scripts held byte-identical copies, because
+# that is what they held and what both headers claimed. The claim was worth
+# exactly as much as the check that held it true — six spaces of alignment
+# padding once made the sentence false while every behavioural test still passed.
 #
-# WHAT THIS DOES NOT COVER, by construction: it asserts the two scripts AGREE, so
-# an identical wrong edit to both passes here. That half is covered behaviourally
-# and per-script — cases E/F/G pin CRLF handling, case I pins the trailing space,
-# and case J pins the shared validity rule — so a reader that agrees with itself
-# but reads markers wrongly still turns this file red. Every matching definition
-# is compared, not just the first, so a second stray copy cannot hide behind the
-# first.
+# The copies are gone: the readers live in scripts/lib.sh and both scripts source
+# it. So the invariant this case defends got stronger and changed shape. It is no
+# longer "the two agree" (an identical wrong edit to both passed that) but "there
+# is only one definition to agree with". Three things, in the order they can
+# break:
+#   * lib.sh defines each reader exactly once;
+#   * NEITHER script defines it again — a re-introduced local copy would SHADOW
+#     the shared one silently, which is the drift this file exists to catch and
+#     the only way it can come back now;
+#   * both scripts actually source lib.sh, or the functions they call are simply
+#     not there.
+#
+# WHAT THIS DOES NOT COVER, by construction and unchanged: it says nothing about
+# whether the one reader is RIGHT. That half stays behavioural — cases E/F/G pin
+# CRLF handling, case I pins the trailing space, case J pins the shared validity
+# rule — so a reader that is single and wrong still turns this file red.
+LIBSH="$(dirname "$SETUP")/lib.sh"
+if [ -f "$LIBSH" ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: scripts/lib.sh is missing — both scripts source it" >&2; fi
 for _fn in mval marker_key; do
-  _a="$(grep -h "^$_fn() {" "$SETUP")"
-  _b="$(grep -h "^$_fn() {" "$CLEAN")"
-  if [ -z "$_a" ] || [ -z "$_b" ]; then
-    FAIL=$((FAIL+1)); echo "  FAIL: $_fn() not found in both scripts (setup:${_a:+y}${_a:-n} clean:${_b:+y}${_b:-n})" >&2
-  elif [ "$(printf '%s\n' "$_a" | wc -l)" != "1" ] || [ "$(printf '%s\n' "$_b" | wc -l)" != "1" ]; then
-    FAIL=$((FAIL+1)); echo "  FAIL: $_fn() is defined more than once — one marker reader per script, or they cannot be compared" >&2
-  elif [ "$_a" = "$_b" ]; then PASS=$((PASS+1)); else
-    FAIL=$((FAIL+1)); echo "  FAIL: $_fn() differs between the two scripts (the headers claim byte-identical)" >&2
-    echo "        setup: [$_a]" >&2; echo "        clean: [$_b]" >&2; fi
+  _n_lib="$(grep -hc "^$_fn() {" "$LIBSH" 2>/dev/null)"; _n_lib="${_n_lib:-0}"
+  _dup="$(grep -l "^$_fn() {" "$SETUP" "$CLEAN" 2>/dev/null)"
+  if [ "$_n_lib" != "1" ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $_fn() is defined $_n_lib times in lib.sh — exactly one, or there is nothing single about it" >&2
+  elif [ -n "$_dup" ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL: $_fn() is defined again in: $_dup — a local copy shadows the shared one" >&2
+  else PASS=$((PASS+1)); fi
+done
+for _s in "$SETUP" "$CLEAN"; do
+  if grep -q '/lib\.sh"' "$_s"; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: $(basename "$_s") does not source lib.sh, so the readers it calls are undefined" >&2; fi
 done
 
 # --- J. one validity rule, two scripts ----------------------------------------

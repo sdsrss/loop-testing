@@ -56,6 +56,17 @@
 # of `branch --show-current`).
 set -u
 
+# Shared with sandbox-setup.sh: the marker readers and the worktree-identity
+# verdict. Sourced rather than copied, because both scripts have to reach the
+# SAME answer about the same marker and the same worktree — lib.sh's header says
+# what the two hand-kept copies cost. Fail-closed at exit 1 (internal abort, see
+# the exit codes above): a clean that cannot read its own helpers must not go on
+# to decide what to delete.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh" || {
+  echo "sandbox-clean: cannot source lib.sh beside this script — the install is incomplete, so this run is deleting nothing." >&2
+  exit 1
+}
+
 echo_info() { echo "sandbox-clean: $*"; }
 
 PURGE=0
@@ -153,16 +164,10 @@ fi
 # v1 markers legitimately lack ADOPTED_*/UNCLAIMED_WORKTREE/WORKTREE_STAMP, and
 # rejecting those would strand every sandbox created before v0.10.0.
 #
-# `marker_key` and `mval` below are byte-identical to sandbox-setup.sh's, so one
-# marker cannot be valid to one script and invalid to the other. Only the
-# trailing CR is stripped, and only one: a CRLF marker (Windows editor,
-# core.autocrlf, an evidence dir copied through a zip) made every value end in
-# `\r`, so this check refused the file while setup, reading the same bytes,
-# called a live worktree gone (audit S-08). Stripping all trailing whitespace
-# instead would silently shorten a path whose directory name legally ends in a
-# space. Parameter expansion, not `sed 's/\r$//'`: BSD sed does not interpret
-# `\r` and would eat a trailing literal `r` instead.
-marker_key() { local v; v="$(grep -aE "^$1=[^[:space:]]" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"; printf '%s' "${v%$'\r'}"; }
+# `marker_key` and `mval` come from lib.sh, so this script and sandbox-setup.sh
+# cannot disagree about whether a marker is valid — they now run the same code
+# rather than two copies kept identical by hand. The CR rule and why it is one
+# character and not all trailing whitespace are documented there.
 M_VER="$(marker_key SANDBOX_VERSION)"
 M_MODE="$(marker_key MODE)"
 M_TOP="$(marker_key TOP)"
@@ -195,124 +200,17 @@ if [ "$PURGE" = 1 ]; then
 fi
 
 # Read marker fields by parsing (NEVER source: a tampered marker must not run).
-mval() { local v; v="$(grep -aE "^$1=" "$MARKER" 2>/dev/null | head -1 | cut -d= -f2-)"; printf '%s' "${v%$'\r'}"; }
+# `mval` is in lib.sh.
 CREATED_WORKTREE="$(mval CREATED_WORKTREE)"
 SANDBOX_BRANCH="$(mval SANDBOX_BRANCH)"
 WORKTREE_STAMP="$(mval WORKTREE_STAMP)"
 
-# --- worktree identity (mirrors sandbox-setup.sh) ----------------------------
-# A path is not an identity: after a clean the path is free again, so what stands
-# there now may be the user's. sandbox-setup stamps a nonce inside the worktree's
-# own git admin dir, which git removes together with the worktree.
-
-# Absolute git dir of the worktree at $1 — empty when it is not a readable worktree.
-wt_gitdir_of() {
-  local d
-  d="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)"
-  if [ -z "$d" ]; then   # --absolute-git-dir needs git >= 2.13
-    d="$(git -C "$1" rev-parse --git-dir 2>/dev/null)"
-    case "$d" in ''|/*) : ;; *) d="$1/$d" ;; esac
-  fi
-  printf '%s' "$d"
-}
-
-# Prints exactly one of: absent | legacy | ours | foreign | unknown.
-# "cannot tell" is its own answer and never means "delete it". An earlier version
-# collapsed a detached HEAD, a missing text tool and a genuine stranger into a
-# single verdict, which stranded the sandbox's own worktree.
-wt_ownership() {
-  local p="$1" want="$2" gd got list nl _gl   # $3 (recorded branch) is no longer consulted
-  # Builtins only from here down. The first version parsed `git worktree list`
-  # with awk, so a missing awk read as "not ours"; swapping awk for `cat` only
-  # moved that hole. Any external command on this path can fail, and a failed
-  # command must never be mistaken for an ownership verdict — so there are none.
-  nl='
-'
-  # The one external command left on this path, and it can fail like any other:
-  # an unreadable or locked .git/worktrees, a corrupted admin entry, a fork that
-  # cannot allocate. Its empty output used to flow straight into the match below
-  # and come out as `absent` — a live worktree reported "already gone", purge
-  # closing with exit 0 over a sandbox still standing (audit S-04). A failed
-  # command is not a verdict: `unknown` is. What each caller does with it differs
-  # — clean keeps the worktree and stops short at exit 4, setup refuses and asks
-  # for another path — so this comment does not get to speak for "every caller";
-  # what holds is that none of them deletes on it.
-  if ! list="$(git -C "$TOP" worktree list --porcelain 2>/dev/null)"; then
-    printf 'unknown'; return
-  fi
-  list="$list$nl"
-  case "$nl$list" in
-    *"${nl}worktree $p${nl}"*) : ;;
-    *)
-      # Not listed is not the same as not there. `git worktree list` ALSO exits 0
-      # and silently omits an entry whose admin dir is unreadable or whose
-      # `gitdir` file is missing (measured on git 2.53.0: rc=0, empty stderr,
-      # entry gone), so the exit status above cannot be the only liveness signal
-      # — audit S-04, second arm. A linked checkout owns its own `.git` FILE: it
-      # lives inside the checkout, not in the admin dir, and outlives both
-      # failures. `-f`, not `-e`: a plain repo parked at the freed path has
-      # `.git` as a DIRECTORY, and that one really is absent as far as this
-      # sandbox is concerned — `-e` would manufacture a permanent exit 4 over a
-      # user's own repository.
-      # Three states, not two. `-f` false can mean "no worktree here" or "this
-      # process cannot look". An unreadable admin dir alone is not enough to get
-      # here — git still LISTS an inaccessible worktree — but an unreadable admin
-      # dir together with an unsearchable PARENT is, and that pair has one
-      # plausible cause: a sandbox created by another account on a shared box,
-      # which is the scenario the finding names. `-x` on the parent is the "can I
-      # look at all" test, and `${p%/*}` keeps this function builtins-only as its
-      # header requires.
-      #
-      # A `.git` FILE is not by itself a linked worktree: `git init
-      # --separate-git-dir`, a submodule checkout and a plain file of that name
-      # all have one. Only a linked worktree of THIS repo points into
-      # `$TOP/.git/worktrees/`, so that is what makes it ours — without the
-      # check, a user's own --separate-git-dir repo parked at the freed path
-      # reads as `unknown` and earns a permanent exit 4, with a diagnosis
-      # ("the registry could not be read") that is false: it read fine.
-      if [ -f "$p/.git" ]; then
-        _gl=""
-        IFS= read -r _gl < "$p/.git" 2>/dev/null
-        case "$_gl" in
-          "gitdir: $TOP/.git/worktrees/"*) printf 'unknown'; return ;;
-          "") printf 'unknown'; return ;;   # present but unreadable — cannot tell
-        esac
-        printf 'absent'; return             # someone else's .git file
-      fi
-      if [ -e "$p" ]; then printf 'absent'; return; fi
-      if [ -x "${p%/*}" ]; then printf 'absent'; else printf 'unknown'; fi
-      return ;;
-  esac
-  # Registered, but the directory is gone. This is the one case where ownership
-  # does not matter: there is nothing on disk to lose, and leaving the phantom
-  # registration in place blocks the next setup from reusing the branch.
-  [ -d "$p" ] || { printf 'stale'; return; }
-  [ -n "$want" ] || { printf 'legacy'; return; }
-  gd="$(wt_gitdir_of "$p")"
-  [ -n "$gd" ] || { printf 'unknown'; return; }
-  if [ -f "$gd/loop-testing-owner" ]; then
-    got=""
-    if IFS= read -r got < "$gd/loop-testing-owner" 2>/dev/null; then
-      if [ "$got" = "$want" ]; then printf 'ours'; else printf 'foreign'; fi
-    else
-      printf 'unknown'   # present but unreadable — still not a verdict
-    fi
-    return
-  fi
-  # No stamp file, but the marker records one. For OUR worktree that cannot
-  # happen: setup clears WORKTREE_STAMP when the stamp write fails, so a recorded
-  # stamp means the file WAS written into that worktree's admin dir, which git
-  # deletes only together with the worktree. So the only thing reaching here is a
-  # different worktree standing at the recorded path.
-  #
-  # A branch-name fallback used to live here — "if HEAD is on the recorded
-  # branch, call it ours". It could never help our own worktree (that case
-  # returns `legacy` above), and it fired on exactly the workflow this tool tells
-  # users to perform: clean KEEPS qa/loop-testing because the fix commits exist
-  # only there, so harvesting them means adding a worktree on that branch — and
-  # the fallback then called the user's checkout ours and force-removed it.
-  printf 'foreign'
-}
+# --- worktree identity (lib.sh) ----------------------------------------------
+# `wt_gitdir_of` and `wt_ownership` live in lib.sh, shared with sandbox-setup.sh
+# so the two cannot reach different verdicts about the same worktree. A path is
+# not an identity: after a clean the path is free again, so what stands there now
+# may be the user's — the nonce stamp, and the full verdict list including the
+# `stale` both copies of this header used to omit, are documented there.
 
 # --- stop only processes we recorded (and their descendants) -----------------
 # A dev server started by the agent commonly forks worker children (vite->esbuild,
