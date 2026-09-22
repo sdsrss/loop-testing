@@ -61,7 +61,31 @@ set -u
 # both drivers, redaction set included. See lib.sh's driver section for what did
 # NOT move. Fail-closed: a driver that cannot read its own helpers must not go on
 # to take a lock and launch full-permission sessions.
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh" || {
+# Resolve THIS script's real directory before looking for lib.sh beside it.
+# Two shapes the plain `cd "$(dirname …)" && pwd` form got wrong, both measured
+# against `v0.16.0`, where they worked because there was nothing to find:
+#   * CDPATH. `cd` ECHOES its target whenever CDPATH is consulted, and the echo
+#     lands inside the command substitution, so the path comes back doubled and
+#     names nothing. `CDPATH=.` — which people do put in rc files — is enough.
+#     Spelled `CDPATH=''` rather than `CDPATH=`: the bare form is the same POSIX
+#     env prefix but reads as a typo'd assignment to shellcheck (SC1007), and the
+#     raised gate is right to say so. Measured identical under `CDPATH=.`.
+#     Only a bare-relative invocation consults it.
+#   * a symlinked entry point. `dirname` names the LINK's directory, so a script
+#     symlinked onto PATH looked for lib.sh beside the symlink and refused.
+#     Resolved with the POSIX `readlink` loop; `readlink -f` is GNU-only and
+#     macOS does not have it. Bounded, so a symlink cycle cannot spin here — past
+#     the bound the path stays wrong and the refusal below fires, which is right.
+_lt_self="${BASH_SOURCE[0]}"
+_lt_hops=0
+while [ -L "$_lt_self" ] && [ "$_lt_hops" -lt 32 ]; do
+  _lt_d="$(CDPATH='' cd -P "$(dirname "$_lt_self")" && pwd)"
+  _lt_self="$(readlink "$_lt_self")"
+  case "$_lt_self" in /*) ;; *) _lt_self="$_lt_d/$_lt_self" ;; esac
+  _lt_hops=$((_lt_hops + 1))
+done
+_lt_dir="$(CDPATH='' cd -P "$(dirname "$_lt_self")" && pwd)"
+. "$_lt_dir/lib.sh" || {
   echo "unattended-codex: cannot source lib.sh beside this script — the install is incomplete." >&2
   exit 2
 }
@@ -80,7 +104,7 @@ if [ -n "$_lt_missing" ]; then
   echo "unattended-codex: lib.sh beside this script sourced but is missing:$_lt_missing — a truncated or partial install; refusing before taking a lock." >&2
   exit 2
 fi
-unset _lt_missing _lt_f
+unset _lt_missing _lt_f _lt_self _lt_hops _lt_d _lt_dir
 
 
 PROJECT=""

@@ -3,7 +3,12 @@
 #
 # WHY this file exists. Until now `sandbox-setup.sh` and `sandbox-clean.sh` each
 # carried their own copy of the marker readers and the worktree-identity logic —
-# 195 lines of it, byte-identical by hand. Both files said so in prose and asked
+# 104 lines of function body, 263 lines across the two files once their headers go
+# with them, kept byte-identical by hand. (This line said 195 until a reviewer
+# asked which measurement produced it: none of five did — 104 bodies, 139 removed
+# from setup, 124 from clean, 105 identical-in-order, 263 total. Fourth time in
+# this repo that a hand-written count beside a mechanism turned into a
+# correction.) Both files said so in prose and asked
 # the next reader to keep it that way: "byte-identical to sandbox-clean.sh's, and
 # deliberately so: one marker must not be valid to one script and invalid to the
 # other". That is an invariant a comment cannot hold. This project's own record

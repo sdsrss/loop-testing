@@ -110,7 +110,7 @@ rule you have to remember to fix twice.
   next argument as the backup suffix), and `git worktree repair` ×2 asserted
   directly, so an older git reported "the user can no longer repair their relocated
   worktree" — a verdict about this project from a probe that could not run. A scan
-  over every tracked `*.sh` now catches the first two shapes; its file-level
+  over `skills tests hooks install` now catches the first two shapes; its file-level
   exemptions and what they cost are written down in it. **Not verified on macOS**:
   no BSD host was available, so the three BSD branches are reasoned and scanned,
   not executed.

@@ -454,19 +454,34 @@ rm -f "$probe"
 #     BACKUP SUFFIX, so the script becomes the suffix and sed is left with none.
 #     The portable spelling attaches it: `-i.bak`, then remove the backup.
 #
-# Known under-match, stated rather than implied, and MEASURED rather than assumed
-# — the first version of this paragraph was wrong in the permissive direction,
-# which is the worse one: it claimed a wrapper in front hides the spelling, and
-# `env touch -d @1 f` matches (the character class before `touch` accepts the
-# space). What actually hides it:
-#   * a flag between the command and the spelling — `sed -E -i …`, `touch -c -d …`
-#   * the GNU LONG options, which are the natural way to reintroduce exactly the
-#     defect this scan was written for: `touch --date=@1` and `sed --in-place`.
-#     Both measured against these two regexes: no match.
+# What this sees, fed to the ERE rather than reasoned about. The first version of
+# this paragraph inherited its wording from the bare-timeout scan above without
+# inheriting the check, and was wrong in the PERMISSIVE direction, which is the
+# worse one — it promised less coverage than the pattern has, so a reader would
+# not look.
+#   * A wrapper in front does NOT hide the call: the prefix class is
+#     `[^[:alnum:]_.]` and a space satisfies it, so `env`, `xargs`, `find -exec`,
+#     `nohup`, `command` and an absolute `/usr/bin/touch` are all caught —
+#     measured. `mytouch -d ` is not, which is the class doing its job.
+#   * UNDER-matches: anything between the command word and the flag (`sed -E -i`,
+#     `sed -n -i`, `touch -a -d`), a variable holding the command (`SED=sed;
+#     $SED -i`), a line continuation between the two. The GNU long options USED to
+#     be here and are now covered — they are the documented spellings, so they
+#     were the likeliest way the fixed defect comes back.
+#   * OVER-matches: this reads text, not code, and the filter below strips only
+#     whole-line comments. A trailing `# … sed -i …`, an `echo`, an assertion
+#     LABEL or a JSON payload on a non-exempt file reddens the gate. That is the
+#     mechanism behind the ledger-gate.test.sh exemption, and it is live today:
+#     tests/sandbox/purge.test.sh:41 explains the `-i.bak` form and contains the
+#     literal spelling — it passes only because its `#` starts the line.
+# DISCOVERY is filesystem + extension over four roots (skills tests hooks
+# install), not `git ls-files`. Every tracked shell file is inside them today —
+# 59 of 59, verified — but a tracked `.sh` added at the repo root would fall
+# outside silently, so the roots are the claim, not "everything tracked".
 # Like the bare-timeout scan above, this is a tripwire for the forms this tree
 # actually writes, not a parser.
-GNU_TOUCH_D='(^|[^[:alnum:]_.])touch[[:space:]]+-d[[:space:]]'
-BSD_SED_I='(^|[^[:alnum:]_.])sed[[:space:]]+-i[[:space:]]'
+GNU_TOUCH_D='(^|[^[:alnum:]_.])touch[[:space:]]+(-[[:alnum:]]*d[[:space:]@]|--date[=[:space:]])'
+BSD_SED_I='(^|[^[:alnum:]_.])sed[[:space:]]+(-[[:alnum:]]*i[[:space:]]|--in-place([[:space:]]|$))'
 mm_hits=""; mm_seen=0; mm_grepfail=""; mm_exempt=0; mm_checked=0
 mm_list=$(mktemp "${TMPDIR:-/tmp}/loop-testing-mmlist.XXXXXX") || mm_list=""
 mm_err=$(mktemp "${TMPDIR:-/tmp}/loop-testing-mmerr.XXXXXX") || mm_err=""
@@ -571,6 +586,15 @@ rm -f "$mm_list" "$mm_err"
 mm_probe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-mmprobe.XXXXXX")
 printf '%s -d "@123" f\ncd x; %s -d @1 f\n%s -i '"'"'s/a/b/'"'"' f\ncd x && %s -i '"'"'s/a/b/'"'"' f\n' \
   touch touch sed sed > "$mm_probe"
+# The long options and the attached forms, added with the widened EREs. These are
+# the GNU spellings the manuals document, so they are the likeliest way the fixed
+# defect comes back — and the narrow pair missed every one of them.
+printf '%s\n' \
+  'touch --date=@1 f' \
+  'touch -d@1 f' \
+  'touch -cd @1 f' \
+  'sed --in-place '"'"'s/a/b/'"'"' f' \
+  'sed --in-place' >> "$mm_probe"
 mm_pos=$(( $(grep -cE "$GNU_TOUCH_D" "$mm_probe") + $(grep -cE "$BSD_SED_I" "$mm_probe") ))
 printf '%s\n' \
   'touch -t 202601011200.00 f' \
@@ -580,11 +604,11 @@ printf '%s\n' \
   'sed '"'"'s/a/b/'"'"' f > f.tmp && mv f.tmp f' > "$mm_probe"
 mm_neg=$(( $(grep -cE "$GNU_TOUCH_D" "$mm_probe") + $(grep -cE "$BSD_SED_I" "$mm_probe") ))
 rm -f "$mm_probe"
-if [ "${mm_pos:-0}" -eq 4 ] && [ "${mm_neg:-1}" -eq 0 ]; then
+if [ "${mm_pos:-0}" -eq 9 ] && [ "${mm_neg:-1}" -eq 0 ]; then
   PASS=$((PASS+1))
 else
   FAIL=$((FAIL+1))
-  echo "  FAIL: self-probe — the macOS-matrix patterns matched ${mm_pos:-?}/4 positives and ${mm_neg:-?}/0 negatives" >&2
+  echo "  FAIL: self-probe — the macOS-matrix patterns matched ${mm_pos:-?}/9 positives and ${mm_neg:-?}/0 negatives" >&2
 fi
 
 echo "bash3.test.sh: $PASS passed, $FAIL failed"

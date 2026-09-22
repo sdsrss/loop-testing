@@ -68,4 +68,39 @@ assert_exists "$PROJ/docs/looptesting" "--purge --help purged nothing"
 git -C "$PROJ" rev-parse -q --verify refs/tags/qa-baseline >/dev/null 2>&1 \
   && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "  FAIL: --purge --help must not delete the baseline tag" >&2; }
 
+# --- how the script is INVOKED must not decide whether it runs ---------------
+# The lib.sh extraction made every entry point resolve a sibling file, so the
+# four shipped scripts went from "work however you call them" to "work if
+# `dirname "${BASH_SOURCE[0]}"` happens to name the directory lib.sh is in".
+# Measured against v0.16.0, where both of these exited 0:
+#
+#   * a SYMLINK into ~/bin — `dirname` resolves the LINK's directory, not the
+#     target's, so the script looks for lib.sh next to the symlink. Nothing the
+#     installer does creates one, but putting a script on your PATH by symlink is
+#     an ordinary thing to do and the refusal does not say that is the cause.
+#   * CDPATH — `cd` ECHOES its target whenever CDPATH is consulted, and that echo
+#     lands inside the command substitution. `CDPATH=.`, which people really do
+#     put in an rc file, is enough. Only bare-relative invocations consult it.
+#
+# Both fail CLOSED (refuse, delete nothing), so this is availability, not safety.
+# Asserted for all four shipped scripts, not just the two this file is named for:
+# the drivers grew the same idiom in the same commit.
+SCRIPTS_DIR="$(dirname "$SETUP")"
+LINKDIR="$WS/bin"; mkdir -p "$LINKDIR"
+for _s in sandbox-setup.sh sandbox-clean.sh unattended-loop.sh unattended-codex.sh; do
+  [ -f "$SCRIPTS_DIR/$_s" ] || { FAIL=$((FAIL+1)); echo "  FAIL: $_s missing from the scripts dir" >&2; continue; }
+  ln -sf "$SCRIPTS_DIR/$_s" "$LINKDIR/$_s"
+  out=$( cd "$PROJ" && bash "$LINKDIR/$_s" --help 2>&1 ); rc=$?
+  assert_eq 0 "$rc" "$_s answers --help when invoked through a symlink — output: $(printf '%s' "$out" | head -1)"
+  # The premise: a symlink that does NOT resolve to the scripts dir would make
+  # this vacuous, so prove the link is what the case claims it is.
+  case "$(readlink "$LINKDIR/$_s")" in
+    "$SCRIPTS_DIR/$_s") PASS=$((PASS+1)) ;;
+    *) FAIL=$((FAIL+1)); echo "  FAIL: fixture: $LINKDIR/$_s does not point at the scripts dir" >&2 ;;
+  esac
+  # CDPATH, bare-relative invocation — the only shape that consults it.
+  out=$( cd "$SCRIPTS_DIR/.." && CDPATH=. bash "scripts/$_s" --help 2>&1 ); rc=$?
+  assert_eq 0 "$rc" "$_s answers --help with CDPATH=. set — output: $(printf '%s' "$out" | head -1)"
+done
+
 report "script-help.test.sh"

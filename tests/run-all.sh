@@ -31,9 +31,12 @@ if command -v shellcheck >/dev/null 2>&1; then
   # here. Two were real: an unchecked `cd proj` in the mk_ws helper whose own
   # comment describes that exact failure two lines above it, and an unchecked
   # `cd "$REPOD"` in a subshell that then creates a branch and a tag BY NAME —
-  # on a failed cd, into this repository. The rest were dead variables, captures
-  # nothing asserted, and four shellcheck false positives now carrying a
-  # `disable=` with the reason written next to it.
+  # on a failed cd, into this repository. The other twelve: two dead variables,
+  # five captures nothing asserted, four false positives now carrying a `disable=`
+  # with the reason written next to it, and one `$?` that belonged to a condition
+  # rather than a command (SC2319, rewritten rather than silenced). The counts are
+  # here because the first draft of them, in the CHANGELOG, said five false
+  # positives and did not sum to twelve.
   #
   # SC1091 stays excluded (sourced paths shellcheck cannot resolve statically);
   # its non-constant sibling SC1090 is disabled at the one site that has one.

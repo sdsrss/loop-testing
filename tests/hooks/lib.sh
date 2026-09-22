@@ -112,19 +112,31 @@ run_ledger() {
 # rejects it (its -r takes a FILE), so the second branch only yields a stamp on
 # the platform it exists for.
 #
-# The result is checked, not assumed: a reference file created now must be NEWER
-# than the target. That is what makes "the touch silently did nothing" a failure
-# here instead of a green case somewhere else.
+# The result is checked, not assumed: the mtime is read back and compared to the
+# epoch that was asked for. That is what makes "the touch silently did nothing" a
+# failure here instead of a green case somewhere else.
 set_mtime_epoch() {
-  local f="$1" e="$2" stamp ref rc=0
+  local f="$1" e="$2" stamp got rc=0
   if ! touch -d "@$e" "$f" 2>/dev/null; then
     stamp=$(date -r "$e" +%Y%m%d%H%M.%S 2>/dev/null) || return 1
     touch -t "$stamp" "$f" 2>/dev/null || return 1
   fi
-  ref="$f.mtimeref.$$"
-  : > "$ref" || return 1
-  [ "$f" -ot "$ref" ] || rc=1
-  rm -f "$ref"
+  # Read the mtime back and compare it to the epoch that was ASKED FOR. The first
+  # form created a reference file and tested `[ "$f" -ot "$ref" ]`, which bash
+  # compares at WHOLE-SECOND granularity: both files stamped
+  # 2026-09-22 16:46:18.056452223 compare as "not older" — measured. That works
+  # in the common case (a BSD no-op leaves $f at its creation time, same second
+  # as the ref), and fails exactly at a second boundary: one tick between the
+  # target's last write and the ref's creation makes an UNTOUCHED file read as
+  # older, and the silent no-op this function exists to detect passes.
+  #
+  # Both `stat` spellings, the way hooks/stop-gate.sh:220 already does it: -c is
+  # GNU, -f is BSD, and this helper's whole reason for existing is the platform
+  # where the second one is the only one. Dropping the ref file also stops this
+  # from writing a transient into the workspace under test.
+  got=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+  [ -n "$got" ] || return 1
+  [ "$got" = "$e" ] || rc=1
   return "$rc"
 }
 
@@ -164,7 +176,12 @@ mk_gtimeout_farm() {
   {
     printf '#!/usr/bin/env bash\n'
     printf 'printf "call\\n" >> "%s/gtimeout.calls"\n' "$d"
-    printf 'while [ $# -gt 0 ]; do case "$1" in -k) shift 2 ;; -*) shift ;; [0-9]*) shift; break ;; *) break ;; esac; done\n'
+    # `shift; shift`, not `shift 2`: with `-k` as the only argument `shift 2`
+    # FAILS on $#=1 and shifts nothing, so $1 stays `-k` and this loop never
+    # advances — measured at rc 124 under a 4s cap, an unbounded spin inside the
+    # harness. Two single shifts leave $#=0 and the guard ends the loop. No
+    # current call site passes a bare `-k`; this is about the next one.
+    printf 'while [ $# -gt 0 ]; do case "$1" in -k) shift; shift ;; -*) shift ;; [0-9]*) shift; break ;; *) break ;; esac; done\n'
     printf 'exec "$@"\n'
   } > "$d/gtimeout"
   chmod +x "$d/gtimeout"
