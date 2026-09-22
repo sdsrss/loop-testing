@@ -24,7 +24,10 @@ FAIL=0
 # three test libs. It used to be a second copy of the resolution here, which is
 # how review T-D's fix landed in these two libs and missed six sites of the same
 # shape in tests/hooks/ and tests/sandbox/.
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh" || {
+  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN, bounded and the suite-level guard would all be silently absent, and the suite would report a green tally with none of them applied" >&2
+  exit 1
+}
 
 mk_proj() {
   local ws

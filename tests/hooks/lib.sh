@@ -16,7 +16,10 @@ export STOP LEDGER
 # the assertion (rc 124 = the platform would have killed the hook = ALLOW), and
 # they were calling bare `timeout`, which returns 127 on a host that has only
 # `gtimeout` or neither. Same shape as review T-D, six sites it did not reach.
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh" || {
+  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN and bounded would be silently absent, and the guarded blocks would run unbounded" >&2
+  exit 1
+}
 
 # The hooks anchor on $CLAUDE_PROJECT_DIR before anything else, and Claude Code
 # sets it for every hook it runs — so a suite run from inside a session inherits

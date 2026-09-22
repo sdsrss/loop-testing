@@ -22,7 +22,10 @@ export SETUP CLEAN
 # `shift 2` regression shows up as a timeout rather than a hung suite. They were
 # calling bare `timeout`, and three of them assert `rc != 124` — which an absent
 # binary satisfies with 127, so those three PASSED without running anything.
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh" || {
+  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN and bounded would be silently absent, and the guarded blocks would run unbounded" >&2
+  exit 1
+}
 
 PASS=0
 FAIL=0

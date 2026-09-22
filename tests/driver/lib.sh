@@ -21,7 +21,10 @@ FAIL=0
 # TIMEOUT_BIN, bounded() and require_watchdog_binary() — one home for all four
 # test libs, because two of them not having it is how review T-D's fix missed six
 # more sites of its own shape (see that file's header).
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh" || {
+  echo "FAILED: cannot source tests/lib-watchdog.sh — TIMEOUT_BIN, bounded and the suite-level guard would all be silently absent, and the suite would report a green tally with none of them applied" >&2
+  exit 1
+}
 
 mk_proj() {
   local ws
