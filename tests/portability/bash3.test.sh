@@ -176,7 +176,8 @@ fi
 # --- no suite may invoke a bare `timeout` (T-D, and the six sites its fix missed)
 # `timeout` is GNU. Stock macOS ships none and homebrew coreutils installs it as
 # `gtimeout`, so a bare call returns 127 there. Review T-D found five such sites
-# in the two driver libs and v0.15.0 fixed them; it left six of the same shape in
+# in the two driver limits SUITES — not in the libs, which are where its fix put
+# the resolution — and v0.15.0 fixed them; it left six of the same shape in
 # tests/hooks/stop-gate.test.sh and tests/sandbox/setup.test.sh, because the
 # answer had no shared home and each suite had to remember separately. Three of
 # those six were worse than a failure: `setup.test.sh`'s dangling-flag guards
@@ -221,6 +222,7 @@ BARE_TO='(^|[;|&(]|[[:space:]]env[[:space:]][^;|&]*[[:space:]])[[:space:]]*g?tim
 # count. A bare non-zero file count sees none of the first two.
 bare_to_hits=""
 bare_to_seen=0
+bare_to_exempt=0
 bare_to_grepfail=""
 bt_list=$(mktemp "${TMPDIR:-/tmp}/loop-testing-btlist.XXXXXX") || bt_list=""
 bt_err=$(mktemp "${TMPDIR:-/tmp}/loop-testing-bterr.XXXXXX") || bt_err=""
@@ -237,7 +239,8 @@ if [ -n "$bt_list" ] && [ -n "$bt_err" ]; then
   # forgets to exempt itself fails the fix instead of the bug.
   while IFS= read -r f; do
     case "$f" in
-      tests/lib-watchdog.sh|tests/portability/bash3.test.sh) continue ;;
+      tests/lib-watchdog.sh|tests/portability/bash3.test.sh)
+        bare_to_exempt=$((bare_to_exempt + 1)); continue ;;
     esac
     bare_to_seen=$((bare_to_seen + 1))
     c=$(grep -cE "$BARE_TO" "$f" 2>/dev/null)
@@ -261,6 +264,16 @@ elif [ "$bt_find_rc" -ne 0 ] || [ -s "$bt_err" ]; then
 elif [ "$bare_to_seen" -eq 0 ]; then
   FAIL=$((FAIL+1))
   echo "  FAIL: the bare-timeout scan read no files at all — a clean tree and a broken discovery print the same thing" >&2
+elif [ "$bare_to_seen" -ne "$(( $(wc -l < "$bt_list") - bare_to_exempt ))" ]; then
+  # Two counts computed independently, the way tests/run-all.sh compares `suites`
+  # with `_ra_files`. A non-zero file count says the loop STARTED; only the
+  # equality says it FINISHED. This repo's own incident is the reason: a body that
+  # reads stdin eats the rest of the list, and the loop stops early with every
+  # other arm of this gate reporting clean — demonstrated by a reviewer at 1 file
+  # scanned of 47, all arms PASS. Nothing in the body reads stdin today, which is
+  # exactly the standing of run-all.sh's own suites-vs-files check.
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the bare-timeout scan read $bare_to_seen of $(( $(wc -l < "$bt_list") - bare_to_exempt )) files — the loop ended early, and every other arm of this gate would have called that clean" >&2
 elif [ -n "$bare_to_grepfail" ]; then
   FAIL=$((FAIL+1))
   echo "  FAIL: the bare-timeout scan could not read:$bare_to_grepfail — grep rc 2 or more is not 'no match', and an unreadable file or a rejected ERE would otherwise count as clean" >&2
@@ -270,7 +283,51 @@ elif [ -n "$bare_to_hits" ]; then
 else
   PASS=$((PASS+1))
 fi
+
+# The real-file positive control. With the probe's positives assembled at runtime
+# and this file exempt by path, nothing in the code re-established that the ERE
+# fires against a file ON DISK — that rested on the gate's historical first run.
+# The exempt file is the control: it carries the over-match examples from the
+# comment above, which are matching lines by construction. If this ever reports
+# zero, either the ERE stopped matching or the documentation stopped showing the
+# real shape, and both are worth a red.
+bt_self=$(grep -cE "$BARE_TO" tests/portability/bash3.test.sh 2>/dev/null)
+if [ "${bt_self:-0}" -ge 1 ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the bare-timeout ERE matches nothing in the file that documents its own over-matches — it is no longer demonstrated against a real file" >&2
+fi
 rm -f "$bt_list" "$bt_err"
+
+# --- the harness must resolve the watchdog binary the way the DRIVER does ------
+# tests/lib-watchdog.sh's own comment calls this invariant load-bearing, and
+# nothing checked it. The drift check below compares the two driver libs, which
+# now source the same file and are identical by construction; the comparison that
+# can actually catch something is lib against the two shipped drivers. If they
+# diverge, the harness bounds its guards on one host while the product picks its
+# watchdog on another, and every no-hang guard in the tree is measuring the wrong
+# thing.
+res_of() {
+  grep -E '^[[:space:]]*(TIMEOUT_BIN=""|if command -v timeout|elif command -v gtimeout)' "$1" \
+    | sed -e 's/^[[:space:]]*//' | tr -s ' '
+}
+res_lib=$(res_of tests/lib-watchdog.sh)
+res_drv=$(res_of skills/loop-testing/scripts/unattended-loop.sh)
+res_cdx=$(res_of skills/loop-testing/scripts/unattended-codex.sh)
+# Self-probe first: three empty extractions compare equal, which is how this would
+# pass forever if a rename or a reformat took the lines out of reach.
+if [ "$(printf '%s\n' "$res_lib" | grep -c .)" -ne 3 ]; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: could not read the watchdog resolution out of tests/lib-watchdog.sh — this check was comparing nothing" >&2
+elif [ "$res_lib" = "$res_drv" ] && [ "$res_lib" = "$res_cdx" ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the harness resolves the watchdog binary differently from the driver it tests" >&2
+  [ "$res_lib" = "$res_drv" ] || echo "    unattended-loop.sh differs" >&2
+  [ "$res_lib" = "$res_cdx" ] || echo "    unattended-codex.sh differs" >&2
+fi
 
 # Self-probe in BOTH directions, because this scan has two ways to be worthless: a
 # broken ERE makes it a green no-op, and an over-broad one fails every fixture

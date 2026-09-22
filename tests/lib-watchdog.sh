@@ -9,9 +9,12 @@
 # that way. `timeout` is GNU; stock macOS ships none, and homebrew coreutils
 # installs it as `gtimeout` — the exact host the driver's own fallback
 # (unattended-loop.sh) exists to serve and the one the portability gate treats as
-# supported. Review T-D found the harness calling bare `timeout` at five sites in
-# the two driver libs, so on that host the no-hang guards died at 127 and the
-# suites reported 35/3 and 46/2 while the PRODUCT was fine. That fix landed in
+# supported. Review T-D found the harness calling bare `timeout` at five sites —
+# three in driver-limits.test.sh, two in codex-limits.test.sh, and none in the
+# libs, which is where that fix PUT the resolution (5187307 is the commit; an
+# earlier version of this paragraph said the five sites were in the libs, which
+# reversed the fix and the bug). On that host the no-hang guards died at 127 and
+# the suites reported 35/3 and 46/2 while the PRODUCT was fine. That fix landed in
 # v0.15.0 — and missed six more sites of the same shape in
 # tests/hooks/stop-gate.test.sh and tests/sandbox/setup.test.sh, because there
 # was nowhere for the answer to live and each suite had to remember separately.
