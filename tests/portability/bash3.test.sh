@@ -155,7 +155,7 @@ LIB_A="tests/driver/lib.sh"; LIB_B="tests/driver/codex-lib.sh"
 # counters and the unsets, none of which escape it.
 fn_dump() { ( . "$1" >/dev/null 2>&1 && declare -f "$2" ) 2>/dev/null; }
 fn_drift=""; fn_empty=""
-for fn in test_wait_budget wait_lock_pid wait_pid_gone bounded; do
+for fn in test_wait_budget wait_lock_pid wait_pid_gone bounded require_watchdog_binary; do
   a=$(fn_dump "$LIB_A" "$fn"); b=$(fn_dump "$LIB_B" "$fn")
   # Self-probe, inline: two EMPTY dumps compare equal, which is how this check
   # would pass forever if a function were renamed away or the source failed.
@@ -171,6 +171,71 @@ if [ -n "$fn_empty" ] || [ -n "$fn_drift" ]; then
   [ -n "$fn_drift" ] && echo "  FAIL: the two driver libs have drifted:$fn_drift" >&2
 else
   PASS=$((PASS+1))
+fi
+
+# --- no suite may invoke a bare `timeout` (T-D, and the six sites its fix missed)
+# `timeout` is GNU. Stock macOS ships none and homebrew coreutils installs it as
+# `gtimeout`, so a bare call returns 127 there. Review T-D found five such sites
+# in the two driver libs and v0.15.0 fixed them; it left six of the same shape in
+# tests/hooks/stop-gate.test.sh and tests/sandbox/setup.test.sh, because the
+# answer had no shared home and each suite had to remember separately. Three of
+# those six were worse than a failure: `setup.test.sh`'s dangling-flag guards
+# assert `rc != 124`, which 127 satisfies, so they PASSED on a host where the
+# script never ran. The binary belongs behind TIMEOUT_BIN / bounded() in
+# tests/lib-watchdog.sh, the one file this scan exempts.
+#
+# What this can and cannot see, stated plainly. It matches `timeout <number>` in
+# command position — at line start, after `;` `|` `&` `(`, or after an `env …`
+# prefix — which is every form this tree has used. It does NOT parse: `timeout
+# --foreground 5`, a call assembled through a variable, or one inside a heredoc
+# executed later would all pass unseen. The instrument that cannot be fooled is
+# running the suite on a PATH holding neither binary, and that is a host arm
+# rather than a gate — which is why the TOTAL line now names the arm.
+BARE_TO='(^|[;|&(]|[[:space:]]env[[:space:]][^;|&]*[[:space:]])[[:space:]]*g?timeout[[:space:]]+[0-9]'
+bare_to_hits=""
+while IFS= read -r f; do
+  case "$f" in tests/lib-watchdog.sh) continue ;; esac
+  c=$(grep -cE "$BARE_TO" "$f" 2>/dev/null)
+  case "${c:-0}" in ''|0) ;; *) bare_to_hits="$bare_to_hits $f($c)" ;; esac
+done < <(find tests -name '*.sh' -type f 2>/dev/null | sort)
+if [ -n "$bare_to_hits" ]; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: bare timeout/gtimeout invocation in a suite — use bounded():$bare_to_hits" >&2
+else
+  PASS=$((PASS+1))
+fi
+
+# Self-probe in BOTH directions, because this scan has two ways to be worthless: a
+# broken ERE makes it a green no-op, and an over-broad one fails every fixture
+# that merely names the binary (three such forms live in this tree — the `rm -f
+# "$BINF/timeout"` farms, the `command -v gtimeout` detection, and a comment that
+# quotes `timeout 5` as prose). Both counts are asserted, not just the positive.
+bt_probe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-btprobe.XXXXXX") || {
+  echo "  FAIL: mktemp for the bare-timeout self-probe failed" >&2; bt_probe=""; }
+if [ -n "$bt_probe" ]; then
+  # The three positives are ASSEMBLED, not written literally: spelled out they are
+  # matching forms sitting in a file this very scan reads, and the first run of the
+  # gate duly flagged its own probe (2 of the 3 — the third is not in command
+  # position inside a quoted list). That was the scan's positive control on a real
+  # file, arrived at without constructing one; %s keeps it while leaving nothing
+  # here for the pattern to find.
+  printf '( cd "$W" && %s 10 bash "$S" ) >/dev/null\nprintf x | env -u FOO %s 5 bash "$S"\n%s 3 bash foo.sh\n' \
+    timeout timeout timeout > "$bt_probe"
+  bt_pos=$(grep -cE "$BARE_TO" "$bt_probe")
+  printf '%s\n' \
+    'bounded 10 bash "$DRIVER" --project' \
+    '  "$TIMEOUT_BIN" "$secs" "$@"' \
+    '#    `timeout 5` is the assertion: rc 2 means it blocked' \
+    'rm -f "$BINF/timeout" "$BINF/gtimeout"' \
+    'elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi' > "$bt_probe"
+  bt_neg=$(grep -cE "$BARE_TO" "$bt_probe")
+  rm -f "$bt_probe"
+  if [ "${bt_pos:-0}" -eq 3 ] && [ "${bt_neg:-1}" -eq 0 ]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "  FAIL: self-probe — the bare-timeout scan matched ${bt_pos:-?}/3 positives and ${bt_neg:-?}/0 negatives" >&2
+  fi
 fi
 
 # The scan is only meaningful if the pattern actually fires; a silently-broken ERE
