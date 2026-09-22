@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.17.2 — 2026-09-22
+
+Paths the user types are now resolved where the user typed them. Every defect
+below was already present at `0.16.0`. Each one is a relative path given on the
+command line and then resolved somewhere else: after the driver's
+`cd "$PROJECT"`, inside a `$(cd …)` that `CDPATH` had made echo, or textually
+through a symlink the kernel reads differently. Two of them reach
+`--permission-mode bypassPermissions` sessions. The spaced-`$TMPDIR` test run,
+red since at least `0.17.0`, is green, and both of its causes were in the tests.
+
+- **fix(scripts)**: `CDPATH` is unset at the top of all four entry points. With
+  `CDPATH=.` and a relative `--project`, both drivers built the project path as
+  two lines, created that directory tree and ran their sessions there instead
+  of in the project. With a relative `--worktree-path` whose parent exists,
+  `sandbox-setup.sh` created the worktree at a path containing a newline and
+  recorded the user's own parent directory as `CREATED_WORKTREE`. Clean then
+  kept (leaked) the worktree and `--purge` stopped at rc 4. The ownership check
+  failed safe, so the user's files survived. A marker written that way by an
+  earlier version is not repaired by this release.
+- **fix(scripts)**: a relative `--plugin-dir` is resolved against the invocation
+  cwd. It used to be passed through verbatim and used after `cd "$PROJECT"`,
+  where it usually named nothing, so the sessions loaded no plugin and no hooks.
+  A `--plugin-dir` that is not a directory this user can enter is now a usage
+  error (exit 2) before any session starts.
+- **fix(scripts)**: a relative `--claude-bin` / `--codex-bin` containing a slash
+  is resolved against the invocation cwd. The preflight check passed, then every
+  session failed with "No such file", and the driver exited 5 (NO_PROGRESS),
+  blaming the loop. A bare name is still a `PATH` lookup.
+- **fix(scripts)**: those three resolves use `cd -P`, so `lnk/../bin/claude` names
+  the file the kernel will run. It no longer names a different file at the
+  textual path. `--project` keeps the logical resolve, which is what the
+  user's own `cd` into that path does.
+- **fix(tests)**: `update-check.test.sh` passed its tag fixtures as `file://<path>`
+  unencoded. curl rejects a raw space (rc 3), and the hook reads any fetch
+  failure as offline and stays silent. So under a spaced `$TMPDIR` the five
+  notify cases failed, and the "stays silent" cases passed without ever
+  comparing a version. Paths are percent-encoded now, and a premise assertion
+  checks that the fixture is actually readable that way.
+- **fix(tests)**: `session-stderr` and `codex-session-stderr` removed their
+  fixtures with an unquoted `rm -rf` over a space-joined list. Under a spaced
+  `$TMPDIR` every path split into words, the fixtures stayed behind, and `rm`
+  received relative fragments of them. They are bash arrays now.
+
+Suites, `bash tests/run-all.sh`, measured at the code `v0.17.1` tagged → this
+release:
+
+```
+default               46 suites / 1944 assertions, 0 failed  ->  1965, 0 failed   ALL GREEN
+no timeout/gtimeout   1420, 0 failed, 11 skipped             ->  1434, 0 failed, 11 skipped
+spaced $TMPDIR        1939, 5 failed  FAILED                 ->  1965, 0 failed   ALL GREEN
+```
+
+Not fixed: a bare `--claude-bin` (or the watchdog binary) looked up through a
+relative `PATH` entry is found in the invocation cwd by the preflight and looked
+up again after `cd "$PROJECT"`. **Not verified on macOS**: no BSD host was
+available. The URL encoding and the array cleanup were run under bash 3.2.57;
+the BSD userland branches are reasoned, not executed.
+
 ## 0.17.1 — 2026-09-22
 
 A patch for two regressions `0.17.0` shipped, and for the first attempt at
