@@ -161,16 +161,27 @@ while IFS= read -r -d '' t; do
   # be announced as a suite that "ran nothing".
   tally=$(grep -E '^[^ ]+: [0-9]+ passed, [0-9]+ failed$' "$_ra_out" | tail -1)
   _ra_pre=""
+  _ra_precount=$(grep -c '^PRECONDITION NOT MET: ' "$_ra_out")
   _ra_preline=$(grep '^PRECONDITION NOT MET: ' "$_ra_out" | head -1)
   [ -n "$_ra_preline" ] && _ra_pre=${_ra_preline#PRECONDITION NOT MET: }
+  # Shown rather than pasted: a token carrying a CR (a suite saved with CRLF line
+  # endings) is correctly rejected as unknown, but printing it raw made the message
+  # read `[watchdog-binary]` — the exact token it was refusing — with the CR
+  # invisible. Escape it so the reason is legible.
+  _ra_pre_show=$(printf '%s' "$_ra_pre" | sed -e 's/\r/\\r/g')
   _ra_skip_this=0
   _ra_pre_seen=0
   if [ -n "$_ra_pre" ] || [ "$rc" -eq 77 ]; then
     _ra_pre_seen=1
     if [ -z "$_ra_pre" ]; then
       echo "  GATE FAIL: $t exited 77 (skip) but declared no precondition"; overall=1
+    elif [ "${_ra_precount:-0}" -gt 1 ]; then
+      # `head -1` used to settle it, which let a first well-formed declaration
+      # cover a second one this runner would have refused.
+      echo "  GATE FAIL: $t printed $_ra_precount precondition declarations — one suite, one reason, or the first silently speaks for the rest"
+      overall=1
     elif [ "$rc" -ne 77 ]; then
-      echo "  GATE FAIL: $t declared precondition [$_ra_pre] but exited $rc, not 77"; overall=1
+      echo "  GATE FAIL: $t declared precondition [$_ra_pre_show] but exited $rc, not 77"; overall=1
     elif [ -n "$tally" ]; then
       echo "  GATE FAIL: $t declared precondition [$_ra_pre] but also reported assertions [$tally] — a suite that ran cases and then declared the host unfit is not a skip"
       overall=1
@@ -185,7 +196,7 @@ while IFS= read -r -d '' t; do
           fi
           ;;
         *)
-          echo "  GATE FAIL: $t declared an unknown precondition [$_ra_pre]"; overall=1
+          echo "  GATE FAIL: $t declared an unknown precondition [$_ra_pre_show]"; overall=1
           ;;
       esac
     fi
@@ -193,6 +204,13 @@ while IFS= read -r -d '' t; do
   if [ "$_ra_skip_this" -eq 1 ]; then
     echo "  SKIP: $t — precondition [$_ra_pre] not met on this host; it ran nothing"
     skipped=$((skipped + 1))
+  elif [ "$_ra_pre_seen" -eq 1 ]; then
+    # A claim the block above rejected. `ok:` was printed here whenever such a
+    # suite happened to exit 0, so the run contradicted itself one line apart; a
+    # bare TEST FAIL would instead blame the suite's exit code, which is not what
+    # went wrong. The GATE FAIL already failed the run.
+    echo "  NOT A SKIP: $t — its precondition claim was rejected above (exit $rc)"
+    [ "$rc" -eq 0 ] || _ra_rcfail=1
   elif [ "$rc" -eq 0 ]; then echo "  ok: $t"
   else echo "  TEST FAIL: $t"; overall=1; _ra_rcfail=1; fi
   # A helper the suite's lib does not define is not a failing assertion — it is
@@ -211,21 +229,26 @@ while IFS= read -r -d '' t; do
     overall=1
   fi
   _leak_before=$_leak_after
-  if [ "$_ra_pre_seen" -eq 1 ]; then
-    # Either a verified skip, which reports no tally by contract, or a claim the
-    # block above already rejected by name. Adding "printed no assertion tally"
-    # to a rejected claim would hand the reader a second cause that is true and
-    # not the reason.
-    :
-  elif [ -z "$tally" ]; then
-    # A suite that reports no tally cannot be counted, and a suite that cannot be
-    # counted is where a zero-assertion suite hides. Fail rather than skip.
-    echo "  GATE FAIL: $t printed no assertion tally"; overall=1
-  else
+  # A tally is ACCOUNTED whenever one exists, including for a suite whose
+  # precondition claim was just rejected. Skipping the accounting there dropped
+  # that suite's whole tally out of TOTAL, failures included: a suite reporting
+  # "9 passed, 4 failed" landed in the line as 4 assertions and 0 failed, so the
+  # run's own summary under-reported failures it had already printed. Only the
+  # redundant no-tally MESSAGE is suppressed for such a suite, never the numbers.
+  if [ -n "$tally" ]; then
     p=${tally#*: }; p=${p%% passed,*}
     f=${tally#* passed, }; f=${f%% failed}
     [ "$p" -gt 0 ] || { echo "  GATE FAIL: $t reported 0 assertions"; overall=1; }
     asserts=$((asserts + p)); afails=$((afails + f))
+  elif [ "$_ra_pre_seen" -eq 1 ]; then
+    # A verified skip reports no tally by contract, and a rejected claim was
+    # already named above; "printed no assertion tally" would hand the reader a
+    # second cause that is true and not the reason.
+    :
+  else
+    # A suite that reports no tally cannot be counted, and a suite that cannot be
+    # counted is where a zero-assertion suite hides. Fail rather than skip.
+    echo "  GATE FAIL: $t printed no assertion tally"; overall=1
   fi
 done < <(find tests -name '*.test.sh' -type f -print0 2>/dev/null | sort -z)
 [ "$tests_found" -eq 1 ] || { echo "  GATE FAIL: no *.test.sh found (zero discovery must not pass)"; overall=1; }
