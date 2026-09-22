@@ -255,6 +255,21 @@ SLOW
   write_state "$WS18" RUNNING 0
   setsid bash "$CODEX_DRIVER" --project "$WS18" --codex-bin "$WS18/slow-stub.sh" \
     --skill-dir "$FAKE18" --max-sessions 50 --max-minutes 5 >/dev/null 2>&1 &
+  # TWO assertions on every path that is reached, by construction — the shutdown
+  # itself and the restore of the dir it protected. This case used to count 2 when
+  # the driver came up and 1 when it did not, a per-arm assertion count sitting
+  # behind no premise guard: invisible, and it is why the binary-less total came
+  # out 44 where the guarded blocks alone predicted 45. A whole release cycle of
+  # arithmetic never reconciled because of one case.
+  #
+  # The cost of making it constant is that one root cause can now report two
+  # failures. That is the better trade: a varying count hid a real discrepancy for
+  # a release, while a double report costs a reader one sentence. Where the
+  # restore genuinely cannot be judged it is counted as a FAILURE and named as
+  # unevaluated — never passed. Checking the dir on that path would pass for the
+  # wrong reason: the driver never got far enough to make it read-only, so
+  # "writable" says nothing about any restore. That is the T-08 convention this
+  # file already uses for the lock pid, applied to its sibling claim.
   DRV18="$(wait_lock_pid "$WS18")"
   if [ -n "$DRV18" ]; then
     PGID18=$(ps -o pgid= -p "$DRV18" 2>/dev/null | tr -d ' ')
@@ -262,6 +277,7 @@ SLOW
     wait_pid_gone "$DRV18" || :
     if kill -0 "$DRV18" 2>/dev/null; then
       FAIL=$((FAIL+1)); echo "  FAIL: SIGTERM to the codex driver process group did not stop it" >&2
+      FAIL=$((FAIL+1)); echo "  FAIL: the skill-dir restore is unevaluated — the driver never exited, so its cleanup never ran (consequence of the failure above, not a second defect)" >&2
       kill -9 "$DRV18" 2>/dev/null
       for c in $(pgrep -P "$DRV18" 2>/dev/null); do kill -9 "$c" 2>/dev/null; done
     else
@@ -273,6 +289,8 @@ SLOW
   else
     FAIL=$((FAIL+1))
     echo "  FAIL: no lock pid appeared within $(test_wait_budget)s — this run never reached the state the case is about, so it is not evidence about the shutdown path in either direction (audit T-08)" >&2
+    FAIL=$((FAIL+1))
+    echo "  FAIL: the skill-dir restore is unevaluated for the same reason — the dir was never protected, so testing it would pass without evidence" >&2
   fi
 else
   echo "  skip: setsid unavailable — process-group shutdown test not run"
@@ -315,9 +333,20 @@ SHIM
   setsid env PATH="$SHIM19:$PATH" bash "$CODEX_DRIVER" --project "$WS19" --codex-bin "$stub19" \
     --skill-dir "$FAKE19" --max-sessions 1 >/dev/null 2>&1 &
   DRV19="$(wait_lock_pid "$WS19")"
+  # The lock is written immediately before the protect chmod (unattended-codex.sh:
+  # acquire_lock at 628, DID_PROTECT=1 and the chmod at 632-635), so the driver is
+  # inside the shimmed, slow chmod right now. That ordering also means this case
+  # stays meaningful on a host with no watchdog binary: the refusal is later still,
+  # at 701-719, so the shim fires, the driver sleeps in it, and the SIGTERM below
+  # lands inside the protect window exactly as intended. Checked, because an
+  # earlier version of this comment claimed the opposite and a premise check was
+  # nearly added on the strength of it.
+  #
+  # Two assertions on every reached path, same construction as case T above. The
+  # shape was in this case's code too, and the mutation that shows it is forcing
+  # wait_lock_pid to report nothing: at v0.15.0 that drops this file from 48
+  # decisions to 46, one from each of T and U; with both made constant it stays 48.
   if [ -n "$DRV19" ]; then
-    # The lock is written immediately before the protect chmod, so the driver is
-    # inside the (shimmed, slow) chmod right now.
     kill -TERM "$DRV19" 2>/dev/null
     # `|| :` here threw the expiry away (review T-5), and the two assertions
     # below then ran regardless: on a timeout the driver is SIGKILLed mid-cleanup
@@ -340,10 +369,14 @@ SHIM
       kill -9 "$DRV19" 2>/dev/null
       FAIL=$((FAIL+1))
       echo "  FAIL: the driver outlived $(test_wait_budget)s after SIGTERM — this run never left the protect window, so it is not evidence about the restore in either direction (audit T-08)" >&2
+      FAIL=$((FAIL+1))
+      echo "  FAIL: cleanup idempotence is unevaluated — cleanup was never reached, and frozen.txt still holding 444 would say nothing about a second pass" >&2
     fi
   else
     FAIL=$((FAIL+1))
     echo "  FAIL: no lock pid appeared within $(test_wait_budget)s — this run never reached the protect window, so it is not evidence about the restore in either direction (audit T-08)" >&2
+    FAIL=$((FAIL+1))
+    echo "  FAIL: cleanup idempotence is unevaluated for the same reason — the protect chmod never ran" >&2
   fi
 else
   echo "  skip: setsid unavailable — protect-window test not run"
