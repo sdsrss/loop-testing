@@ -98,6 +98,15 @@ if [ "${LOOP_TESTING_DISABLE_LEDGER_GATE:-0}" = "1" ]; then
   cat > /dev/null; exit 0
 fi
 
+# Watchdog binary, same resolution as hooks/stop-gate.sh and the two drivers.
+# macOS ships no `timeout` and homebrew's coreutils installs `gtimeout`; checking
+# only the first name dropped the bounded call on exactly the host the drivers'
+# own fallback exists for. Empty = neither present, and the call below runs
+# unbounded as it did before.
+LT_TIMEOUT=""
+if command -v timeout >/dev/null 2>&1; then LT_TIMEOUT=timeout
+elif command -v gtimeout >/dev/null 2>&1; then LT_TIMEOUT=gtimeout; fi
+
 # Strip NUL bytes before the command substitution: bash warns on stderr about
 # them, and a PreToolUse hook that exits 0 with noise on stderr still shows that
 # noise to the model. No payload field can legitimately contain one. Both spellings
@@ -147,8 +156,8 @@ if [ "$ANCHOR_FAILED" = 0 ] && [ ! -d docs/looptesting ] && command -v git >/dev
   # named as its justification, and no timeout flag covers it. Kept because a
   # killed Stop hook resolves as ALLOW, so a fail-open path inside a fail-closed
   # gate is worth the one subprocess.
-  if command -v timeout >/dev/null 2>&1; then
-    GTOP=$(timeout -k 1 5 git rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$LT_TIMEOUT" ]; then
+    GTOP=$("$LT_TIMEOUT" -k 1 5 git rev-parse --show-toplevel 2>/dev/null)
   else
     GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
   fi

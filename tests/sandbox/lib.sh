@@ -63,6 +63,24 @@ mk_ws() {
   echo "$ws"
 }
 
+# git_has_worktree_repair — `git worktree repair` landed in git 2.30 (Jan 2021).
+# Two cases below use it as the USER's route back after relocating their own
+# worktree, and asserted on its exit status directly. On an older git that status
+# is "no such subcommand", and the suite reported "the user can no longer repair
+# their relocated worktree" — a verdict about this project's scripts produced by a
+# probe that could not run. The same shape this repo has already corrected three
+# times: a failed probe is not a verdict.
+git_has_worktree_repair() {
+  local v maj min
+  v=$(git --version 2>/dev/null) || return 1
+  v=${v#git version }; v=${v%% *}          # "2.39.3 (Apple Git-145)" -> "2.39.3"
+  maj=${v%%.*}; min=${v#*.}; min=${min%%.*}
+  case "$maj" in ''|*[!0-9]*) return 1 ;; esac
+  case "$min" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$maj" -gt 2 ] && return 0
+  [ "$maj" -eq 2 ] && [ "$min" -ge 30 ]
+}
+
 assert_eq() { # expected actual label
   if [ "$1" = "$2" ]; then PASS=$((PASS+1)); else
     FAIL=$((FAIL+1)); echo "  FAIL: $3 — expected [$1] got [$2]" >&2; fi

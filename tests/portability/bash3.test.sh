@@ -437,5 +437,116 @@ else
 fi
 rm -f "$probe"
 
+# --- macOS matrix: two GNU-only spellings that fail QUIETLY on BSD ------------
+# Neither is caught by the bash-3.2 scans above (both are valid bash), nor at the
+# linter's warning level. (Said that way on purpose: a comment line STARTING with
+# the linter's name is read as a directive, and this one was — two parse errors,
+# caught by the very gate this batch raised.) Both were live here, both measured:
+#
+#   * `touch -d @<epoch>` — BSD/macOS touch has no `-d @`. The usage error goes
+#     to a discarded stderr and the file keeps its CURRENT mtime. Of the three
+#     sites, two would have failed loudly and one would have PASSED: the case
+#     asserting that an old remnant still blocks when staleness is switched off
+#     gets the same block from a file that was never aged. Replaced by
+#     set_mtime_epoch, which tries the BSD form second and then verifies the
+#     timestamp actually moved.
+#   * `sed -i <script> <file>` — BSD sed reads the argument after -i as the
+#     BACKUP SUFFIX, so the script becomes the suffix and sed is left with none.
+#     The portable spelling attaches it: `-i.bak`, then remove the backup.
+#
+# Known under-match, stated rather than implied: a flag between the command and
+# the spelling hides it (`sed -E -i …`, `touch -c -d …`), as does any wrapper in
+# front. Like the bare-timeout scan above, this is a tripwire for the forms this
+# tree actually writes, not a parser.
+GNU_TOUCH_D='(^|[^[:alnum:]_.])touch[[:space:]]+-d[[:space:]]'
+BSD_SED_I='(^|[^[:alnum:]_.])sed[[:space:]]+-i[[:space:]]'
+mm_hits=""; mm_seen=0; mm_grepfail=""
+mm_list=$(mktemp "${TMPDIR:-/tmp}/loop-testing-mmlist.XXXXXX") || mm_list=""
+mm_err=$(mktemp "${TMPDIR:-/tmp}/loop-testing-mmerr.XXXXXX") || mm_err=""
+mm_find_rc=0
+if [ -n "$mm_list" ] && [ -n "$mm_err" ]; then
+  find skills tests hooks install -name '*.sh' -type f > "$mm_list" 2>"$mm_err"
+  mm_find_rc=$?
+  while IFS= read -r f; do
+    mm_seen=$((mm_seen+1))
+    for mm_pat in touch sed; do
+      # Exemptions by path, each with its reason — the same remedy the WS_ALL and
+      # bare-timeout gates use, for the same reason: a gate that reads source text
+      # and forgets to exempt itself fails the fix instead of the bug.
+      #   bash3.test.sh      — holds both patterns and both probes by construction
+      #   tests/hooks/lib.sh — DEFINES the portable replacement, so the GNU form
+      #                        lives there inside the fallback that wraps it
+      #   ledger-gate.test.sh— its fixtures are shell COMMAND STRINGS handed to the
+      #                        gate as input; `sed -i` there is data, never run.
+      #                        The cost is measured and stated: the exemption is by
+      #                        FILE, so an executed `sed -i` added to that file
+      #                        would be missed too (injected one — the scan stayed
+      #                        13/0). Not narrowed to a line-level exemption because
+      #                        the spelling occurs there three ways — inside JSON
+      #                        payloads, inside assertion LABELS, and in prose — so
+      #                        the filter would grow into the parser this tripwire
+      #                        is explicitly not. Counted, not tried: the three
+      #                        shapes are what `grep -n 'sed -i'` on that file
+      #                        returns, and no line-level filter was written.
+      case "$mm_pat:$f" in
+        *:tests/portability/bash3.test.sh)  continue ;;
+        touch:tests/hooks/lib.sh)           continue ;;
+        sed:tests/hooks/ledger-gate.test.sh) continue ;;
+      esac
+      case "$mm_pat" in
+        touch) mm_re="$GNU_TOUCH_D" ;;
+        sed)   mm_re="$BSD_SED_I" ;;
+      esac
+      # grep's STATUS separated from its output: rc 2 (unreadable file, rejected
+      # ERE) prints nothing and would otherwise read as a clean file.
+      mm_out=$(grep -nE "$mm_re" "$f" 2>/dev/null); mm_rc=$?
+      case "$mm_rc" in
+        0) mm_out=$(printf '%s\n' "$mm_out" | grep -v '^[0-9]*:[[:space:]]*#')
+           [ -n "$mm_out" ] && mm_hits="$mm_hits$(printf '%s\n' "$mm_out" | sed "s|^|  $f:|")
+" ;;
+        1) ;;
+        *) mm_grepfail="$mm_grepfail $f($mm_rc)" ;;
+      esac
+    done
+  done < "$mm_list"
+fi
+if [ "$mm_find_rc" -ne 0 ] || [ -s "$mm_err" ]; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the macOS-matrix scan's discovery failed (find rc $mm_find_rc$( [ -s "$mm_err" ] && printf ', stderr: %s' "$(head -1 "$mm_err")" )) — a subtree it cannot read contributes no files and reads as clean" >&2
+elif [ "$mm_seen" -eq 0 ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: the macOS-matrix scan read no files at all" >&2
+elif [ -n "$mm_grepfail" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: the macOS-matrix scan could not read:$mm_grepfail" >&2
+elif [ -n "$mm_hits" ]; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: GNU-only spellings that fail silently on BSD/macOS:" >&2
+  printf '%s' "$mm_hits" >&2
+else
+  PASS=$((PASS+1))
+fi
+rm -f "$mm_list" "$mm_err"
+
+# Positive and negative controls for both patterns. Assembled with %s so this
+# file holds no matching line of its own — the same device the bare-timeout probe
+# uses, and the reason this file is exempt from its own scan anyway.
+mm_probe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-mmprobe.XXXXXX")
+printf '%s -d "@123" f\ncd x; %s -d @1 f\n%s -i '"'"'s/a/b/'"'"' f\ncd x && %s -i '"'"'s/a/b/'"'"' f\n' \
+  touch touch sed sed > "$mm_probe"
+mm_pos=$(( $(grep -cE "$GNU_TOUCH_D" "$mm_probe") + $(grep -cE "$BSD_SED_I" "$mm_probe") ))
+printf '%s\n' \
+  'touch -t 202601011200.00 f' \
+  'touch -r "$ref" f' \
+  'sed -i.bak '"'"'s/a/b/'"'"' f' \
+  'set_mtime_epoch "$f" 123' \
+  'sed '"'"'s/a/b/'"'"' f > f.tmp && mv f.tmp f' > "$mm_probe"
+mm_neg=$(( $(grep -cE "$GNU_TOUCH_D" "$mm_probe") + $(grep -cE "$BSD_SED_I" "$mm_probe") ))
+rm -f "$mm_probe"
+if [ "${mm_pos:-0}" -eq 4 ] && [ "${mm_neg:-1}" -eq 0 ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "  FAIL: self-probe — the macOS-matrix patterns matched ${mm_pos:-?}/4 positives and ${mm_neg:-?}/0 negatives" >&2
+fi
+
 echo "bash3.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

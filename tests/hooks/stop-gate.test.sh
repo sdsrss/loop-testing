@@ -92,7 +92,7 @@ assert_eq "1" "$c" "counter stays 1 across progressing rounds (progress resets)"
 #    allow + disarm (a crashed run must not tax every future stop) (audit B7).
 WS8=$(mk_lt); track_ws "$WS8"
 arm "$WS8"; write_state "$WS8" RUNNING 2
-touch -d "@$(( $(date +%s) - 200000 ))" "$WS8/docs/looptesting/STATE.md"   # ~2.3 days old
+age_file "$WS8/docs/looptesting/STATE.md" 200000 "the stale-remnant path below"   # ~2.3 days old
 run_stop "$WS8" false; assert_rc $? 0 "stale RUNNING remnant -> allow stop"
 assert_absent "$WS8/$ACT" "stale remnant disarms the sentinel"
 
@@ -131,7 +131,10 @@ assert_eq "1" "$lc" "jq path resets counter on each fresh stop (HK-1)"
 #    `0` disable path was previously untested).
 WS12=$(mk_lt); track_ws "$WS12"
 arm "$WS12"; write_state "$WS12" RUNNING 2
-touch -d "@$(( $(date +%s) - 200000 ))" "$WS12/docs/looptesting/STATE.md"   # ~2.3 days old
+# The premise MUST be asserted here: this case blocks either way, so a file that
+# was never aged passes it for the ordinary reason and proves nothing about the
+# switch it is named for.
+age_file "$WS12/docs/looptesting/STATE.md" 200000 "GATE_STALE_SECONDS=0 has nothing to disable otherwise"   # ~2.3 days old
 ( cd "$WS12" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR LOOP_TESTING_GATE_STALE_SECONDS=0 bash "$STOP" ) >/dev/null 2>&1
 assert_rc $? 2 "GATE_STALE_SECONDS=0 disables disarm: old RUNNING remnant still blocks"
 assert_exists "$WS12/$ACT" "sentinel NOT disarmed when staleness is disabled"
@@ -179,7 +182,7 @@ assert_exists "$WS16/$ACT" "escape hatch leaves the sentinel in place (not a dis
 #    fail-closed block), so this only adds the aged-orphan release.
 WS17=$(mk_lt); track_ws "$WS17"
 arm "$WS17"   # deliberately NO STATE.md
-touch -d "@$(( $(date +%s) - 200000 ))" "$WS17/$ACT"   # ~2.3 days old
+age_file "$WS17/$ACT" 200000 "the stale-orphan-sentinel path below"   # ~2.3 days old
 run_stop "$WS17" false; assert_rc $? 0 "stale orphan .active (no STATE.md) -> allow stop (R59)"
 assert_absent "$WS17/$ACT" "stale orphan sentinel disarmed (R59)"
 
@@ -492,5 +495,29 @@ arm "$MONO6"; write_state "$MONO6" RUNNING 1
 ( cd "$MONO6/pkgs/app" && printf '{"stop_hook_active": false}' | CLAUDE_PROJECT_DIR="$MONO6/no-such-dir-here" bash "$STOP" ) >/dev/null 2>&1
 assert_rc $? 0 "an anchor that was supplied and did not resolve gains no authority (F3)"
 assert_exists "$MONO6/docs/looptesting/.active" "…and the sentinel of the repo it was standing in is untouched"
+
+# JJ. The macOS arm: no `timeout` on PATH, `gtimeout` in its place. Both bounded
+#     calls in this gate resolved the first name only and fell through to an
+#     UNBOUNDED call — on exactly the host the drivers' own fallback
+#     (unattended-loop.sh:681-682) exists to serve, so the two budgets this gate
+#     documents were not applied there and nothing said so. The claim under test
+#     is that the gate CHOOSES the binary: the shim records the call and then runs
+#     the command, leaving the rest of the run as it was.
+WSGT=$(mk_lt); track_ws "$WSGT"
+arm "$WSGT"; write_state "$WSGT" RUNNING 1
+GTFARM=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-gtfarm.XXXXXX"); track_ws "$GTFARM"
+mk_gtimeout_farm "$GTFARM"
+# The premise, asserted rather than assumed: a farm that still resolved `timeout`
+# would pass this case for the wrong reason, and one resolving neither would pass
+# nothing at all.
+if [ -z "$(PATH="$GTFARM" command -v timeout 2>/dev/null)" ] \
+   && [ -n "$(PATH="$GTFARM" command -v gtimeout 2>/dev/null)" ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: the synthesized macOS arm is not the host this case claims to synthesize" >&2
+fi
+( cd "$WSGT" && printf '{"stop_hook_active": false}' \
+  | env -u CLAUDE_PROJECT_DIR PATH="$GTFARM" bash "$STOP" ) >/dev/null 2>&1
+assert_exists "$GTFARM/gtimeout.calls" "with no timeout on PATH the gate bounds its STATE read with gtimeout"
 
 report "stop-gate.test.sh"
