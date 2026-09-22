@@ -6,6 +6,8 @@
 set -u
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Read by the four suites that source this lib, not here — that is what a lib is.
+# shellcheck disable=SC2034
 INSTALLER="$REPO_ROOT/install/install-codex.sh"
 
 _fails=0

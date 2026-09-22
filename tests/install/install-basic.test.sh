@@ -35,7 +35,7 @@ assert_contains "$out2" "CODEX_HOME" "and the variable that also fixes it"
 # not be "always refuse when --target is absent".
 home2="$(make_sandbox)"
 out3="$(env -u CODEX_HOME HOME="$home2" bash "$INSTALLER" 2>&1)"; rc3=$?
-assert_eq "$rc3" "0" "with HOME set the default destination still installs"
+assert_eq "$rc3" "0" "with HOME set the default destination still installs — output: $out3"
 assert_path "$home2/.codex/skills/loop-testing/SKILL.md" "and it lands under \$HOME/.codex/skills"
 rm -rf "$home2"
 

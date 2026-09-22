@@ -140,6 +140,10 @@ if printf '%s' "$err" | grep -q 'gate inactive'; then PASS=$((PASS+1)); else
 WS20=$(mk_lt); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WS10" "$WS11" "$WS12" "$WS13" "$WS14" "$WS15" "$WS16" "$WS17" "$OTHER17" "$WS18" "$WS19" "$BINL" "$WS20"' EXIT
 printf '# ISSUES\n\n### ISSUE-002 | P1 | OPEN | dup ids\n### ISSUE-003 | P1 | FIXED_UNVERIFIED | crash\n' > "$WS20/docs/looptesting/ISSUES.md"
 echo "replayed ISSUE-003: repro cmd -> pass" > "$WS20/docs/looptesting/runs/round-1.md"
+# stderr-only capture; the redirect order is deliberate (see run_stop_err in
+# tests/hooks/lib.sh) — reversing it as shellcheck suggests returns an empty
+# string for every case below.
+# shellcheck disable=SC2069
 run_ledger_err() { local ws="$1" json="$2"; ( cd "$ws" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" 2>&1 >/dev/null ); }
 
 # 20. H-01: a READ-ONLY grep that mentions the ledger path, an ID, VERIFIED and a
@@ -195,7 +199,8 @@ run_ledger "$WS20" "$json"; assert_rc $? 2 "H-05 control: leading-column ID with
 #    a deliberate, documented choice (see the residual list in the hook header). ──
 # Same workspace shape as the block above: ISSUE-002 has NO footprint,
 # ISSUE-003 HAS one.
-L20="docs/looptesting/ISSUES.md"
+# (the ledger path is written inline in each case's JSON below; a variable holding
+# it was never read and only looked like one of them was parameterised.)
 
 # 25. P0: one extra character must not walk past the in-place rule. The old span
 #     between the -i flag and the path stopped at `;` and `&`, so a single

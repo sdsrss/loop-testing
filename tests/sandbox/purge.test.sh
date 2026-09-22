@@ -78,10 +78,10 @@ if ( cd "$REPO" && git rev-parse -q --verify refs/heads/qa/loop-testing >/dev/nu
 # same verdict rather than a fail-closed exit 3 — the route out stays open until the
 # user harvests. (Exit 3 on a genuinely absent marker is covered by case G.)
 OUT_C=$( cd "$REPO" && bash "$CLEAN" --purge 2>&1 ); rc_c=$?
-assert_eq "0" "$rc_c" "second --purge is re-runnable while the branch is kept"
+assert_eq "0" "$rc_c" "second --purge is re-runnable while the branch is kept — output: $OUT_C"
 assert_exists "$REPO/docs/looptesting/.sandbox/ownership.env" "and the marker is still there"
 OUT_C2=$( cd "$REPO" && bash "$CLEAN" --purge --discard-fixes 2>&1 ); rc_c2=$?
-assert_eq "0" "$rc_c2" "the documented --discard-fixes follow-up completes"
+assert_eq "0" "$rc_c2" "the documented --discard-fixes follow-up completes — output: $OUT_C2"
 assert_absent "$REPO/docs/looptesting" "and only then is the evidence dir removed"
 
 # --- D. terminal + fix commits + --discard-fixes: branch deleted too ----------
@@ -264,7 +264,13 @@ REPOD="$WSD/proj"
 ( cd "$REPOD" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 ( cd "$REPOD" && bash "$CLEAN" ) >/dev/null 2>&1
 (
-  cd "$REPOD"
+  # Guarded: this subshell creates a branch and a tag BY NAME. On a failed `cd` it
+  # would create both in the caller's cwd, which when run-all.sh drives the suite
+  # is this repository — `qa/loop-testing` and `qa-baseline` written into the real
+  # tree, by a suite whose own header says it must only ever touch a throwaway
+  # workspace. The `|| exit 1` is what stops a fixture-setup failure from becoming
+  # a write outside the fixture.
+  cd "$REPOD" || exit 1
   git branch -D qa/loop-testing >/dev/null 2>&1
   git tag -d qa-baseline >/dev/null 2>&1
   git branch qa/loop-testing            # the user's own ref, same name, at HEAD

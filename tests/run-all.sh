@@ -25,7 +25,19 @@ if command -v shellcheck >/dev/null 2>&1; then
   # (audit T-09) — a runner that cannot run is worse than any test it would skip.
   sh_files=()
   while IFS= read -r f; do sh_files+=("$f"); done < <(find skills tests hooks install -name '*.sh' -type f 2>/dev/null)
-  if [ "${#sh_files[@]}" -gt 0 ] && shellcheck -S error -e SC1091 "${sh_files[@]}"; then
+  # `-S warning`, raised from `-S error`. The backlog it was holding back was 14
+  # findings, every one of them under tests/ — the shipped scripts were already
+  # clean at this level, so the gate cost nothing there and was buying silence
+  # here. Two were real: an unchecked `cd proj` in the mk_ws helper whose own
+  # comment describes that exact failure two lines above it, and an unchecked
+  # `cd "$REPOD"` in a subshell that then creates a branch and a tag BY NAME —
+  # on a failed cd, into this repository. The rest were dead variables, captures
+  # nothing asserted, and four shellcheck false positives now carrying a
+  # `disable=` with the reason written next to it.
+  #
+  # SC1091 stays excluded (sourced paths shellcheck cannot resolve statically);
+  # its non-constant sibling SC1090 is disabled at the one site that has one.
+  if [ "${#sh_files[@]}" -gt 0 ] && shellcheck -S warning -e SC1091 "${sh_files[@]}"; then
     echo "  ok: no errors"
   else overall=1; fi
 else
