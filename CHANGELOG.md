@@ -64,15 +64,84 @@ Each condition above now produces a named GATE FAIL.
   matched that echo, passing against the unfixed runner over a run in which the gate
   printed nothing at all.
 
+### Batch C — the structural four (audit roadmap §4)
+
+The roadmap held these back as "large blast radius, high regression risk, give it
+its own release". They are together here because three of the four turned out to
+be the same finding at different distances: a rule that exists in two places is a
+rule you have to remember to fix twice.
+
+- **test(shellcheck)**: the gate goes `-S error` → `-S warning`. The backlog behind
+  it was 14 findings and every one was under `tests/` — the shipped scripts were
+  already clean at that level, so the gate cost nothing where the product lives and
+  was buying silence in the suites that guard it. Two were real, both the unchecked
+  `cd` this repo has an incident for: `mk_ws` guards `cd "$ws"` and then leaves
+  `mkdir proj` / `cd proj` unguarded, two lines below the comment explaining that
+  exact failure (measured with a file at `$ws/proj`: `git init` ran in `$ws`); and
+  `purge.test.sh` creates `qa/loop-testing` and `qa-baseline` BY NAME in a subshell
+  behind an unchecked `cd`, which on failure creates both in whatever repository is
+  running the suite. The other twelve: two dead variables, five captures nothing
+  asserted, five false positives now carrying a `disable=` with the reason beside
+  it. Gate verified end to end — one unguarded `cd` injected reads "ok: no errors"
+  / ALL GREEN / exit 0 at `-S error` and SC2164 / FAILED / exit 1 at `-S warning`.
+- **fix(portability)**: the macOS arm. Three of them are in SHIPPED code: both hooks
+  bounded their subprocesses with `timeout` and checked only that name, so on macOS
+  + homebrew coreutils — the exact host the drivers' own `gtimeout` fallback exists
+  for — `command -v` failed and both took the UNBOUNDED branch, with the budgets
+  their headers document not applied and nothing saying so. Also `touch -d @epoch`
+  ×3 (BSD touch has no `-d @`; of the three sites two fail loudly and the third,
+  asserting that an OLD remnant still blocks when staleness is off, would have
+  PASSED on macOS over a file that was never aged), bare `sed -i` ×1 (BSD reads the
+  next argument as the backup suffix), and `git worktree repair` ×2 asserted
+  directly, so an older git reported "the user can no longer repair their relocated
+  worktree" — a verdict about this project from a probe that could not run. A scan
+  over every tracked `*.sh` now catches the first two shapes; its file-level
+  exemptions and what they cost are written down in it. **Not verified on macOS**:
+  no BSD host was available, so the three BSD branches are reasoned and scanned,
+  not executed.
+- **refactor**: `skills/loop-testing/scripts/lib.sh`. `sandbox-setup.sh` and
+  `sandbox-clean.sh` held 195 lines of byte-identical marker readers and
+  worktree-identity logic; the two drivers held 169 more, including the 73-line
+  `session_err_redact` whose leak of nine PascalCase credential shapes had to be
+  repaired twice because a second copy existed. Both pairs now source one file,
+  fail-closed — clean aborts at exit 1 "deleting nothing", the drivers at exit 2
+  before taking a lock. Verified against a real install: lib.sh lands beside the
+  scripts, and removing it from the install produces those refusals rather than a
+  partial run. One correction travelled with the move: both copies of the
+  `wt_ownership` header listed five verdicts where the code prints six, with both
+  callers already handling the sixth. What did NOT move is measured, not assumed —
+  a dozen further driver functions differ only in comment wording, formatting, and
+  the driver's own name in messages; `round_of`, `issue_count` and `child_alive`
+  each carry the same behaviour on both sides.
+- **docs(skill)**: `issue-rules.md` §7 becomes a transition table. As an arrow
+  sketch it read as "only an issue somebody worked on can be parked", while
+  `exit-and-report.md` criterion 3 requires every not-VERIFIED P0-P2 to land in one
+  of the four parking states — so for an untouched P1 the two documents ordered
+  opposite things and criterion 3 was unsatisfiable. The table states its own
+  closure and defines the two transitions the sketch left to guesswork (a parking
+  state reopens to FIXING when its recorded next step becomes possible; VERIFIED is
+  terminal and a regression opens a new entry). `SKILL.md` no longer tells the model
+  the stop-gate "强制续跑": MAX_BLOCKS is 3, the platform force-allows at 8, and the
+  gate is inert without its sentinel. Both gates now carry the framing
+  `ledger-gate.sh`'s own header requires (audit K-04).
+
 ```
-TOTAL: 44 suites, 1857 assertions, 0 failed, 0 skipped, 0 case-skips (space-free $TMPDIR; timeout; node present)
-TOTAL: 44 suites, 1333 assertions, 0 failed, 11 skipped, 5 case-skips (space-free $TMPDIR; no timeout/gtimeout; node present)
-TOTAL: 44 suites, 1852 assertions, 5 failed, 0 skipped, 0 case-skips (spaced $TMPDIR; timeout; node present)
+TOTAL: 44 suites, 1873 assertions, 0 failed, 0 skipped, 0 case-skips (space-free $TMPDIR; timeout; node present)
+TOTAL: 44 suites, 1349 assertions, 0 failed, 11 skipped, 5 case-skips (space-free $TMPDIR; no timeout/gtimeout; node present)
+TOTAL: 44 suites, 1868 assertions, 5 failed, 0 skipped, 0 case-skips (spaced $TMPDIR; timeout; node present)
 ```
 
-bash3.test.sh goes 12 assertions to 11: two added, three removed with the control.
-run-all-precondition.test.sh goes 52 to 70, and 13 of the 18 fail against the runner
-at `5859378` — restoring the defect is the mutation check for each of them.
+bash3.test.sh goes 12 assertions to 11 and then to 13 with the macOS-matrix scan
+and its controls. run-all-precondition.test.sh goes 52 to 70, and 13 of the 18 fail
+against the runner at `5859378` — restoring the defect is the mutation check for
+each of them.
+
+The third line is unchanged in kind: the same five `update-check` failures under a
+spaced `$TMPDIR` and the same two session-stderr leak gates (24 and 25 directories),
+none of them touched by this batch and all three still open.
+
+**This batch has had no independent review round.** Every release here that skipped
+one had defects found in it afterwards, three times inside the repairs themselves.
 
 ## 0.16.0 — 2026-09-22
 
