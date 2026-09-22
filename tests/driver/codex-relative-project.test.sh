@@ -76,4 +76,15 @@ printf '# STATE\nround: 0\nconverged_streak: 0\nstatus: RUNNING\nmax_rounds: 12\
 assert_rc $? 0 "relative --codex-bin: the session finds the binary and the loop converges (exit 0)"
 assert_file_contains "$WS4/proj/docs/looptesting/stub-cwd.txt" "C-target: $WS4/proj" "relative --codex-bin: the stub actually ran"
 
+# 5. `--codex-bin lnk/../bin/codex`: the kernel resolves `..` through the link's
+#    target, a logical `cd` textually. The decoy sits at the textual path.
+WS5=$(mk_proj); trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5"' EXIT
+mkdir -p "$WS5/proj/docs/looptesting" "$WS5/real/x" "$WS5/real/bin" "$WS5/bin"
+cp "$WS/stub-codex.sh" "$WS5/real/bin/codex"; ln -s "$WS5/real/x" "$WS5/lnk"
+printf '#!/usr/bin/env bash\n: > "%s/decoy-ran"; exit 1\n' "$WS5" > "$WS5/bin/codex"; chmod +x "$WS5/bin/codex"
+printf '# STATE\nround: 0\nconverged_streak: 0\nstatus: RUNNING\nmax_rounds: 12\n' > "$WS5/proj/docs/looptesting/STATE.md"
+( cd "$WS5" && bash "$CODEX_DRIVER" --project proj --codex-bin lnk/../bin/codex --no-protect --max-sessions 2 ) >/dev/null 2>&1
+assert_rc $? 0 "--codex-bin lnk/../bin/codex runs the file the kernel resolves (exit 0)"
+[ -e "$WS5/decoy-ran" ] && { FAIL=$((FAIL+1)); echo "  FAIL: --codex-bin lnk/../bin/codex ran the textual path" >&2; } || PASS=$((PASS+1))
+
 report "codex-relative-project.test.sh"

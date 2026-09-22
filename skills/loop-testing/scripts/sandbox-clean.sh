@@ -63,10 +63,10 @@ set -u
 # the exit codes above): a clean that cannot read its own helpers must not go on
 # to decide what to delete.
 # No path this script builds ever wants CDPATH. `cd` ECHOES its target into the
-# command substitution whenever CDPATH is consulted — for a bare-relative name,
-# which includes a relative --project and a relative --worktree-path, not just
-# the resolver below. Guarding site by site missed both, so it is unset once,
-# before the first `cd`. The resolver keeps its own `CDPATH=''` prefixes.
+# command substitution whenever CDPATH is consulted, which it is for ANY
+# bare-relative name — a path the user typed as much as the resolver's. Guarding
+# site by site missed two of those, so it is unset once, before the first `cd`.
+# The resolver keeps its own `CDPATH=''` prefixes.
 unset CDPATH
 # Resolve THIS script's real directory before looking for lib.sh beside it.
 # Two shapes the plain `cd "$(dirname …)" && pwd` form got wrong, both measured

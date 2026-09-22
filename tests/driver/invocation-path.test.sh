@@ -79,10 +79,13 @@ rm -rf "${ws:?}"
 # where the user typed it. Nonexistent there, so no plugin and no hooks, under
 # bypassPermissions. It must be resolved against the invocation cwd; and one
 # that is not a directory is a usage error, not a session without hooks.
-ws=$(mk_proj); write_state "$ws" RUNNING 0; stub=$(write_stub "$ws")
-( cd "$(dirname "$REPO_ROOT")" && STUB_CONVERGE_AT=1 bash "$DRIVER" --project "$ws" \
-    --plugin-dir "$(basename "$REPO_ROOT")" --claude-bin "$stub" --max-sessions 1 --no-watchdog ) >/dev/null 2>&1
-assert_file_contains "$ws/docs/looptesting/driver.log" "$WANT" \
+# The given dir must NOT be the default one, or a driver that ignored the flag
+# would pass: the repo root is what it falls back to.
+ws=$(mk_proj); mkdir -p "$ws/sub/docs/looptesting" "$ws/plug/.claude-plugin"
+write_state "$ws/sub" RUNNING 0; stub=$(write_stub "$ws")
+( cd "$ws" && STUB_CONVERGE_AT=1 bash "$DRIVER" --project sub \
+    --plugin-dir plug --claude-bin "$stub" --max-sessions 1 --no-watchdog ) >/dev/null 2>&1
+assert_file_contains "$ws/sub/docs/looptesting/driver.log" "plugin_dir=$(cd -P "$ws/plug" && pwd) bin=" \
   "relative --plugin-dir is resolved against the invocation cwd"
 rm -rf "${ws:?}"
 ws=$(mk_proj); write_state "$ws" RUNNING 0; stub=$(write_stub "$ws")
@@ -102,6 +105,33 @@ stub=$(write_stub "$ws"); mv "$stub" "$ws/bin/claude"
 assert_eq 0 "$rc" "relative --claude-bin: the session finds the binary (exit 0)"
 assert_file_contains "$ws/sub/docs/looptesting/STATE.md" "status: CONVERGED" \
   "relative --claude-bin: the stub actually ran in the project"
+rm -rf "${ws:?}"
+
+# `lnk/../bin/claude`: the kernel and `command -v` resolve `..` through the
+# link's TARGET; a logical `cd` resolves it textually. Two different files — a
+# preflight that checked one and sessions that ran the other. The decoy sits at
+# the textual path and fails loudly.
+ws=$(mk_proj); mkdir -p "$ws/sub/docs/looptesting" "$ws/real/x" "$ws/real/bin" "$ws/bin"
+write_state "$ws/sub" RUNNING 0; stub=$(write_stub "$ws"); mv "$stub" "$ws/real/bin/claude"
+ln -s "$ws/real/x" "$ws/lnk"
+printf '#!/usr/bin/env bash\n: > "%s/decoy-ran"; exit 1\n' "$ws" > "$ws/bin/claude"; chmod +x "$ws/bin/claude"
+( cd "$ws" && STUB_CONVERGE_AT=1 bash "$DRIVER" --project sub --claude-bin lnk/../bin/claude \
+    --max-sessions 2 --no-watchdog ) >/dev/null 2>&1
+assert_file_contains "$ws/sub/docs/looptesting/STATE.md" "status: CONVERGED" \
+  "--claude-bin lnk/../bin/claude runs the file the kernel resolves"
+[ -e "$ws/decoy-ran" ] && { FAIL=$((FAIL+1)); echo "  FAIL: --claude-bin lnk/../bin/claude ran the textual path, not the kernel's" >&2; } || PASS=$((PASS+1))
+rm -rf "${ws:?}"
+
+# Same for --plugin-dir: the session's claude resolves `lnk/../plug` through the
+# link's target, so the dir recorded (and checked) must be that one. BOTH sides
+# must exist: when the textual path is missing, bash's logical `cd` silently
+# retries physically and the case cannot tell the two resolutions apart.
+ws=$(mk_proj); mkdir -p "$ws/sub/docs/looptesting" "$ws/real/x" "$ws/real/plug/.claude-plugin" "$ws/plug"
+write_state "$ws/sub" RUNNING 0; stub=$(write_stub "$ws"); ln -s "$ws/real/x" "$ws/lnk"
+( cd "$ws" && STUB_CONVERGE_AT=1 bash "$DRIVER" --project sub --plugin-dir lnk/../plug \
+    --claude-bin "$stub" --max-sessions 1 --no-watchdog ) >/dev/null 2>&1
+assert_file_contains "$ws/sub/docs/looptesting/driver.log" "plugin_dir=$(cd -P "$ws/real/plug" && pwd) bin=" \
+  "--plugin-dir lnk/../plug names the directory the kernel resolves"
 rm -rf "${ws:?}"
 
 report "invocation-path.test.sh"

@@ -76,10 +76,10 @@ set -u
 # NOT move. Fail-closed: a driver that cannot read its own helpers must not go on
 # to take a lock and launch full-permission sessions.
 # No path this script builds ever wants CDPATH. `cd` ECHOES its target into the
-# command substitution whenever CDPATH is consulted — for a bare-relative name,
-# which includes a relative --project and a relative --worktree-path, not just
-# the resolver below. Guarding site by site missed both, so it is unset once,
-# before the first `cd`. The resolver keeps its own `CDPATH=''` prefixes.
+# command substitution whenever CDPATH is consulted, which it is for ANY
+# bare-relative name — a path the user typed as much as the resolver's. Guarding
+# site by site missed two of those, so it is unset once, before the first `cd`.
+# The resolver keeps its own `CDPATH=''` prefixes.
 unset CDPATH
 # Resolve THIS script's real directory before looking for lib.sh beside it.
 # Two shapes the plain `cd "$(dirname …)" && pwd` form got wrong, both measured
@@ -173,17 +173,18 @@ done
 # else — usually nothing, and a session with no plugin loads no hooks, under
 # bypassPermissions. Not a directory is a usage error, before any session.
 if [ -n "$PLUGIN_DIR" ]; then
-  _pd="$(cd "$PLUGIN_DIR" 2>/dev/null && pwd)" || die "--plugin-dir is not a directory: $PLUGIN_DIR"
+  _pd="$(cd -P "$PLUGIN_DIR" 2>/dev/null && pwd)" || die "--plugin-dir is not a directory this user can enter: $PLUGIN_DIR"
   PLUGIN_DIR="$_pd"; unset _pd
 fi
 # A relative --claude-bin with a slash is resolved HERE, against the cwd it was typed
 # in: the preflight below runs here and passes, but every session execs it after
 # `cd "$PROJECT"`, where it names nothing — each session then failed and the
 # driver reported NO_PROGRESS. A bare name stays a PATH lookup. An unresolvable
-# directory is left as given, so the preflight's refusal names it.
+# directory is left as given, so the preflight's refusal names it. `cd -P`: the
+# kernel resolves `lnk/../bin` through the link's target, and so must this.
 case "$CLAUDE_BIN" in
   /*) ;;
-  */*) _bd="$(cd "$(dirname "$CLAUDE_BIN")" 2>/dev/null && pwd)" && CLAUDE_BIN="$_bd/$(basename "$CLAUDE_BIN")"; unset _bd ;;
+  */*) _bd="$(cd -P "$(dirname "$CLAUDE_BIN")" 2>/dev/null && pwd)" && CLAUDE_BIN="$_bd/$(basename "$CLAUDE_BIN")"; unset _bd ;;
 esac
 # Default plugin-dir = this plugin's repo root (scripts/ -> loop-testing/ -> skills/ -> root).
 [ -n "$PLUGIN_DIR" ] || PLUGIN_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
