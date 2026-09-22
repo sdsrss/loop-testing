@@ -14,14 +14,18 @@
 # with a message that printed the token it was refusing, CR invisible.
 #
 # So the breaks live here now rather than in a scratch directory. Each scenario
-# runs the REAL tests/run-all.sh against a fixture repo and asserts two things:
-# that the output names the right cause, and that the verdict is right. Naming the
-# cause matters as much as the verdict — three of the four defects above produced
-# a correct FAILED for a reason the output stated wrongly or not at all.
+# runs the REAL tests/run-all.sh against a fixture repo and asserts three things:
+# that the output names the right cause, that the verdict is right, and that the
+# EXIT STATUS agrees with the verdict. Naming the cause matters as much as the
+# verdict — three of the four defects above produced a correct FAILED for a reason
+# the output stated wrongly or not at all — and the status matters most of all,
+# because it is the only part of this output that CI reads. A second review round
+# found that the first version of this file asserted neither the status nor an
+# anchored needle, so `exit 0` substituted for `exit "$overall"` left it green.
 #
-# Deliberately asserted on TEXT and VERDICT, never on totals: the fixture's
-# numbers depend on whether the host has node, and a suite that pins them would
-# fail on a host it has nothing to say about.
+# Asserted on text, verdict and status, never on the fixture's TOTALS: those depend
+# on whether the host has node, and a suite that pinned them would fail on a host
+# it has nothing to say about.
 set -u
 cd "$(cd "$(dirname "$0")" && pwd)/../.." || { echo "FAILED: cannot cd to repo root"; exit 1; }
 
@@ -107,7 +111,7 @@ run_inner() {
     [ "$mode" = farm ] && PATH="$FARM"
     export PATH
     # The inner runner exports a $TMPDIR of its own and cleans it up, but it
-    # derives it from ours — so fourteen inner runs would each create and remove a
+    # derives it from ours — so sixteen inner runs would each create and remove a
     # root inside the root the OUTER runner is watching, and one failed cleanup
     # would be reported against this suite. Give them somewhere of their own.
     TMPDIR="$WORK/tmp"
@@ -134,37 +138,59 @@ run_inner() {
   )
 }
 
-# scenario <label> <mode> <expected-verdict> <expected-cause> [env…]
-# Two assertions, always: the cause and the verdict. On failure the inner output
-# is printed indented by four spaces, which keeps its own tally and `skip:` lines
-# from being read as this suite's by the runner one level up.
+# scenario <label> <mode> <expected-exit 0|1> <verdict-ERE> <cause-ERE> [env…]
+#
+# THREE assertions, always: the cause, the verdict, and the inner run's EXIT
+# STATUS. The status is the addition that matters — without it every scenario
+# checked only what the runner SAYS, while the code under test says the status is
+# the only part CI reads. Mutating `exit "$overall"` to `exit 0` in run-all.sh left
+# this file 33/0 green over a run that had printed every FAILED string.
+#
+# Needles are EREs matched with grep, not `case` globs. As globs they were
+# unanchored substrings, and `SKIP: …` is a substring of `NOT A SKIP: …`, so the
+# accepted-skip scenario would have passed on the line that means the opposite.
+# `1` for the expected exit means "any non-zero": the distinction that matters is
+# green against not-green, and pinning a specific code would tie this file to
+# whichever gate fired first.
+#
+# On failure the inner output is printed indented by four spaces, which keeps its
+# own tally and `skip:` lines from being read as this suite's by the runner one
+# level up.
 scenario() {
-  local label="$1" mode="$2" verdict="$3" cause="$4"; shift 4
-  local out
-  out=$(run_inner "$mode" "$@")
-  case "$out" in
-    *"$cause"*) PASS=$((PASS+1)) ;;
-    *) FAIL=$((FAIL+1))
-       echo "  FAIL: $label — output does not name the cause [$cause]" >&2
-       printf '%s\n' "$out" | sed 's/^/    /' >&2 ;;
-  esac
-  case "$out" in
-    *"$verdict"*) PASS=$((PASS+1)) ;;
-    *) FAIL=$((FAIL+1))
-       echo "  FAIL: $label — verdict is not [$verdict]" >&2
-       printf '%s\n' "$out" | sed 's/^/    /' >&2 ;;
-  esac
+  local label="$1" mode="$2" want_rc="$3" vre="$4" cre="$5"; shift 5
+  local out rc
+  out=$(run_inner "$mode" "$@"); rc=$?
+  if printf '%s\n' "$out" | grep -qE -- "$cre"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "  FAIL: $label — output does not name the cause [$cre]" >&2
+    printf '%s\n' "$out" | sed 's/^/    /' >&2
+  fi
+  if printf '%s\n' "$out" | grep -qE -- "$vre"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "  FAIL: $label — verdict is not [$vre]" >&2
+    printf '%s\n' "$out" | sed 's/^/    /' >&2
+  fi
+  if { [ "$want_rc" -eq 0 ] && [ "$rc" -eq 0 ]; } || { [ "$want_rc" -ne 0 ] && [ "$rc" -ne 0 ]; }; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "  FAIL: $label — exit status $rc, wanted $( [ "$want_rc" -eq 0 ] && echo 0 || echo 'non-zero' )" >&2
+  fi
 }
 
 # --- the five ways to break the protocol, each fail-closed --------------------
 printf '#!/usr/bin/env bash\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 0\n' > "$MUT"
-scenario "declared but exited 0" host "FAILED" "but exited 0, not 77"
+scenario "declared but exited 0" host 1 '^FAILED$' "but exited 0, not 77"
 
 printf '#!/usr/bin/env bash\necho nothing\nexit 77\n' > "$MUT"
-scenario "exited 77 with no declaration" host "FAILED" "exited 77 (skip) but declared no precondition"
+scenario "exited 77 with no declaration" host 1 '^FAILED$' "exited 77 \\(skip\\) but declared no precondition"
 
 printf '#!/usr/bin/env bash\necho "PRECONDITION NOT MET: no-such-token"\nexit 77\n' > "$MUT"
-scenario "unknown token" farm "FAILED" "declared an unknown precondition"
+scenario "unknown token" farm 1 '^FAILED$' "declared an unknown precondition \\[no-such-token\\]"
 
 # Premise-guarded: this is the one scenario whose subject is the HOST having a
 # watchdog binary, and this file runs on the arm where it does not. Counting
@@ -172,13 +198,13 @@ scenario "unknown token" farm "FAILED" "declared an unknown precondition"
 # to say about. The `skip:` line is what the runner's case-skips field counts.
 if [ -n "$TIMEOUT_BIN" ]; then
   printf '#!/usr/bin/env bash\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
-  scenario "claimed on a host that has one" host "FAILED" "but $TIMEOUT_BIN is on PATH"
+  scenario "claimed on a host that has one" host 1 '^FAILED$' "but $TIMEOUT_BIN is on PATH"
 else
   echo "  skip: no timeout/gtimeout on PATH — the refusal of a false watchdog claim needs a host that has one"
 fi
 
 printf '#!/usr/bin/env bash\necho "mut.test.sh: 9 passed, 4 failed"\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
-scenario "skipped yet reported assertions" farm "FAILED" "but also reported assertions"
+scenario "skipped yet reported assertions" farm 1 '^FAILED$' "but also reported assertions"
 
 # The two dodges that made the arm above pass VACUOUSLY. The runner's tally regex
 # is anchored and space-free, so a suite whose tally it cannot parse left `tally`
@@ -187,42 +213,50 @@ scenario "skipped yet reported assertions" farm "FAILED" "but also reported asse
 # shape is reachable in this tree today, which is exactly why they belong here: the
 # thing that made them unreachable is a naming habit, not a check.
 printf '#!/usr/bin/env bash\necho "  FAIL: case one — expected rc 5 got 2"\necho "atk suite: 9 passed, 4 failed"\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
-scenario "a tally with a space in its name buys no skip" farm "FAILED" "carries case results"
+scenario "a tally with a space in its name buys no skip" farm 1 '^FAILED$' "carries case results"
 
 printf '#!/usr/bin/env bash\necho "  FAIL: case one — expected rc 5 got 2"\necho "  atk: 9 passed, 4 failed"\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
-scenario "an indented tally buys no skip" farm "FAILED" "carries case results"
+scenario "an indented tally buys no skip" farm 1 '^FAILED$' "carries case results"
+
+# The third dodge, and the one the residual scan first missed: a suite that ran
+# cases and PASSED them. Its output carries no `FAIL:` and no tally, only the
+# `  ok: <case>` lines this tree uses for a passing case — so the scan looked for
+# failures and found none, and the skip was honoured over a run that had executed
+# its whole fixture. Nothing covered it, which is how it survived a review round.
+printf '#!/usr/bin/env bash\necho "  ok: case one ran and passed"\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
+scenario "a suite that ran cases and passed them buys no skip" farm 1 '^FAILED$' "carries case results"
 
 # --- and the four repairs the review produced --------------------------------
 # The failures of a rejected claim must reach the TOTAL line. This is the defect
 # that made the runner under-report failures it had already printed, so the
 # assertion is on the number, not on a message.
 printf '#!/usr/bin/env bash\necho "mut.test.sh: 9 passed, 4 failed"\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
-scenario "a rejected claim still counts its failures" farm ", 4 failed," "but also reported assertions"
+scenario "a rejected claim still counts its failures" farm 1 "^TOTAL:.*, 4 failed," "but also reported assertions"
 
 printf '#!/usr/bin/env bash\necho "mut.test.sh: 6 passed, 0 failed"\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 0\n' > "$MUT"
-scenario "a rejected claim is not announced ok" host "NOT A SKIP" "but exited 0, not 77"
+scenario "a rejected claim is not announced ok" host 1 "^  NOT A SKIP: " "but exited 0, not 77"
 
 printf '#!/usr/bin/env bash\necho "PRECONDITION NOT MET: watchdog-binary"\necho "PRECONDITION NOT MET: no-such-token"\nexit 77\n' > "$MUT"
-scenario "two declarations" farm "FAILED" "precondition declarations"
+scenario "two declarations" farm 1 '^FAILED$' "printed 2 precondition declarations"
 
 printf '#!/usr/bin/env bash\nprintf "PRECONDITION NOT MET: watchdog-binary\\r\\n"\nexit 77\n' > "$MUT"
-scenario "a CR in the token is shown, not hidden" farm "FAILED" 'watchdog-binary\r'
+scenario "a CR in the token is shown, not hidden" farm 1 '^FAILED$' 'watchdog-binary\\r'
 
 # --- the honest skip, and what it costs --------------------------------------
 # A correct skip is verified and counted — and by default it still fails the run,
 # because the exit status is the only part of this output that CI reads.
 printf '#!/usr/bin/env bash\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
-scenario "a correct skip is honoured" farm "SKIP: tests/fake/mut.test.sh" "1 skipped"
-scenario "an unacknowledged skip fails the run" farm "FAILED" "did not run on this host"
-scenario "acknowledged, the same run is green" farm "ALL GREEN (1 suite(s) skipped" "1 skipped" \
+scenario "a correct skip is honoured" farm 1 "^  SKIP: tests/fake/mut\\.test\\.sh" "^TOTAL:.*, 1 skipped,"
+scenario "an unacknowledged skip fails the run" farm 1 '^FAILED$' "did not run on this host"
+scenario "acknowledged, the same run is green" farm 0 '^ALL GREEN \(1 suite\(s\) skipped' '^TOTAL:.*, 1 skipped,' \
   LOOP_TESTING_ALLOW_SKIP=1
 # Fail-closed on the acknowledgement itself: any value but 1 leaves it refused.
-scenario "a mistyped acknowledgement is refused" farm "FAILED" "did not run on this host" \
+scenario "a mistyped acknowledgement is refused" farm 1 '^FAILED$' 'did not run on this host' \
   LOOP_TESTING_ALLOW_SKIP=yes
 
 # --- and the control: an ordinary suite is untouched by all of it -------------
 printf '#!/usr/bin/env bash\necho "mut.test.sh: 2 passed, 0 failed"\n' > "$MUT"
-scenario "an ordinary suite still passes" host "ALL GREEN" ", 0 skipped, 0 case-skips"
+scenario "an ordinary suite still passes" host 0 '^ALL GREEN$' "^TOTAL:.*, 0 skipped, 0 case-skips"
 
 echo "run-all-precondition.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
