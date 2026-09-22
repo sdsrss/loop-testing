@@ -12,6 +12,12 @@ STOP="$REPO_ROOT/hooks/stop-gate.sh"
 LEDGER="$REPO_ROOT/hooks/ledger-gate.sh"
 export STOP LEDGER
 
+# TIMEOUT_BIN + bounded(): stop-gate's fail-open cases use a wall-clock bound AS
+# the assertion (rc 124 = the platform would have killed the hook = ALLOW), and
+# they were calling bare `timeout`, which returns 127 on a host that has only
+# `gtimeout` or neither. Same shape as review T-D, six sites it did not reach.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh"
+
 # The hooks anchor on $CLAUDE_PROJECT_DIR before anything else, and Claude Code
 # sets it for every hook it runs — so a suite run from inside a session inherits
 # it and every case that does not override it anchors the hook at the REAL

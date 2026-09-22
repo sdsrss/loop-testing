@@ -18,6 +18,12 @@ SETUP="$REPO_ROOT/skills/loop-testing/scripts/sandbox-setup.sh"
 CLEAN="$REPO_ROOT/skills/loop-testing/scripts/sandbox-clean.sh"
 export SETUP CLEAN
 
+# TIMEOUT_BIN + bounded(): the dangling-flag guards here bound the script so a
+# `shift 2` regression shows up as a timeout rather than a hung suite. They were
+# calling bare `timeout`, and three of them assert `rc != 124` — which an absent
+# binary satisfies with 127, so those three PASSED without running anything.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib-watchdog.sh"
+
 PASS=0
 FAIL=0
 
