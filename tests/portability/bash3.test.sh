@@ -184,57 +184,145 @@ fi
 # script never ran. The binary belongs behind TIMEOUT_BIN / bounded() in
 # tests/lib-watchdog.sh, the one file this scan exempts.
 #
-# What this can and cannot see, stated plainly. It matches `timeout <number>` in
-# command position — at line start, after `;` `|` `&` `(`, or after an `env …`
-# prefix — which is every form this tree has used. It does NOT parse: `timeout
-# --foreground 5`, a call assembled through a variable, or one inside a heredoc
-# executed later would all pass unseen. The instrument that cannot be fooled is
-# running the suite on a PATH holding neither binary, and that is a host arm
-# rather than a gate — which is why the TOTAL line now names the arm.
+# What this can and cannot see, measured rather than assumed — an earlier draft of
+# this paragraph got it wrong in both directions, so the rule below is the one a
+# reviewer established by feeding lines to the ERE.
+#
+# It fires when the last non-whitespace character before `timeout <digit>` is `;`
+# `|` `&` or `(`, or at line start, or when a whitespace-delimited `env` appears
+# earlier on the line with none of `;` `|` `&` between. That is a position, not a
+# parse, so it has no idea whether the line is code:
+#   * OVER-matches. `# the old form was ( cd x && timeout 5 bash y )` is caught,
+#     at any indent — the claim that a comment is safe was simply false. So are
+#     `echo "sleep 1; timeout 5"` and a JSON payload `"cd x; timeout 5 grep foo"`.
+#     Two live lines escape only by luck: stop-gate.test.sh:282 because a backtick
+#     precedes, ledger-gate.test.sh:561,575 because a `"` does.
+#   * UNDER-matches, because anything between the word and its duration hides it:
+#     `timeout --foreground 5`, `timeout -k 1 5`, `timeout "$SECS"`, `TO=timeout;
+#     $TO 5`, and any wrapper in front — `command`/`exec`/`nohup`/`sudo`/`time`/
+#     `xargs`/`find -exec`/`FOO=1 `/`if`/`while`/`!`/`{ …; }`/backticks.
+# A line inside a heredoc body IS caught when it starts with the call, which the
+# earlier draft had backwards.
+#
+# The instrument that cannot be fooled is running the suite on a PATH holding
+# neither binary. That is a host arm rather than a gate, which is why the TOTAL
+# line names the arm.
 BARE_TO='(^|[;|&(]|[[:space:]]env[[:space:]][^;|&]*[[:space:]])[[:space:]]*g?timeout[[:space:]]+[0-9]'
+# Discovery and reading are both checked, because "we saw at least one file" is not
+# the same claim as "we read the files we meant to". Three ways this scan goes
+# blind over a NON-empty file set, all of them measured:
+#   * `grep -c` returning 2 — an unreadable file, or an ERE this grep rejects —
+#     produces empty output that `${c:-0}` turns into a clean verdict;
+#   * `find … 2>/dev/null | sort` discards find's exit status AND its stderr, and
+#     the pipeline reports sort's status, so a directory find cannot descend
+#     contributes zero files and reads as a clean subtree;
+#   * an empty result set, the ordinary zero-discovery case.
+# So find's status and stderr are kept, and grep's status is separated from its
+# count. A bare non-zero file count sees none of the first two.
 bare_to_hits=""
-while IFS= read -r f; do
-  case "$f" in tests/lib-watchdog.sh) continue ;; esac
-  c=$(grep -cE "$BARE_TO" "$f" 2>/dev/null)
-  case "${c:-0}" in ''|0) ;; *) bare_to_hits="$bare_to_hits $f($c)" ;; esac
-done < <(find tests -name '*.sh' -type f 2>/dev/null | sort)
-if [ -n "$bare_to_hits" ]; then
+bare_to_seen=0
+bare_to_grepfail=""
+bt_list=$(mktemp "${TMPDIR:-/tmp}/loop-testing-btlist.XXXXXX") || bt_list=""
+bt_err=$(mktemp "${TMPDIR:-/tmp}/loop-testing-bterr.XXXXXX") || bt_err=""
+bt_find_rc=0
+if [ -n "$bt_list" ] && [ -n "$bt_err" ]; then
+  find tests -name '*.sh' -type f > "$bt_list" 2>"$bt_err"
+  bt_find_rc=$?
+  # Two files are exempt by PATH, not by pattern. tests/lib-watchdog.sh is where
+  # the binary is legitimately resolved. This file necessarily contains matching
+  # forms too — the assembled probe below, and the over-match examples in the
+  # comment above, which are matching lines by construction and were duly flagged
+  # the first time this ran. That is the same reasoning, and the same remedy, as
+  # the WS_ALL gate 100 lines up: a gate in this tree that reads source text and
+  # forgets to exempt itself fails the fix instead of the bug.
+  while IFS= read -r f; do
+    case "$f" in
+      tests/lib-watchdog.sh|tests/portability/bash3.test.sh) continue ;;
+    esac
+    bare_to_seen=$((bare_to_seen + 1))
+    c=$(grep -cE "$BARE_TO" "$f" 2>/dev/null)
+    grc=$?
+    if [ "$grc" -ge 2 ]; then
+      bare_to_grepfail="$bare_to_grepfail $f(grep rc $grc)"
+      continue
+    fi
+    case "${c:-0}" in ''|0) ;; *) bare_to_hits="$bare_to_hits $f($c)" ;; esac
+  done < "$bt_list"
+fi
+# Every branch above the hit report is a way to LOOK clean without having looked.
+# tests/run-all.sh applies the same rule three times (sh_found, tests_found,
+# suites-vs-_ra_files); this scan shipped its first draft without any of it.
+if [ -z "$bt_list" ] || [ -z "$bt_err" ]; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: mktemp for the bare-timeout scan's file list failed — the scan did not run" >&2
+elif [ "$bt_find_rc" -ne 0 ] || [ -s "$bt_err" ]; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the bare-timeout scan's discovery failed (find rc $bt_find_rc$( [ -s "$bt_err" ] && printf ', stderr: %s' "$(head -1 "$bt_err")" )) — a subtree it cannot read contributes no files and reads as clean" >&2
+elif [ "$bare_to_seen" -eq 0 ]; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the bare-timeout scan read no files at all — a clean tree and a broken discovery print the same thing" >&2
+elif [ -n "$bare_to_grepfail" ]; then
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the bare-timeout scan could not read:$bare_to_grepfail — grep rc 2 or more is not 'no match', and an unreadable file or a rejected ERE would otherwise count as clean" >&2
+elif [ -n "$bare_to_hits" ]; then
   FAIL=$((FAIL+1))
   echo "  FAIL: bare timeout/gtimeout invocation in a suite — use bounded():$bare_to_hits" >&2
 else
   PASS=$((PASS+1))
 fi
+rm -f "$bt_list" "$bt_err"
 
 # Self-probe in BOTH directions, because this scan has two ways to be worthless: a
 # broken ERE makes it a green no-op, and an over-broad one fails every fixture
 # that merely names the binary (three such forms live in this tree — the `rm -f
 # "$BINF/timeout"` farms, the `command -v gtimeout` detection, and a comment that
 # quotes `timeout 5` as prose). Both counts are asserted, not just the positive.
-bt_probe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-btprobe.XXXXXX") || {
-  echo "  FAIL: mktemp for the bare-timeout self-probe failed" >&2; bt_probe=""; }
-if [ -n "$bt_probe" ]; then
-  # The three positives are ASSEMBLED, not written literally: spelled out they are
-  # matching forms sitting in a file this very scan reads, and the first run of the
-  # gate duly flagged its own probe (2 of the 3 — the third is not in command
-  # position inside a quoted list). That was the scan's positive control on a real
-  # file, arrived at without constructing one; %s keeps it while leaving nothing
-  # here for the pattern to find.
-  printf '( cd "$W" && %s 10 bash "$S" ) >/dev/null\nprintf x | env -u FOO %s 5 bash "$S"\n%s 3 bash foo.sh\n' \
-    timeout timeout timeout > "$bt_probe"
+#
+# One positive per match route, not one per route-that-happens-to-be-covered. The
+# prefix set is a single bracket class, so a probe that only exercises `&` would
+# stay green if an edit dropped `;` from it; and `g?` — the whole reason this also
+# catches `gtimeout`, the binary macOS actually has — was asserted by nothing.
+bt_probe=$(mktemp "${TMPDIR:-/tmp}/loop-testing-btprobe.XXXXXX") || bt_probe=""
+if [ -z "$bt_probe" ]; then
+  # A probe that could not be created leaves the scan UNVERIFIED, which is a
+  # failure — not the absence of a check. Written the other way (an echo with no
+  # FAIL and no else) this assertion simply left the tally: the file printed a
+  # FAIL line and still reported "9 passed, 0 failed" and exit 0, so the run
+  # reached ALL GREEN. The other two probes in this file were already counted;
+  # this was the one that was not.
+  FAIL=$((FAIL+1))
+  echo "  FAIL: mktemp for the bare-timeout self-probe failed — the scan ran unverified this run" >&2
+else
+  # The positives are ASSEMBLED, not written literally: spelled out they are
+  # matching forms sitting in a file this very scan reads, and the gate's first run
+  # duly flagged its own probe. That was its positive control on a real file,
+  # arrived at without constructing one; %s keeps the coverage while leaving
+  # nothing here for the pattern to find.
+  #
+  # Seven routes, one line each: line start, then each of `;` `|` `&` `(`
+  # separately, then the `env …` prefix, then `g?` via gtimeout.
+  printf '%s 3 bash foo.sh\ncd x; %s 5 bash y\nprintf x | %s 5 bash y\ncd x && %s 5 bash y\n( %s 5 bash y )\nprintf x | env -u FOO %s 5 bash y\ncd x; g%s 5 bash y\n' \
+    timeout timeout timeout timeout timeout timeout timeout > "$bt_probe"
   bt_pos=$(grep -cE "$BARE_TO" "$bt_probe")
+  # Negatives are the forms this tree really contains, including the two that
+  # escape by one character: a backtick before the word, and a `"` before it
+  # inside a JSON payload (stop-gate.test.sh:282 and ledger-gate.test.sh:561,575
+  # survive the scan for exactly those reasons, and would be false positives the
+  # day either character changed).
   printf '%s\n' \
     'bounded 10 bash "$DRIVER" --project' \
     '  "$TIMEOUT_BIN" "$secs" "$@"' \
     '#    `timeout 5` is the assertion: rc 2 means it blocked' \
     'rm -f "$BINF/timeout" "$BINF/gtimeout"' \
-    'elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi' > "$bt_probe"
+    'elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi' \
+    'json='"'"'{"command":"timeout 5 grep foo"}'"'"'' > "$bt_probe"
   bt_neg=$(grep -cE "$BARE_TO" "$bt_probe")
   rm -f "$bt_probe"
-  if [ "${bt_pos:-0}" -eq 3 ] && [ "${bt_neg:-1}" -eq 0 ]; then
+  if [ "${bt_pos:-0}" -eq 7 ] && [ "${bt_neg:-1}" -eq 0 ]; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
-    echo "  FAIL: self-probe — the bare-timeout scan matched ${bt_pos:-?}/3 positives and ${bt_neg:-?}/0 negatives" >&2
+    echo "  FAIL: self-probe — the bare-timeout scan matched ${bt_pos:-?}/7 positives and ${bt_neg:-?}/0 negatives" >&2
   fi
 fi
 
