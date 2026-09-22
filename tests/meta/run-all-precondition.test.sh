@@ -54,9 +54,18 @@ printf '#!/usr/bin/env bash\necho x\n' > "$R/skills/x.sh"
 cp "$R/skills/x.sh" "$R/hooks/x.sh"
 cp "$R/skills/x.sh" "$R/install/x.sh"
 cp tests/run-all.sh "$R/tests/run-all.sh"
-printf "import {test} from 'node:test';\ntest('t', () => {});\n" > "$R/tests/moa/ok.test.mjs"
-printf '#!/usr/bin/env bash\necho "good.test.sh: 3 passed, 0 failed"\n' > "$R/tests/fake/good.test.sh"
+GOOD="$R/tests/fake/good.test.sh"
 MUT="$R/tests/fake/mut.test.sh"
+MOA="$R/tests/moa/ok.test.mjs"
+# Two scenarios below overwrite the control suite and the node suite — one needs
+# every shell suite in the tree to skip, the other needs node's own output to
+# carry a NUL byte — and each restores what it changed through these. Written
+# once rather than retyped at the restore site: a fixture retyped from memory is
+# the shape this tree spent a release removing from its cleanup lists.
+write_good() { printf '#!/usr/bin/env bash\necho "good.test.sh: 3 passed, 0 failed"\n' > "$GOOD"; }
+write_moa()  { printf '%s\n' "import {test} from 'node:test';" "test('t', () => {});" > "$MOA"; }
+write_good
+write_moa
 
 # --- a PATH that resolves no watchdog binary ----------------------------------
 # Everything executable in /bin and /usr/bin, minus the two binaries under test.
@@ -253,6 +262,92 @@ scenario "acknowledged, the same run is green" farm 0 '^ALL GREEN \(1 suite\(s\)
 # Fail-closed on the acknowledgement itself: any value but 1 leaves it refused.
 scenario "a mistyped acknowledgement is refused" farm 1 '^FAILED$' 'did not run on this host' \
   LOOP_TESTING_ALLOW_SKIP=yes
+
+# --- the floor under the acknowledgement --------------------------------------
+# The switch was written as a blanket: any number of suites, for as long as the
+# variable is set. So the sentence the gate exists to prevent came back on the one
+# arm that needs the switch — set it on a host where every shell suite declares a
+# precondition and the run printed ALL GREEN and exited 0 over a tree that
+# executed nothing. Both fixture suites skip here, which makes the floor the only
+# thing that can fail this run, and the acknowledgement is SET so that an
+# unacknowledged skip cannot be what fails it.
+printf '#!/usr/bin/env bash\necho "PRECONDITION NOT MET: watchdog-binary"\nexit 77\n' > "$MUT"
+cp "$MUT" "$GOOD"
+scenario "no acknowledgement covers a run where every suite skipped" farm 1 \
+  '^FAILED$' 'shell suite\(s\) discovered were skipped' LOOP_TESTING_ALLOW_SKIP=1
+write_good
+
+# --- a NUL byte in what a suite printed ---------------------------------------
+# Every check above reads the runner's capture file as text, and that file is a
+# suite's output verbatim: a driver capture, a killed child or a terminal escape
+# can put a NUL in it. Without `-a`, grep then answers about a BINARY file — the
+# matching line becomes a note on stderr and the command substitution that wanted
+# it comes back empty. The run still fails, which is why this survived: it fails
+# for "printed no assertion tally" over a suite that printed one, and for
+# "declared no precondition" over a suite that declared one. Naming a cause that
+# is false already has three comments in run-all.sh; this is the same defect
+# arriving through the instrument rather than through the logic.
+#
+# The byte is emitted BY the fixture rather than embedded in this file, so what
+# reaches the capture file is a byte a suite wrote, not one this file's quoting
+# produced. One definition for all four scenarios.
+nul_line() { printf 'printf "capture\\000junk\\n"\n'; }
+
+{ printf '#!/usr/bin/env bash\n'; nul_line
+  printf 'echo "mut.test.sh: 2 passed, 0 failed"\n'; } > "$MUT"
+scenario "a NUL does not cost a passing suite its tally" farm 0 \
+  '^ALL GREEN$' '^  ok: tests/fake/mut\.test\.sh'
+
+# The same defect measured on the number instead of the verdict: a tally the
+# runner cannot read is a tally whose FAILURES never reach TOTAL, which is the
+# under-reporting a review already found once on the rejected-claim path.
+{ printf '#!/usr/bin/env bash\n'; nul_line
+  printf 'echo "mut.test.sh: 3 passed, 2 failed"\n'; printf 'exit 1\n'; } > "$MUT"
+scenario "a NUL does not cost a failing suite its failures" farm 1 \
+  '^FAILED$' '^TOTAL:.*, 2 failed,'
+
+# The precondition line, where the two forms disagreed with each other: the
+# count is read with `-c` and survives the NUL, the line is read without and does
+# not — so the runner held "one declaration" and "no declaration" at once, and
+# refused the skip for the second of them.
+{ printf '#!/usr/bin/env bash\n'; nul_line
+  printf 'echo "PRECONDITION NOT MET: watchdog-binary"\n'; printf 'exit 77\n'; } > "$MUT"
+scenario "a NUL does not erase a precondition declaration" farm 0 \
+  '^ALL GREEN \(1 suite\(s\) skipped' '^  SKIP: tests/fake/mut\.test\.sh' \
+  LOOP_TESTING_ALLOW_SKIP=1
+
+# The gate that catches an assertion which never ran has to say WHICH command was
+# not found: its `-q` test survives a NUL and the line it prints as evidence does
+# not, so it fired with nothing under it.
+#
+# The needle is the INDENTED evidence line, not the command name. Written as the
+# bare name first, this scenario passed against the unfixed runner on all three
+# assertions — the runner echoes the whole capture a few lines earlier, so the
+# name was already in the output and the assertion was about the suite's own
+# stderr rather than about anything the gate did. Which is why the gate now
+# indents what it quotes: an assertion that cannot tell the two apart is the
+# shape this file exists to catch, and it appeared while writing this file.
+{ printf '#!/usr/bin/env bash\n'; nul_line
+  printf 'nosuchcommand_xyz\n'
+  printf 'echo "mut.test.sh: 2 passed, 0 failed"\n'; } > "$MUT"
+scenario "the command-not-found gate still names what was not found" farm 1 \
+  '^FAILED$' '^      .*nosuchcommand_xyz: command not found'
+
+# And node's totals, read the same way from the same file. Premise-guarded on the
+# host having node at all: the runner has its own branch for an absent one, and
+# the arms clause on the TOTAL line is what says which branch ran — `node present`
+# is therefore the needle, because a run whose totals could not be read reports
+# `shell only` there and counts none of them.
+printf '#!/usr/bin/env bash\necho "mut.test.sh: 2 passed, 0 failed"\n' > "$MUT"
+if [ -n "$fnode" ]; then
+  printf '%s\n' "import {test} from 'node:test';" \
+    "test('t', () => { process.stdout.write('\\u0000'); });" > "$MOA"
+  scenario "a NUL in node's output does not erase its totals" farm 0 \
+    '^ALL GREEN$' 'node present\)$'
+  write_moa
+else
+  echo "  skip: no node on PATH — node's totals are read only on a host that has one"
+fi
 
 # --- and the control: an ordinary suite is untouched by all of it -------------
 printf '#!/usr/bin/env bash\necho "mut.test.sh: 2 passed, 0 failed"\n' > "$MUT"

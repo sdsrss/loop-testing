@@ -34,14 +34,45 @@ Each condition above now produces a named GATE FAIL.
   already demonstrated what the control claimed to add — and its only real effect was
   to make two lines of comment PROSE load-bearing, so rewording an explanation
   reddened the suite. A check that fires on documentation edits buys noise.
+- **fix(tests)**: the skip acknowledgement has a floor it cannot lift.
+  `LOOP_TESTING_ALLOW_SKIP=1` was a blanket — any number of suites, for as long as
+  the variable is set — so the sentence the fail-closed gate was added to prevent
+  came back on the one arm that needs the switch. Measured on a fixture whose two
+  shell suites both declare a precondition, acknowledged in both runs: at `5859378`
+  `ALL GREEN (2 suite(s) skipped on an acknowledged precondition ...)` and exit 0,
+  over a tree whose one counted assertion was node's; now `GATE FAIL: all 2 shell
+  suite(s) discovered were skipped — this run executed none of them.` and exit 1.
+  Measured against the suites DISCOVERED rather than the `suites` counter, which by
+  that line also carries the node files, so the acknowledged 11-of-43 arm below is
+  unaffected.
+- **fix(tests)**: the runner reads its capture file with `grep -a` at every site.
+  That file is a suite's output verbatim, so one NUL byte in it — a driver capture,
+  a killed child, a terminal escape — made GNU grep answer about a binary file: the
+  matching line goes to stderr as a note and the substitution comes back empty, and
+  the run then fails while naming a cause that is false. Measured at `5859378` on
+  fixtures that emit one. A suite printing `2 passed, 0 failed` is failed for
+  "printed no assertion tally"; one printing `3 passed, 2 failed` loses both
+  failures out of `TOTAL`; one declaring a precondition and exiting 77 is failed for
+  "declared no precondition", while the `-c` count of the same line beside it read
+  1, so the runner held both answers at once; and a node test that writes a NUL is
+  failed for "could not read node's pass/fail totals". The `-c` and `-q` forms were
+  measured unaffected and take `-a` anyway: which forms are safe should not have to
+  be re-derived from whichever `grep` the next reader has.
+- **fix(tests)**: the command-not-found gate indents the lines it quotes, like the
+  residual-scan gate above it. Unindented they replayed three lines of a capture the
+  runner had already echoed in full — and the first test written for this gate
+  matched that echo, passing against the unfixed runner over a run in which the gate
+  printed nothing at all.
 
 ```
-TOTAL: 44 suites, 1839 assertions, 0 failed, 0 skipped, 0 case-skips (space-free $TMPDIR; timeout; node present)
-TOTAL: 44 suites, 1315 assertions, 0 failed, 11 skipped, 5 case-skips (space-free $TMPDIR; no timeout/gtimeout; node present)
-TOTAL: 44 suites, 1834 assertions, 5 failed, 0 skipped, 0 case-skips (spaced $TMPDIR; timeout; node present)
+TOTAL: 44 suites, 1857 assertions, 0 failed, 0 skipped, 0 case-skips (space-free $TMPDIR; timeout; node present)
+TOTAL: 44 suites, 1333 assertions, 0 failed, 11 skipped, 5 case-skips (space-free $TMPDIR; no timeout/gtimeout; node present)
+TOTAL: 44 suites, 1852 assertions, 5 failed, 0 skipped, 0 case-skips (spaced $TMPDIR; timeout; node present)
 ```
 
 bash3.test.sh goes 12 assertions to 11: two added, three removed with the control.
+run-all-precondition.test.sh goes 52 to 70, and 13 of the 18 fail against the runner
+at `5859378` — restoring the defect is the mutation check for each of them.
 
 ## 0.16.0 — 2026-09-22
 

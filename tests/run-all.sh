@@ -170,10 +170,26 @@ while IFS= read -r -d '' t; do
   # Read the tally here rather than after the verdict: one of the four checks is
   # about the tally, and a claim rejected for reporting assertions must not first
   # be announced as a suite that "ran nothing".
-  tally=$(grep -E '^[^ ]+: [0-9]+ passed, [0-9]+ failed$' "$_ra_out" | tail -1)
+  #
+  # `-a` on every read of $_ra_out, without exception. The capture is a suite's
+  # output verbatim, so one NUL byte anywhere in it — a driver capture, a killed
+  # child, a terminal escape — makes grep treat the whole file as binary: the
+  # matching LINE is replaced by a note on stderr, and the command substitution
+  # that wanted it comes back empty. Measured on GNU grep 3.12, which is what a
+  # suite resolves here: the tally below and the precondition line under it both
+  # vanish, so a suite that printed a tally is failed for "printed no assertion
+  # tally", and one that declared a precondition for "declared no precondition".
+  # The run fails, correctly, while naming a cause that is false — the shape three
+  # other comments in this file already record, arriving this time through the
+  # instrument rather than through the logic. The `-c` and `-q` forms are
+  # unaffected (a count and an exit status are not lines) and take `-a` anyway:
+  # which forms are safe is not a question the next person editing this loop
+  # should have to re-derive, and the answer would be re-derived from whichever
+  # grep that person happens to have.
+  tally=$(grep -aE '^[^ ]+: [0-9]+ passed, [0-9]+ failed$' "$_ra_out" | tail -1)
   _ra_pre=""
-  _ra_precount=$(grep -c '^PRECONDITION NOT MET: ' "$_ra_out")
-  _ra_preline=$(grep '^PRECONDITION NOT MET: ' "$_ra_out" | head -1)
+  _ra_precount=$(grep -ac '^PRECONDITION NOT MET: ' "$_ra_out")
+  _ra_preline=$(grep -a '^PRECONDITION NOT MET: ' "$_ra_out" | head -1)
   [ -n "$_ra_preline" ] && _ra_pre=${_ra_preline#PRECONDITION NOT MET: }
   # Shown rather than pasted: a token carrying a CR (a suite saved with CRLF line
   # endings) is correctly rejected as unknown, but printing it raw made the message
@@ -251,9 +267,16 @@ while IFS= read -r -d '' t; do
   # from a suite sourcing another, so two checks printed "command not found" to
   # stderr and the suite still reported 42 passed, 0 failed. The shell says so
   # every time; nothing was reading it.
-  if grep -qE 'command not found|: not found' "$_ra_out"; then
+  #
+  # Indented like the residual-scan evidence above, and for the same reason twice
+  # over: the whole capture was already echoed a few lines up, so an unindented
+  # replay of three of its lines under a GATE FAIL reads as more suite output
+  # rather than as the runner quoting what it found. It also made the first test
+  # written for this gate vacuous — the needle matched the earlier echo and the
+  # assertion passed over a run where the gate printed nothing at all.
+  if grep -qaE 'command not found|: not found' "$_ra_out"; then
     echo "  GATE FAIL: $t called a command that does not exist — an assertion did not run"
-    grep -E 'command not found|: not found' "$_ra_out" | head -3
+    grep -aE 'command not found|: not found' "$_ra_out" | head -3 | sed 's/^/      /'
     overall=1
   fi
   _leak_after=$(_leak_n)
@@ -273,7 +296,7 @@ while IFS= read -r -d '' t; do
   # field claiming to count assertions would be a number nobody can check, which
   # is the shape this release exists to remove. Two reviewers reached this
   # independently.
-  _ra_caseskip=$(grep -c '^  skip: ' "$_ra_out")
+  _ra_caseskip=$(grep -ac '^  skip: ' "$_ra_out")
   case "${_ra_caseskip:-0}" in ''|*[!0-9]*) _ra_caseskip=0 ;; esac
   caseskips=$((caseskips + _ra_caseskip))
   # A tally is ACCOUNTED whenever one exists, including for a suite whose
@@ -335,8 +358,8 @@ if [ -d tests/moa ]; then
     fi
     # node --test reports its own totals; fold them in so one number covers the
     # whole run. Each .test.mjs file counts as one suite, same rule as shell.
-    np=$(grep -E '^. pass [0-9]+$' "$_ra_out" | tail -1); np=${np##* }
-    nf=$(grep -E '^. fail [0-9]+$' "$_ra_out" | tail -1); nf=${nf##* }
+    np=$(grep -aE '^. pass [0-9]+$' "$_ra_out" | tail -1); np=${np##* }
+    nf=$(grep -aE '^. fail [0-9]+$' "$_ra_out" | tail -1); nf=${nf##* }
     case "${np:-x}" in ''|*[!0-9]*) np="" ;; esac
     case "${nf:-x}" in ''|*[!0-9]*) nf="" ;; esac
     if [ -n "$np" ] && [ -n "$nf" ]; then
@@ -436,7 +459,23 @@ fi
 # the host and false of the exit status, the only part of this output that CI, a
 # git hook or a release script reads. Unbounded and invisible, `skipped` could have
 # reached every shell suite in the tree with ALL GREEN still printed.
-if [ "$skipped" -gt 0 ] && [ "$_ra_allow_skip" -ne 1 ]; then
+#
+# The acknowledgement has a floor it cannot lift. `LOOP_TESTING_ALLOW_SKIP=1` was
+# written as a blanket — any number of suites, for as long as the variable is set
+# — so the sentence above came back on the one arm that needs the switch: set it
+# on a host where every shell suite declares a precondition, and the run prints
+# ALL GREEN and exits 0 over a tree where nothing executed. A fail-closed gate
+# whose escape hatch reopens the case it closed has moved the hole, not filled
+# it. The switch therefore acknowledges skips; it cannot acknowledge a run with
+# nothing left in it. Measured against the suites DISCOVERED rather than the
+# `suites` counter, which by this line also carries the node files — a shell tree
+# that ran nothing is the subject here, and node passing says nothing about it.
+if [ "$skipped" -gt 0 ] && [ "$skipped" -ge "$_ra_files" ]; then
+  overall=1
+  echo "  GATE FAIL: all $_ra_files shell suite(s) discovered were skipped — this run executed none of them."
+  echo "             No acknowledgement covers that: LOOP_TESTING_ALLOW_SKIP says a skip is expected here,"
+  echo "             not that a run which tested nothing is a pass."
+elif [ "$skipped" -gt 0 ] && [ "$_ra_allow_skip" -ne 1 ]; then
   overall=1
   echo "  GATE FAIL: $skipped suite(s) did not run on this host — not a test failure, and not a pass either."
   echo "             Install the missing precondition (see the SKIP lines), or acknowledge it for this"
