@@ -454,13 +454,20 @@ rm -f "$probe"
 #     BACKUP SUFFIX, so the script becomes the suffix and sed is left with none.
 #     The portable spelling attaches it: `-i.bak`, then remove the backup.
 #
-# Known under-match, stated rather than implied: a flag between the command and
-# the spelling hides it (`sed -E -i …`, `touch -c -d …`), as does any wrapper in
-# front. Like the bare-timeout scan above, this is a tripwire for the forms this
-# tree actually writes, not a parser.
+# Known under-match, stated rather than implied, and MEASURED rather than assumed
+# — the first version of this paragraph was wrong in the permissive direction,
+# which is the worse one: it claimed a wrapper in front hides the spelling, and
+# `env touch -d @1 f` matches (the character class before `touch` accepts the
+# space). What actually hides it:
+#   * a flag between the command and the spelling — `sed -E -i …`, `touch -c -d …`
+#   * the GNU LONG options, which are the natural way to reintroduce exactly the
+#     defect this scan was written for: `touch --date=@1` and `sed --in-place`.
+#     Both measured against these two regexes: no match.
+# Like the bare-timeout scan above, this is a tripwire for the forms this tree
+# actually writes, not a parser.
 GNU_TOUCH_D='(^|[^[:alnum:]_.])touch[[:space:]]+-d[[:space:]]'
 BSD_SED_I='(^|[^[:alnum:]_.])sed[[:space:]]+-i[[:space:]]'
-mm_hits=""; mm_seen=0; mm_grepfail=""
+mm_hits=""; mm_seen=0; mm_grepfail=""; mm_exempt=0; mm_checked=0
 mm_list=$(mktemp "${TMPDIR:-/tmp}/loop-testing-mmlist.XXXXXX") || mm_list=""
 mm_err=$(mktemp "${TMPDIR:-/tmp}/loop-testing-mmerr.XXXXXX") || mm_err=""
 mm_find_rc=0
@@ -489,10 +496,11 @@ if [ -n "$mm_list" ] && [ -n "$mm_err" ]; then
       #                        shapes are what `grep -n 'sed -i'` on that file
       #                        returns, and no line-level filter was written.
       case "$mm_pat:$f" in
-        *:tests/portability/bash3.test.sh)  continue ;;
-        touch:tests/hooks/lib.sh)           continue ;;
-        sed:tests/hooks/ledger-gate.test.sh) continue ;;
+        *:tests/portability/bash3.test.sh)  mm_exempt=$((mm_exempt+1)); continue ;;
+        touch:tests/hooks/lib.sh)           mm_exempt=$((mm_exempt+1)); continue ;;
+        sed:tests/hooks/ledger-gate.test.sh) mm_exempt=$((mm_exempt+1)); continue ;;
       esac
+      mm_checked=$((mm_checked+1))
       case "$mm_pat" in
         touch) mm_re="$GNU_TOUCH_D" ;;
         sed)   mm_re="$BSD_SED_I" ;;
@@ -515,6 +523,37 @@ if [ "$mm_find_rc" -ne 0 ] || [ -s "$mm_err" ]; then
   echo "  FAIL: the macOS-matrix scan's discovery failed (find rc $mm_find_rc$( [ -s "$mm_err" ] && printf ', stderr: %s' "$(head -1 "$mm_err")" )) — a subtree it cannot read contributes no files and reads as clean" >&2
 elif [ "$mm_seen" -eq 0 ]; then
   FAIL=$((FAIL+1)); echo "  FAIL: the macOS-matrix scan read no files at all" >&2
+elif [ "$mm_seen" -ne "$(wc -l < "$mm_list")" ]; then
+  # FIRST, ahead of the exemption tripwire, because this one cannot be satisfied
+  # by widening the exemption list: it counts files VISITED against files
+  # DISCOVERED and the exemptions happen inside the visit. Ordered the other way
+  # the tripwire fires first and blames the exemption list for a loop that ended
+  # early — measured with a stdin-eating line in the body: 1 file of 59 visited,
+  # reported as "exempted 0, not 4".
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the macOS-matrix scan visited $mm_seen of $(wc -l < "$mm_list") discovered files — the outer loop ended early, and every other arm would have called that clean" >&2
+elif [ "$mm_exempt" -ne 4 ]; then
+  # Four (pattern, file) exemption decisions per run: bash3.test.sh for BOTH
+  # patterns, hooks/lib.sh for touch, ledger-gate.test.sh for sed. Hard-coded for
+  # the same reason the bare-timeout scan's 2 is, and this scan shipped in the
+  # same commit as that comment WITHOUT the guard: broadening the `case` above
+  # satisfies the equality below either way — scanned equals discovered-minus-
+  # exempt whatever the exemption list says — while a live `sed -i` goes unread.
+  # Demonstrated by a reviewer: one added `case` line took an injected, executed
+  # `sed -i` from 12/1 back to 13/0 with the call still in the tree. The number is
+  # counted in (pattern, file) pairs, not files, so it does not move with the file
+  # count: it is the policy, not a measurement of the tree.
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the macOS-matrix scan exempted $mm_exempt (pattern, file) pairs, not 4 — if the exemption list changed, this number changes with it and the change gets read" >&2
+elif [ "$mm_checked" -ne "$(( mm_seen * 2 - mm_exempt ))" ]; then
+  # The inner half of the same check, and the reason it is separate: mm_seen says
+  # the file loop finished, mm_checked says every (pattern, file) pair inside it
+  # was actually grepped. A non-zero count says the loop STARTED; only the
+  # equality says it FINISHED. This repo's incident is a body that reads stdin
+  # eating the rest of the list — measured here at 1 file of 59 with every other
+  # arm of this gate reporting clean.
+  FAIL=$((FAIL+1))
+  echo "  FAIL: the macOS-matrix scan grepped $mm_checked pairs, expected $(( mm_seen * 2 - mm_exempt )) — the inner loop ended early, and every other arm would have called that clean" >&2
 elif [ -n "$mm_grepfail" ]; then
   FAIL=$((FAIL+1)); echo "  FAIL: the macOS-matrix scan could not read:$mm_grepfail" >&2
 elif [ -n "$mm_hits" ]; then
