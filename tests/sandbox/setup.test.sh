@@ -50,15 +50,26 @@ else PASS=$((PASS+1)); fi
 # (same class as the driver da16858 fix, which missed this script). Run from a
 # throwaway NON-git dir so nothing real is touched even if a flag proceeds.
 WS3=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-trail.XXXXXX"); trap 'rm -rf "$WS1" "$WS" "$WS2" "$WS3"' EXIT
-( cd "$WS3" && timeout 10 bash "$SETUP" --mode ) >/dev/null 2>&1
-rc=$?
-assert_eq "2" "$rc" "trailing --mode -> exit 2 (mode validation), not a hang"
-for flag in --branch --worktree-path --baseline-tag; do
-  ( cd "$WS3" && timeout 10 bash "$SETUP" "$flag" ) >/dev/null 2>&1
+# Premise-guarded, and the guard is the point. These called bare `timeout`, which
+# is GNU-only — absent on stock macOS, `gtimeout` under homebrew. With neither,
+# the command never ran and returned 127, and the three `rc != 124` checks below
+# are satisfied by 127: they PASSED, three no-hang guards reporting green over a
+# script that had not been executed. A failure would have been the lucky outcome.
+# (Review T-D fixed five sites of this shape in the driver libs and did not reach
+# these; bounded() now lives in tests/lib-watchdog.sh for all four libs.)
+if [ -n "$TIMEOUT_BIN" ]; then
+  ( cd "$WS3" && bounded 10 bash "$SETUP" --mode ) >/dev/null 2>&1
   rc=$?
-  if [ "$rc" -ne 124 ]; then PASS=$((PASS+1)); else
-    FAIL=$((FAIL+1)); echo "  FAIL: trailing $flag hung (exit 124)" >&2; fi
-done
+  assert_eq "2" "$rc" "trailing --mode -> exit 2 (mode validation), not a hang"
+  for flag in --branch --worktree-path --baseline-tag; do
+    ( cd "$WS3" && bounded 10 bash "$SETUP" "$flag" ) >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" -ne 124 ]; then PASS=$((PASS+1)); else
+      FAIL=$((FAIL+1)); echo "  FAIL: trailing $flag hung (exit 124)" >&2; fi
+  done
+else
+  echo "  skip: no timeout/gtimeout on PATH — a no-hang guard with no bound asserts nothing"
+fi
 
 # --- worktree rebuild after clean removed it (audit B2) ----------------------
 # setup(worktree) -> clean (removes worktree, keeps marker) -> setup(worktree)
@@ -86,12 +97,20 @@ else FAIL=$((FAIL+1)); echo "  FAIL: rebuilt worktree not in git worktree list" 
 # sibling path) — inconsistent with the drivers' fail-closed arg handling.
 WS5=$(mk_ws); trap 'rm -rf "$WS1" "$WS" "$WS2" "$WS3" "$WS4" "$WS5"' EXIT
 REPO5="$WS5/proj"
-for flag in --branch --worktree-path --baseline-tag; do
-  ( cd "$REPO5" && timeout 10 bash "$SETUP" --mode worktree "$flag" ) >/dev/null 2>&1
-  assert_eq "2" "$?" "trailing $flag -> exit 2 (fail-closed, no silent default)"
-done
-assert_absent "$WS5/proj-qa-loop" "no worktree built from a dangling flag"
-assert_absent "$REPO5/docs/looptesting/.sandbox/ownership.env" "no marker written from a dangling flag"
+# The two assert_absent lines are inside the guard on purpose: with the loop
+# skipped nothing would have built a worktree or a marker, so they would pass
+# without the run that gives them meaning — the same vacuous shape as the
+# `rc != 124` guards above, reached from the other end.
+if [ -n "$TIMEOUT_BIN" ]; then
+  for flag in --branch --worktree-path --baseline-tag; do
+    ( cd "$REPO5" && bounded 10 bash "$SETUP" --mode worktree "$flag" ) >/dev/null 2>&1
+    assert_eq "2" "$?" "trailing $flag -> exit 2 (fail-closed, no silent default)"
+  done
+  assert_absent "$WS5/proj-qa-loop" "no worktree built from a dangling flag"
+  assert_absent "$REPO5/docs/looptesting/.sandbox/ownership.env" "no marker written from a dangling flag"
+else
+  echo "  skip: no timeout/gtimeout on PATH — R53's dangling-flag runs need a bound"
+fi
 
 # --- R52 (DR-9): branch-mode short-circuit re-verifies the current branch ----
 # setup(branch) -> user switches away -> setup(branch) again must REFUSE (the

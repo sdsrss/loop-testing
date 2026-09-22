@@ -285,15 +285,27 @@ WS23=$(mk_lt); track_ws "$WS23"
 arm "$WS23"
 { echo '# STATE'; i=0; while [ "$i" -lt 20000 ]; do echo "round: $i"; i=$((i+1)); done; echo 'status: RUNNING'; } \
   > "$WS23/docs/looptesting/STATE.md"
-( cd "$WS23" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR timeout 5 bash "$STOP" ) >/dev/null 2>&1
-RC23=$?
-assert_rc "$RC23" 2 "20k distinct machine-field lines still BLOCK, and inside 5s (not killed -> allowed)"
-assert_exists "$WS23/$ACT" "an oversized STATE.md leaves the sentinel armed"
-ERR23=$( ( cd "$WS23" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR timeout 5 bash "$STOP" ) 2>&1 1>/dev/null )
-case "$ERR23" in
-  *"machine-field"*) PASS=$((PASS+1)) ;;
-  *) FAIL=$((FAIL+1)); echo "  FAIL: the refusal must name the line cap — got [$ERR23]" >&2 ;;
-esac
+# The bound IS the assertion here, so a host with no binary to provide it has
+# nothing to assert — premise-guarded rather than run unbounded, since an
+# unbounded parse is the fail-open this case exists to catch. These three sites
+# called bare `timeout` until now, which is GNU-only: on stock macOS or a
+# gtimeout-only host it returned 127, and all three assertions failed, blaming
+# the hook for a binary the harness had not looked for (review T-D's shape,
+# six sites its fix did not reach). `env` cannot run a shell function, so this
+# takes $TIMEOUT_BIN directly rather than bounded().
+if [ -n "$TIMEOUT_BIN" ]; then
+  ( cd "$WS23" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR "$TIMEOUT_BIN" 5 bash "$STOP" ) >/dev/null 2>&1
+  RC23=$?
+  assert_rc "$RC23" 2 "20k distinct machine-field lines still BLOCK, and inside 5s (not killed -> allowed)"
+  assert_exists "$WS23/$ACT" "an oversized STATE.md leaves the sentinel armed"
+  ERR23=$( ( cd "$WS23" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR "$TIMEOUT_BIN" 5 bash "$STOP" ) 2>&1 1>/dev/null )
+  case "$ERR23" in
+    *"machine-field"*) PASS=$((PASS+1)) ;;
+    *) FAIL=$((FAIL+1)); echo "  FAIL: the refusal must name the line cap — got [$ERR23]" >&2 ;;
+  esac
+else
+  echo "  skip: no timeout/gtimeout on PATH — the wall-clock bound IS case X's assertion"
+fi
 
 # Y. The cap must not fire on an honest file: a STATE.md with a handful of
 #    machine-field lines still parses normally, or the bound is a new false block.
@@ -344,9 +356,13 @@ arm "$WS27"
   while [ "$i" -lt 200 ]; do printf 'round: %s%s\n' "$big" "$i"; i=$((i+1)); done
   echo 'status: RUNNING'
 } > "$WS27/docs/looptesting/STATE.md"
-( cd "$WS27" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR timeout 5 bash "$STOP" ) >/dev/null 2>&1
-assert_rc $? 2 "200 lines of 100 KB values still BLOCK inside 5s (cost, not just count)"
-assert_exists "$WS27/$ACT" "a 20 MB STATE.md leaves the sentinel armed"
+if [ -n "$TIMEOUT_BIN" ]; then   # the bound is the assertion — see case X above
+  ( cd "$WS27" && printf '{"stop_hook_active": false}' | env -u CLAUDE_PROJECT_DIR "$TIMEOUT_BIN" 5 bash "$STOP" ) >/dev/null 2>&1
+  assert_rc $? 2 "200 lines of 100 KB values still BLOCK inside 5s (cost, not just count)"
+  assert_exists "$WS27/$ACT" "a 20 MB STATE.md leaves the sentinel armed"
+else
+  echo "  skip: no timeout/gtimeout on PATH — the wall-clock bound IS case BB's assertion"
+fi
 
 # CC. The round signature must not collide on a shared prefix. Truncating it to a
 #     prefix alone made two different sets read as "no progress" — the force-allow
