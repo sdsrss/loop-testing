@@ -5,7 +5,7 @@
 ## 0. 续跑检测（第一件事）
 
 若 `docs/looptesting/STATE.md` 已存在 → 这是**中断续跑**：通读 `docs/looptesting/` 下全部文件（STATE / PLAN / FEATURE_MATRIX / ISSUES / SUGGESTIONS / runs/ / decisions/），核验其与当前工作区一致，从 `STATE.md` 的「下一动作」继续。**禁止重置轮数、禁止清空总账、禁止重跑已有有效证据的步骤**。
-**对账修复进度（git 为准）**：崩溃可能落在「修复已 commit、台账/STATE 未更新」的窗口——续跑时比对 qa 分支 `git log` 与 `ISSUES.md`：台账滞后的问题若已有对应修复 commit，**不得重新修复**，径直把台账推进到 `FIXED_UNVERIFIED` 并走复验流程。
+**对账修复进度（git 为准）**：崩溃可能落在「修复已 commit、台账/STATE 未更新」的窗口——续跑时比对 qa 分支 `git log` 与 `ISSUES.md`：台账滞后的问题若已有对应修复 commit，**不得重新修复**，把台账依次推进到 `FIXING` → `FIXED_UNVERIFIED`（`issue-rules.md` §7 的迁移表里没有从 `OPEN` 直达 `FIXED_UNVERIFIED` 的一行；那次修复尝试确实发生过，只是崩在了写台账之前）并走复验流程。
 
 **崩溃邻近的四种现场（按文件判读，勿凭推断）**——崩溃能落在退出序或轮循环的任意一步。下面四种在文件系统上看得出来，且各有唯一正确动作；先逐条判完再谈「下一动作」：
 

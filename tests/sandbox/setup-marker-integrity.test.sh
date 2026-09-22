@@ -202,9 +202,20 @@ case "$OUT9c" in *"already gone"*) FAIL=$((FAIL+1)); echo "  FAIL: clean lost th
 LIBSH="$(dirname "$SETUP")/lib.sh"
 if [ -f "$LIBSH" ]; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: scripts/lib.sh is missing — both scripts source it" >&2; fi
-for _fn in mval marker_key; do
-  _n_lib="$(grep -hc "^$_fn() {" "$LIBSH" 2>/dev/null)"; _n_lib="${_n_lib:-0}"
-  _dup="$(grep -l "^$_fn() {" "$SETUP" "$CLEAN" 2>/dev/null)"
+# All FOUR, not just the two marker readers. The commit that built this gate is
+# titled "one marker reader and one ownership verdict, not two of each" and the
+# loop covered only the first half, so a re-introduced local `wt_ownership` or
+# `wt_gitdir_of` — the two that decide what gets DELETED — kept it green.
+#
+# The definition needle tolerates the spellings bash does: `mval ()  {` shadows
+# the shared one exactly as `mval() {` would, and `^mval() {` could not see it.
+for _fn in mval marker_key wt_gitdir_of wt_ownership; do
+  # Braced on purpose: `$_fn[` reads as an array expansion to shellcheck (SC1087)
+  # and is genuinely ambiguous to a human, even though bash expands it the way
+  # this line intends. The raised gate caught it.
+  _def_re="^${_fn}[[:space:]]*\\([[:space:]]*\\)[[:space:]]*\\{"
+  _n_lib="$(grep -hcE "$_def_re" "$LIBSH" 2>/dev/null)"; _n_lib="${_n_lib:-0}"
+  _dup="$(grep -lE "$_def_re" "$SETUP" "$CLEAN" 2>/dev/null)"
   if [ "$_n_lib" != "1" ]; then
     FAIL=$((FAIL+1)); echo "  FAIL: $_fn() is defined $_n_lib times in lib.sh — exactly one, or there is nothing single about it" >&2
   elif [ -n "$_dup" ]; then
