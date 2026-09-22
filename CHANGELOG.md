@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 — 2026-09-22
+
+Three batches in one release: the two `tests/` repairs that landed on main after
+`0.16.0`, the four structural items the audit roadmap had been holding back, and
+the independent review round they earned. The review found a CRITICAL in the
+shipped scripts and six HIGHs, most of them the same shape as the defects being
+fixed — a rule that exists in two places, a gate that matches vocabulary instead
+of content, a check that could not answer being read as the answer that
+authorises deletion. Minor rather than patch: `hooks/` behaviour changes on
+macOS, and the skill text the model reads at runtime changed with it.
 
 `tests/portability/bash3.test.sh` repaired the bare-`timeout` scan's discovery and
 read blindness in `0.16.0` and left exactly those two blindnesses in the scan 200
@@ -81,9 +90,15 @@ rule you have to remember to fix twice.
   `purge.test.sh` creates `qa/loop-testing` and `qa-baseline` BY NAME in a subshell
   behind an unchecked `cd`, which on failure creates both in whatever repository is
   running the suite. The other twelve: two dead variables, five captures nothing
-  asserted, five false positives now carrying a `disable=` with the reason beside
-  it. Gate verified end to end — one unguarded `cd` injected reads "ok: no errors"
-  / ALL GREEN / exit 0 at `-S error` and SC2164 / FAILED / exit 1 at `-S warning`.
+  asserted, FOUR false positives now carrying a `disable=` with the reason beside
+  it, and one `$?` that belonged to a condition rather than a command (SC2319,
+  rewritten, carrying no `disable=`). The count was five in the first draft of
+  this entry and the breakdown then did not sum to twelve; `tests/run-all.sh`,
+  written in the same batch, said four. Gate verified end to end — one unguarded
+  `cd` injected reads "ok: no errors" / ALL GREEN / exit 0 at `-S error` and
+  SC2164 / FAILED / exit 1 at `-S warning`. It has since caught two pieces of this
+  release's own repair work: an `LT_LIB_LOADED` only its consumers read, and an
+  `$_fn[` that shellcheck reads as an array expansion.
 - **fix(portability)**: the macOS arm. Three of them are in SHIPPED code: both hooks
   bounded their subprocesses with `timeout` and checked only that name, so on macOS
   + homebrew coreutils — the exact host the drivers' own `gtimeout` fallback exists
@@ -125,23 +140,106 @@ rule you have to remember to fix twice.
   gate is inert without its sentinel. Both gates now carry the framing
   `ledger-gate.sh`'s own header requires (audit K-04).
 
+### The review round
+
+Three fresh reviewers, empty context, split by component. They found one CRITICAL
+and six HIGHs inside the four items above, and the repairs are the rest of this
+release. Both CRITICALs were reproduced here before anything was changed.
+
+- **fix(sandbox)**: a `lib.sh` that PARSES is not a `lib.sh` that is whole. The
+  fail-closed source block the extraction added checks that `.` succeeds, which a
+  truncated copy does at most cut points — the file is several hundred lines with
+  long prose between functions. Measured on the cut one line above
+  `wt_ownership() {`: `bash -n` clean, `.` returns 0, and then
+  `sandbox-clean.sh: line 389: wt_ownership: command not found` /
+  `removed worktree …/proj-qa-loop` / `done.` at exit 0. The empty output of a
+  command that does not exist was reaching the ownership switch, whose default arm
+  was `*)  # ours` — the destructive one. On the setup side the same missing
+  function left `WT_STATE` empty and its ownership `case` had NO default arm, so it
+  fell through to "already initialized", armed `.active` and exited 0 with nothing
+  isolated: S-01 again, and `round-0.md` §7 tells the agent exit 0 means isolation
+  holds. Fixed in two layers — `lib.sh` sets `LT_LIB_LOADED=1` as its last
+  statement and all four consumers check it AND the names they need; and `ours` is
+  now spelled out with the DEFAULT refusing, in both scripts. Verified against a
+  real install, not the working tree: truncating the INSTALLED `lib.sh` gives clean
+  exit 1, setup exit 2, the driver exit 2 naming all nine functions, and the
+  worktree still on disk.
+- **fix(docs)**: the four assertions that locked the new §7 were green against a
+  §7 that restores the defect they exist to hold — 49 passed, 0 failed over a table
+  reading `OPEN` · `FIXING` · `FIXED_UNVERIFIED` → `VERIFIED`, 重放非必需, which
+  `SKILL.md` and `README.md` both call a stop-the-run violation. Every needle
+  matched a token the wrong document keeps. They now PARSE the table, which is what
+  it bought over the sketch: exactly one row may reach `VERIFIED` and it must start
+  at `FIXED_UNVERIFIED`, the parking row's source set must carry `OPEN` and
+  `FIXING`, no cell may name a state outside the eight. Five mutations, each named
+  by the assertion it breaks.
+- **fix(docs)**: two transitions the table forbade and the loop needs.
+  `FIXED_UNVERIFIED → OPEN` — a replay that FAILS is the ordinary case and
+  `loop-round.md` 第 5 步 orders it, while the closure sentence said it does not
+  exist. And parking → parking: `moa-decision.md` makes 保持现状 / 不做 a legal
+  answer to a `NEEDS_CONFIRMATION`, which is `WONT_FIX`, and `FIXING` was the only
+  exit. `round-0.md`'s ledger reconciliation also went `OPEN` → `FIXED_UNVERIFIED`
+  directly.
+- **fix(docs)**: the K-04 repair changed `SKILL.md` and left five copies of the
+  unconditional claim standing — `README.md`'s FAQ, `README.zh-CN.md` ×2,
+  `round-0.md` ×2 — and `SKILL.md`'s own red-line heading still ranked 机制层第一,
+  纪律层第二 eleven lines above the note saying the discipline layer is what binds.
+  The new gate discovers the files from git and reads by PARAGRAPH, because
+  `README.md` states the bounds correctly in one section and overstated them in
+  another. Its first two forms were blind to their own subject and both blindnesses
+  are written into its header; the absolute three-phrase ban then found a third
+  `round-0.md` occurrence inside the repair's own replacement text.
+- **fix(tests)**: the macOS-matrix scan shipped without the two counting guards its
+  sibling 200 lines above carries, in the same file, under a comment that spells
+  out why. One added `case` line took an injected, executed `sed -i` from 12/1 back
+  to 13/0. Exemptions are now counted in (pattern, file) pairs and pinned at 4, and
+  two independent equalities cover the outer and inner loops — a stdin-eating line
+  in the body reads "visited 1 of 59 discovered files". The scan's under-match
+  disclosure was also wrong in the permissive direction: `env touch -d @1 f`
+  matches, and what actually hides the spelling is `touch --date=` / `sed
+  --in-place`, both measured.
+- **fix(tests)**: `mk_ws` returned 0 with a workspace it had not finished building
+  — the subshell's status was discarded. Ninety-six call sites take that value and
+  none checks it, so the diagnosis now comes from `mk_ws`.
+  `tests/meta/sandbox-fixture.test.sh` is new and pins it.
+- **fix(tests)**: the runner's residue scan watched `$TMPDIR` and not the
+  repository it runs in. A run left `run-clean.sh`, `sentinel.pid` and `shim7/ps`
+  at the top of the working tree with every gate green — caught by `git status` at
+  commit time, after `git add -A` had staged them. The comment fifty lines above
+  that scan already named the destination ("`mkdir proj; git init` in the runner's
+  own cwd, which is the repository root"); nothing checked it. Now snapshotted per
+  suite via `git status --porcelain`, so the gate names which suite wrote and what:
+  `?? leaked-fixture.txt` and ` M README.md`, both verified end to end.
+- **fix(tests)**: the single-definition gate looped over `mval` and `marker_key`
+  only — under a commit titled "one marker reader and one ownership verdict, not
+  two of each" — so a re-introduced local `wt_ownership` or `wt_gitdir_of`, the two
+  that decide what gets deleted, kept it green.
+- **fix(scripts)**: `wt_ownership`'s header promised `ours` for "the stamp file is
+  gone but the branch still matches" — the branch-name fallback the code
+  twenty-five lines below says, at length, was deleted for firing on the harvest
+  workflow this tool tells users to perform. Second contract-vs-code drift in that
+  one comment; the extraction caught the first.
+
 ```
-TOTAL: 44 suites, 1873 assertions, 0 failed, 0 skipped, 0 case-skips (space-free $TMPDIR; timeout; node present)
-TOTAL: 44 suites, 1349 assertions, 0 failed, 11 skipped, 5 case-skips (space-free $TMPDIR; no timeout/gtimeout; node present)
-TOTAL: 44 suites, 1868 assertions, 5 failed, 0 skipped, 0 case-skips (spaced $TMPDIR; timeout; node present)
+TOTAL: 45 suites, 1912 assertions, 0 failed, 0 skipped, 0 case-skips (space-free $TMPDIR; timeout; node present)
+TOTAL: 45 suites, 1388 assertions, 0 failed, 11 skipped, 5 case-skips (space-free $TMPDIR; no timeout/gtimeout; node present)
+TOTAL: 45 suites, 1907 assertions, 5 failed, 0 skipped, 0 case-skips (spaced $TMPDIR; timeout; node present)
 ```
 
-bash3.test.sh goes 12 assertions to 11 and then to 13 with the macOS-matrix scan
-and its controls. run-all-precondition.test.sh goes 52 to 70, and 13 of the 18 fail
-against the runner at `5859378` — restoring the defect is the mutation check for
-each of them.
+`0.16.0` measured 1857 on the first arm. bash3.test.sh goes 12 assertions to 11
+and then to 13 with the macOS-matrix scan and its controls;
+run-all-precondition.test.sh goes 52 to 70; convergence-criteria.test.sh 45 to 55;
+loop-testing.test.sh 107 to 115; setup-marker-integrity.test.sh 52 to 71. The 45th
+suite is the new `mk_ws` fixture gate.
 
-The third line is unchanged in kind: the same five `update-check` failures under a
-spaced `$TMPDIR` and the same two session-stderr leak gates (24 and 25 directories),
-none of them touched by this batch and all three still open.
+The third arm, re-measured rather than carried over: all five failures are in
+`tests/hooks/update-check.test.sh`, none of them touched by this release. The
+previous entry also attributed two session-stderr leak gates to that arm; they do
+not fail in this measurement, and that attribution is withdrawn rather than
+repeated.
 
-**This batch has had no independent review round.** Every release here that skipped
-one had defects found in it afterwards, three times inside the repairs themselves.
+**Not verified on macOS**: no BSD host was available, so the three BSD branches are
+reasoned, scanned and reviewed — not executed.
 
 ## 0.16.0 — 2026-09-22
 
