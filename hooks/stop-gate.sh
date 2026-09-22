@@ -44,6 +44,18 @@ if [ "${LOOP_TESTING_DISABLE_STOP_GATE:-0}" = "1" ]; then
   exit 0
 fi
 
+# Watchdog binary, resolved once for both bounded calls below. macOS ships no
+# `timeout`; homebrew's coreutils installs it as `gtimeout` — the same host the
+# drivers' own fallback (unattended-loop.sh, unattended-codex.sh) exists to
+# serve. Both sites here checked `timeout` alone and fell through to an UNBOUNDED
+# call, so on exactly that host the two budgets this gate documents were not
+# applied. Empty means neither binary is present, which is still a supported
+# host: the calls run unbounded, as they did before, because a hook that refuses
+# to run is worse than one whose budget the platform's own kill enforces.
+LT_TIMEOUT=""
+if command -v timeout >/dev/null 2>&1; then LT_TIMEOUT=timeout
+elif command -v gtimeout >/dev/null 2>&1; then LT_TIMEOUT=gtimeout; fi
+
 # --- anchor to the project root (audit HK-7) ----------------------------------
 # The hook process cwd is NOT guaranteed to be the directory holding
 # docs/looptesting/ (e.g. a session launched from a subdirectory). Resolving
@@ -127,8 +139,8 @@ if [ "$ANCHOR_FAILED" = 0 ] && [ ! -d docs/looptesting ] && command -v git >/dev
   # named as its justification, and no timeout flag covers it. Kept because a
   # killed Stop hook resolves as ALLOW, so a fail-open path inside a fail-closed
   # gate is worth the one subprocess.
-  if command -v timeout >/dev/null 2>&1; then
-    GTOP=$(timeout -k 1 5 git rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$LT_TIMEOUT" ]; then
+    GTOP=$("$LT_TIMEOUT" -k 1 5 git rev-parse --show-toplevel 2>/dev/null)
   else
     GTOP=$(git rev-parse --show-toplevel 2>/dev/null)
   fi
@@ -179,8 +191,8 @@ fi
 # MAX_FIELD_LINES instead, because the platform's own 15s kill means ALLOW.
 GATE_BUDGET="${LOOP_TESTING_GATE_TIMEOUT:-10}"
 case "$GATE_BUDGET" in *[!0-9]*|"") GATE_BUDGET=10 ;; esac
-if command -v timeout >/dev/null 2>&1; then
-  FIELDS=$(timeout "$GATE_BUDGET" grep -aE '^(status|round):' "$STATE" 2>/dev/null); rc=$?
+if [ -n "$LT_TIMEOUT" ]; then
+  FIELDS=$("$LT_TIMEOUT" "$GATE_BUDGET" grep -aE '^(status|round):' "$STATE" 2>/dev/null); rc=$?
 else
   FIELDS=$(grep -aE '^(status|round):' "$STATE" 2>/dev/null); rc=$?
 fi

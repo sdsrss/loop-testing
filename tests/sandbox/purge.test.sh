@@ -37,7 +37,12 @@ cleanup_all() {
 trap cleanup_all EXIT
 
 mark_terminal() { # repo — flip the seeded STATE.md to a terminal status
-  sed -i 's/^status: RUNNING/status: CONVERGED/' "$1/docs/looptesting/STATE.md"
+  # `-i.bak`, not bare `-i`: BSD/macOS sed reads the argument AFTER -i as the
+  # backup suffix, so `sed -i 's/…/' file` there consumes the script as a suffix
+  # and then has no script left. The suffix must be attached to the flag to mean
+  # the same thing on both. Same form as tests/commands/isolation-gate.test.sh.
+  sed -i.bak 's/^status: RUNNING/status: CONVERGED/' "$1/docs/looptesting/STATE.md" \
+    && rm -f "$1/docs/looptesting/STATE.md.bak"
 }
 
 # --- A. non-terminal STATE: --purge refuses (exit 3) BEFORE doing anything ----

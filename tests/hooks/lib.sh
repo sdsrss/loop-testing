@@ -99,6 +99,77 @@ run_ledger() {
   ( cd "$ws" && printf '%s' "$json" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" ) >/dev/null 2>&1
 }
 
+# set_mtime_epoch <file> <epoch> — portable `touch -d @<epoch>`, verified.
+#
+# GNU and uutils take `-d @<epoch>`; BSD/macOS touch does not and exits with a
+# usage error. Discarded, that error leaves the file at its CURRENT mtime, and
+# every "N days old" premise built on it becomes false while the case still runs.
+# One of the three call sites in stop-gate.test.sh asserts that an OLD remnant
+# still blocks when staleness is switched off — a premise-free file blocks for the
+# ordinary reason, so that case would have passed on macOS having tested nothing.
+#
+# `date -r <epoch>` is the BSD spelling for formatting an epoch and GNU date
+# rejects it (its -r takes a FILE), so the second branch only yields a stamp on
+# the platform it exists for.
+#
+# The result is checked, not assumed: a reference file created now must be NEWER
+# than the target. That is what makes "the touch silently did nothing" a failure
+# here instead of a green case somewhere else.
+set_mtime_epoch() {
+  local f="$1" e="$2" stamp ref rc=0
+  if ! touch -d "@$e" "$f" 2>/dev/null; then
+    stamp=$(date -r "$e" +%Y%m%d%H%M.%S 2>/dev/null) || return 1
+    touch -t "$stamp" "$f" 2>/dev/null || return 1
+  fi
+  ref="$f.mtimeref.$$"
+  : > "$ref" || return 1
+  [ "$f" -ot "$ref" ] || rc=1
+  rm -f "$ref"
+  return "$rc"
+}
+
+# age_file <file> <seconds-ago> <what-it-is-for> — set_mtime_epoch as a COUNTED
+# assertion, so the premise is reported in both directions rather than only when
+# something downstream happens to notice.
+age_file() {
+  if set_mtime_epoch "$1" "$(( $(date +%s) - $2 ))"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: fixture: could not age $1 by ${2}s — $3" >&2
+  fi
+}
+
+# mk_gtimeout_farm <dir> — a PATH directory that is the macOS arm: everything the
+# hooks need EXCEPT `timeout`, plus a `gtimeout` that records each call in
+# <dir>/gtimeout.calls and then runs the command it was given.
+#
+# Built by copying /bin and /usr/bin rather than from a remembered tool list: a
+# hand-written list in this tree has already omitted `env` and then `tail`, and
+# each omission surfaced as a case failing with a message that read like a defect
+# in the thing under test and was the harness's own missing tool.
+#
+# The shim strips timeout's own leading arguments itself instead of delegating to
+# a real watchdog binary. Delegating would make the case depend on the host having
+# `timeout` — the very binary this arm is defined by NOT having — so a host
+# without one would silently test nothing.
+mk_gtimeout_farm() {
+  local d="$1" fp c p
+  for fp in /bin/* /usr/bin/*; do
+    [ -x "$fp" ] && ln -sf "$fp" "$d/${fp##*/}" 2>/dev/null
+  done
+  for c in git jq python3 bash; do
+    p=$(command -v "$c" 2>/dev/null) && [ -n "$p" ] && ln -sf "$p" "$d/$c" 2>/dev/null
+  done
+  : "${d:?}" && rm -f "$d/timeout" "$d/gtimeout"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "call\\n" >> "%s/gtimeout.calls"\n' "$d"
+    printf 'while [ $# -gt 0 ]; do case "$1" in -k) shift 2 ;; -*) shift ;; [0-9]*) shift; break ;; *) break ;; esac; done\n'
+    printf 'exec "$@"\n'
+  } > "$d/gtimeout"
+  chmod +x "$d/gtimeout"
+}
+
 assert_rc()     { if [ "$1" -eq "$2" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — expected rc $2 got $1" >&2; fi; }
 assert_exists() { if [ -e "$1" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $2 — missing: $1" >&2; fi; }
 assert_absent() { if [ ! -e "$1" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $2 — should be absent: $1" >&2; fi; }

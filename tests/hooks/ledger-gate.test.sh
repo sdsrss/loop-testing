@@ -693,4 +693,21 @@ assert_rc $? 0 "no anchor supplied: the toplevel replay footprint is still found
 ( cd "$MONOL/pkgs/app" && printf '%s' "$json_bash2" | env -u CLAUDE_PROJECT_DIR bash "$LEDGER" ) >/dev/null 2>&1
 assert_rc $? 2 "no anchor supplied: an unreplayed VERIFIED write is still denied"
 
+# The same walk-up on the macOS arm: no `timeout` on PATH, `gtimeout` in its
+# place. The bounded `git rev-parse` that finds the toplevel resolved the first
+# name only, so on that host this gate's one subprocess ran unbounded — the
+# fail-open path inside a fail-closed gate that the comment above it says the
+# budget exists to cap. The farm lives inside $MONOL so the trap above cleans it.
+GTFARML="$MONOL/.gtfarm"; mkdir -p "$GTFARML"
+mk_gtimeout_farm "$GTFARML"
+if [ -z "$(PATH="$GTFARML" command -v timeout 2>/dev/null)" ] \
+   && [ -n "$(PATH="$GTFARML" command -v gtimeout 2>/dev/null)" ]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: the synthesized macOS arm is not the host this case claims to synthesize" >&2
+fi
+( cd "$MONOL/pkgs/app" && printf '%s' "$json_bash" \
+  | env -u CLAUDE_PROJECT_DIR PATH="$GTFARML" bash "$LEDGER" ) >/dev/null 2>&1
+assert_exists "$GTFARML/gtimeout.calls" "with no timeout on PATH the walk-up bounds its git call with gtimeout"
+
 report "ledger-gate.test.sh"

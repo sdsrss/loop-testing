@@ -494,9 +494,13 @@ rm -rf "${WS22:?}/proj-qa-loop"                 # sandbox dir deleted by hand ->
 ( cd "$WS22/proj" && bash "$CLEAN" ) >/dev/null 2>&1
 assert_ok $? "clean exits 0 while clearing a stale registration"
 assert_exists "$WS22/proj/.git/worktrees/user-wt" "the user's own worktree registration survives"
-if ( cd "$WS22/user-wt-moved" && git worktree repair >/dev/null 2>&1 ); then
-  PASS=$((PASS+1)); else
-  FAIL=$((FAIL+1)); echo "  FAIL: the user can no longer repair their relocated worktree" >&2; fi
+if git_has_worktree_repair; then
+  if ( cd "$WS22/user-wt-moved" && git worktree repair >/dev/null 2>&1 ); then
+    PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: the user can no longer repair their relocated worktree" >&2; fi
+else
+  echo "  skip: this git has no \`worktree repair\` (2.30+) — the user's route back cannot be exercised, and its absence is not a verdict on clean"
+fi
 if ( cd "$WS22/proj" && git worktree list --porcelain | grep -qxF "worktree $WS22/proj-qa-loop" ); then
   FAIL=$((FAIL+1)); echo "  FAIL: our own stale registration was not cleared" >&2
 else PASS=$((PASS+1)); fi
@@ -545,9 +549,13 @@ rm -rf "${WS25:?}/proj-qa-loop"
 ( cd "$WS25/proj" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
 assert_ok $? "setup rebuilds over its own stale registration"
 assert_exists "$WS25/proj/.git/worktrees/user-wt" "setup leaves other worktrees' registrations alone"
-if ( cd "$WS25/user-wt-moved" && git worktree repair >/dev/null 2>&1 ); then
-  PASS=$((PASS+1)); else
-  FAIL=$((FAIL+1)); echo "  FAIL: setup left the user unable to repair their worktree" >&2; fi
+if git_has_worktree_repair; then
+  if ( cd "$WS25/user-wt-moved" && git worktree repair >/dev/null 2>&1 ); then
+    PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: setup left the user unable to repair their worktree" >&2; fi
+else
+  echo "  skip: this git has no \`worktree repair\` (2.30+) — the user's route back cannot be exercised, and its absence is not a verdict on setup"
+fi
 
 # --- case 26: a purge that could not remove OUR worktree is not done either ---
 # Every other outcome that leaves a worktree standing marks the purge partial.
