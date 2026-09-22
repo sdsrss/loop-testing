@@ -299,7 +299,9 @@ without converging, it honestly reports `INCOMPLETE` — never a fake `PASS`.
 
 **Q: Is the experience the same on Claude Code and Codex?**
 The core skill and artifacts are identical. Difference: Claude Code has the hooks
-mechanism layer (mechanically forbids stopping before convergence); Codex has no hooks and
+mechanism layer — a Stop-hook that blocks ending the session before convergence, bounded
+as described above (force-allow after 3 no-progress blocks, inert without the sentinel):
+it raises the cost of stopping early, it does not forbid it. Codex has no hooks and
 relies on prompt discipline + the unattended driver (see Known limitations).
 
 ---

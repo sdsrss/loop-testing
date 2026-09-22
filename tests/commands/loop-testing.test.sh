@@ -472,6 +472,115 @@ if grep -qF 'not a git repository — refusing to build a sandbox that cannot be
   pass "sandbox-setup.sh still prints the refusal the READMEs quote"
 else fail "sandbox-setup.sh's non-git refusal no longer matches the README text (K-13)"; fi
 
+# --- K-04: a mechanism-layer claim has to carry its ceiling -------------------
+# stop-gate.sh is a SOFT gate and every bound is in its own source: MAX_BLOCKS=3
+# then it allows the stop itself (hooks/stop-gate.sh:156,264), the platform
+# force-allows at 8 (:22), it is inert without docs/looptesting/.active (:153),
+# a run idle past LOOP_TESTING_GATE_STALE_SECONDS (default 24h) disarms itself
+# (:209), and LOOP_TESTING_DISABLE_STOP_GATE=1 switches it off (:43). A document
+# that says the mechanism layer forbids stopping, and stops there, hands the
+# model a guarantee the code does not make — which is the framing ledger-gate.sh's
+# own header requires of both gates (audit K-04).
+#
+# WHY A SCAN AND NOT A NEEDLE. The repair that earned this gate rewrote the claim
+# in SKILL.md and left FIVE other copies standing — README.md's FAQ,
+# README.zh-CN.md twice, round-0.md twice — because nothing looked for them. So
+# the files are DISCOVERED from git, and the unit is the PARAGRAPH: README.md
+# states the bounds correctly in one section and overstated them in another, and
+# a file-level check reads that file as clean.
+_k04_rc=0
+_k04_all=$( (cd "$REPO_ROOT" && git ls-files -- README.md README.zh-CN.md skills) 2>/dev/null ) || _k04_rc=$?
+_k04_md=$(printf '%s\n' "$_k04_all" | grep '\.md$' || true)
+_k04_n=$(printf '%s\n' "$_k04_md" | grep -c . || true)
+if [ "$_k04_rc" -eq 0 ] && [ "${_k04_n:-0}" -ge 8 ]; then
+  pass "K-04 scan discovered ${_k04_n} shipped Markdown files to read"
+else
+  fail "K-04 scan discovered ${_k04_n:-0} files (git rc=$_k04_rc) — a scan over nothing reports clean"
+fi
+
+# Paragraph mentions the stop hook AND describes it holding the session in, but
+# names no ceiling -> the claim is unbounded.
+#
+# WHAT THE SCAN CANNOT SEE, measured rather than assumed — twice, because the
+# first two forms of it were both blind to their own subject.
+#   (1) Keyed on the hook's name plus any of 禁止/拦截/续跑/护栏/blocks/prevents,
+#       it flagged six paragraphs that are all correct: the two describing the
+#       sentinel, the one documenting the 24h auto-disarm, `report` mode's own
+#       禁止开跑, exit-and-report.md's field mapping, STATE.md's header. Breadth
+#       is not rigour: a gate whose failures get read past is off.
+#   (2) Narrowed to the pair (hook, forbidding a stop) with an exemption for a
+#       paragraph saying THIS PLATFORM HAS NO SUCH GATE, it went green on the
+#       very revert it exists to catch. README.md's FAQ says "hooks mechanism
+#       layer", never "Stop-hook", and it names Codex's lack of hooks in the same
+#       breath — so the claim was invisible for two independent reasons at once,
+#       and a comparison paragraph is exactly where the overstatement lives.
+# Hence: the mechanism layer counts as a name for the hook, and there is no
+# platform exemption — README.zh-CN.md's 已知限制 bullet was reworded instead, so
+# the forbidden phrasings below can be absolute. A claim in words none of these
+# alternations carry is still invisible; that is the residual, and it is why the
+# literal-needle gate below sits beside the scan rather than being replaced by it.
+_k04_scan() { # file -> prints offending paragraphs, one per line
+  awk 'BEGIN{RS="";ORS="\n"}
+       /stop-gate|Stop-hook|Stop hook|stop hook|stop_gate|机制层|mechanism layer/ &&
+       /禁止停止|未收敛禁止|机制性禁止|强制续跑|不得停止|不许停|forbids stopping|prevents stopping|mechanically forbids|blocks ending/ &&
+       !/MAX_BLOCKS|有上限|软门|连挡 3 次|3 次后自行放行|after 3|no-progress blocks|bounded|有界|soft gate|LOOP_TESTING_DISABLE_STOP_GATE|LOOP_TESTING_GATE_STALE/ \
+       { gsub(/\n/," "); print substr($0,1,110) }' "$1"
+}
+_k04_bad=""
+for _f in $_k04_md; do
+  _hit=$(_k04_scan "$REPO_ROOT/$_f") || true
+  [ -n "$_hit" ] && _k04_bad="$_k04_bad$_f: $_hit"$'\n'
+done
+if [ -z "$_k04_bad" ]; then
+  pass "no shipped doc claims the stop hook holds the session without naming its ceiling (K-04)"
+else
+  fail "K-04: unbounded mechanism-layer claim(s): $(printf '%s' "$_k04_bad" | tr '\n' ' | ')"
+fi
+
+# Three phrasings are banned outright, in every shipped doc, with no exemption:
+# each states the guarantee as unconditional in so many words, and each was in
+# the tree when the repair that changed SKILL.md alone was called finished. The
+# list IS the policy here rather than documentation of it — like the exemption
+# count in tests/portability — so it is meant to redden if one comes back.
+_k04_banned=""
+for _f in $_k04_md; do
+  for _ph in 'mechanically forbids' '机制性禁止' '未收敛禁止停止'; do
+    if grep -qF -- "$_ph" "$REPO_ROOT/$_f"; then _k04_banned="$_k04_banned$_f:$_ph "; fi
+  done
+done
+[ -z "$_k04_banned" ] \
+  && pass "none of the three unconditional phrasings survives in a shipped doc (K-04)" \
+  || fail "K-04: unconditional phrasing back in shipped docs: $_k04_banned"
+
+# The scan must be able to fail. Both controls run against fixtures, because the
+# repo is (correctly) clean and a green scan over a clean tree proves nothing —
+# this file's sibling suite shipped a gate that printed nothing at all and passed.
+_k04_tmp=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-k04.XXXXXX") || _k04_tmp=""
+if [ -n "$_k04_tmp" ]; then
+  printf 'intro paragraph\n\nClaude Code 的 stop-gate 在机制层强制续跑,未收敛禁止停止。\n\ntail\n' > "$_k04_tmp/bad.md"
+  printf 'intro paragraph\n\nClaude Code 的 stop-gate 强制续跑,但它是有上限的软门,连挡 3 次后自行放行。\n\ntail\n' > "$_k04_tmp/good.md"
+  [ -n "$(_k04_scan "$_k04_tmp/bad.md")" ] \
+    && pass "K-04 scan positive control: an unbounded claim is caught" \
+    || fail "K-04 scan positive control: an unbounded claim was NOT caught — the scan cannot fail"
+  [ -z "$(_k04_scan "$_k04_tmp/good.md")" ] \
+    && pass "K-04 scan negative control: a bounded claim is not flagged" \
+    || fail "K-04 scan negative control: a bounded claim was flagged — the scan is noise"
+  rm -rf "$_k04_tmp"
+else
+  fail "K-04 scan controls could not run: mktemp failed"
+fi
+
+# The numbers the prose quotes have to be the numbers the code uses. A doc that
+# says "3" against a MAX_BLOCKS of 5 is worse than one that says nothing.
+_k04_sg="$REPO_ROOT/hooks/stop-gate.sh"
+grep -qE '^MAX_BLOCKS=3([^0-9]|$)' "$_k04_sg" \
+  && pass "stop-gate.sh still sets MAX_BLOCKS=3, the ceiling the docs quote" \
+  || fail "stop-gate.sh's MAX_BLOCKS is no longer 3 — SKILL.md and both READMEs quote that number"
+has "$REPO_ROOT/skills/loop-testing/SKILL.md" "LOOP_TESTING_DISABLE_STOP_GATE=1" \
+  "SKILL.md names the human opt-out among the gate's bounds"
+has "$REPO_ROOT/skills/loop-testing/SKILL.md" "LOOP_TESTING_GATE_STALE_SECONDS" \
+  "SKILL.md names the stale-run auto-disarm among the gate's bounds"
+
 finish() {
   printf '%s: %d passed, %d failed\n' "$_name" "$_pass" "$_failn"
   [ "$_fails" -eq 0 ]
