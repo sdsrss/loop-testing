@@ -66,6 +66,22 @@ set -u
   echo "sandbox-clean: cannot source lib.sh beside this script — the install is incomplete, so this run is deleting nothing." >&2
   exit 1
 }
+# `.` succeeding says the file PARSED, not that it is whole, and a partial lib.sh
+# parses at most cut points. Measured: truncated one line above `wt_ownership() {`
+# it sources at rc 0, the ownership call below then prints nothing, and the empty
+# string used to reach this switch's default arm — which removed the worktree,
+# rc 0, "done". So check the sentinel AND the names; a verdict that could not be
+# computed is not a verdict, least of all the one that authorises deletion.
+_lt_missing=""
+[ "${LT_LIB_LOADED:-}" = 1 ] || _lt_missing=" the completion sentinel"
+for _lt_f in mval marker_key wt_gitdir_of wt_ownership; do
+  declare -F "$_lt_f" >/dev/null 2>&1 || _lt_missing="$_lt_missing ${_lt_f}()"
+done
+if [ -n "$_lt_missing" ]; then
+  echo "sandbox-clean: lib.sh beside this script sourced but is missing:$_lt_missing — a truncated or partial install, so this run is deleting nothing." >&2
+  exit 1
+fi
+unset _lt_missing _lt_f
 
 echo_info() { echo "sandbox-clean: $*"; }
 
@@ -464,7 +480,7 @@ if [ -n "$CREATED_WORKTREE" ]; then
           # the F1 defect one level down — an inspection offered as "this shows
           # you what is at risk" that hides the exact file the case is about.
           echo_info "kept worktree $CREATED_WORKTREE — its ownership marker predates worktree stamping, so nothing records that this sandbox created it and this run cannot tell it from one of yours. Look before you remove: 'git -C \"$CREATED_WORKTREE\" status --porcelain --ignored -uall' lists what is actually in there, file by file, including the build output, .env files and logs a finished loop leaves behind, which plain 'git status' does not show and which '--ignored' alone collapses into a directory name. Then, if it is the sandbox's, remove it with 'git worktree remove -- \"$CREATED_WORKTREE\"'. Note what that does NOT protect: git only refuses over tracked-modified or untracked files, never over ignored ones, so once the loop has committed its fixes it will take this worktree silently. No --force is printed here on purpose; this run cannot tell you whose work it would discard" ;;
-        *)  # ours
+        ours)
           if git -C "$TOP" worktree remove --force "$CREATED_WORKTREE" >/dev/null 2>&1; then
             echo_info "removed worktree $CREATED_WORKTREE"
           else
@@ -475,6 +491,23 @@ if [ -n "$CREATED_WORKTREE" ]; then
             echo_info "could not remove worktree via git; leaving it in place: $CREATED_WORKTREE"
             WT_KEPT=1
           fi ;;
+        *)
+          # `ours` is now spelled out and THIS is the default. It used to be the
+          # other way round — `*)  # ours` — which made every value the five arms
+          # above do not name land on `worktree remove --force`: a verdict string
+          # added to lib.sh and not wired up here, a typo, and above all the EMPTY
+          # string, which is what a call to a function that does not exist returns.
+          # Measured on a lib.sh truncated one line above `wt_ownership() {`: it
+          # parses, `.` returns 0, the call prints "command not found" to stderr,
+          # and this switch removed the worktree and printed "done" at exit 0.
+          # The guard at the top of this file now refuses that install outright;
+          # this arm is the second line, for the verdict nobody anticipated.
+          #
+          # Same rule as everywhere else in this file, from the other direction: a
+          # check that could not produce an answer has not produced the answer that
+          # authorises deletion.
+          echo_info "kept worktree $CREATED_WORKTREE — the ownership check returned '$WT_STATE', which this version of sandbox-clean does not recognise, so it cannot tell whether this worktree is its own. Nothing was removed. Inspect it with 'git -C \"$CREATED_WORKTREE\" status --porcelain --ignored -uall', and if it is the sandbox's, remove it with 'git worktree remove -- \"$CREATED_WORKTREE\"'."
+          WT_KEPT=1 ;;
       esac
       case "$WT_STATE" in foreign|unknown|legacy) WT_KEPT=1 ;; esac ;;
   esac

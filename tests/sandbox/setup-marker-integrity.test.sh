@@ -233,4 +233,110 @@ case "$OUTJ" in *"unreadable"*) PASS=$((PASS+1)) ;;
 OUTJp=$( cd "$REPOJ" && bash "$CLEAN" --purge 2>&1 )
 assert_eq "3" "$?" "blank TOP -> --purge refuses (exit 3) — output: $OUTJp"
 
+# --- K. a lib.sh that PARSES is not a lib.sh that is whole --------------------
+# The fail-closed source block added with the extraction checks that `.` SUCCEEDS.
+# That fires on a lib.sh which is missing, unreadable, syntactically broken or
+# returns non-zero — and not on one that is merely incomplete. lib.sh is ~380
+# lines with long prose blocks between functions, so a truncated copy (an
+# interrupted transfer, a full disk, a partial checkout) parses fine at most cut
+# points. The verdict of a function that does not exist is the empty string, and
+# empty used to reach the ownership switch's `*)` arm, which force-removed.
+#
+# Cut point is DERIVED, not a constant: the line before `wt_ownership() {`. A
+# hard-coded 80 would drift the first time the file above it changes, and this
+# repo has a comment block that carried three successive wrong counts.
+WSK=$(mk_ws)
+trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSJ" "$WSK" "$WSL"' EXIT
+WSL=""
+REPOK="$WSK/proj"; WTK="$WSK/proj-qa-loop"
+( cd "$REPOK" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_exists "$WTK" "fixture K: the sandbox worktree was created"
+
+INSTK="$WSK/install"; mkdir -p "$INSTK"
+cp "$(dirname "$SETUP")"/sandbox-setup.sh "$(dirname "$SETUP")"/sandbox-clean.sh "$INSTK/"
+_cut="$(grep -n '^wt_ownership() {' "$LIBSH" | head -1 | cut -d: -f1)"
+if [ -n "$_cut" ] && [ "$_cut" -gt 1 ]; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: fixture K: could not find wt_ownership() in lib.sh to cut above" >&2; fi
+awk -v n="$_cut" 'NR < n' "$LIBSH" > "$INSTK/lib.sh"
+# The premise of the whole case: if the truncated file did NOT parse, the
+# existing `. || exit` would already refuse and this case would prove nothing.
+if bash -n "$INSTK/lib.sh" 2>/dev/null; then PASS=$((PASS+1)); else
+  FAIL=$((FAIL+1)); echo "  FAIL: fixture K: the truncated lib.sh does not parse, so this case cannot tell the guards apart" >&2; fi
+if grep -q '^wt_ownership() {' "$INSTK/lib.sh"; then
+  FAIL=$((FAIL+1)); echo "  FAIL: fixture K: wt_ownership survived the cut — nothing is missing" >&2
+else PASS=$((PASS+1)); fi
+
+# PLAIN clean, not `--purge`: purge refuses earlier over a non-terminal STATE.md
+# status, so a `--purge` fixture here passes without ever reaching the ownership
+# switch — measured, and it is what the first version of this case did.
+OUTK=$( cd "$REPOK" && bash "$INSTK/sandbox-clean.sh" 2>&1 ); RCK=$?
+assert_nonzero "$RCK" "clean refuses when lib.sh sourced but does not define wt_ownership — output: $OUTK"
+assert_exists "$WTK" "and the worktree it could not judge is still on disk"
+
+# --- L. an unrecognised verdict is not a licence to delete --------------------
+# wt_ownership prints six verdicts. The switch had five named arms and `*) # ours`
+# as the default, so every value it does not know — a typo, a new verdict added to
+# lib.sh, the empty string from case K — landed on the destructive branch. That is
+# this repo's own rule from the other direction: a probe that cannot answer is not
+# the answer that authorises deletion.
+WSL=$(mk_ws)
+REPOL="$WSL/proj"; WTL="$WSL/proj-qa-loop"
+( cd "$REPOL" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_exists "$WTL" "fixture L: the sandbox worktree was created"
+INSTL="$WSL/install"; mkdir -p "$INSTL"
+cp "$(dirname "$SETUP")"/sandbox-setup.sh "$(dirname "$SETUP")"/sandbox-clean.sh "$INSTL/"
+cp "$LIBSH" "$INSTL/lib.sh"
+printf '\nwt_ownership() { printf %%s "quux"; }\n' >> "$INSTL/lib.sh"
+OUTL=$( cd "$REPOL" && bash "$INSTL/sandbox-clean.sh" 2>&1 ); RCL=$?
+assert_exists "$WTL" "an unrecognised ownership verdict keeps the worktree — output: $OUTL"
+# Exit 0 here is the CONTRACT, not an oversight: plain clean already keeps and
+# names a `foreign` / `unknown` / `legacy` worktree at exit 0, and an unrecognised
+# verdict is the same epistemic position — it cannot tell. The documented exit 4
+# ("stopped short") belongs to --purge, and WT_KEPT=1 routes this there. So what
+# is asserted is that it SAID so: a silent keep is how a user ends up with a
+# worktree nobody mentioned.
+assert_eq "0" "$RCL" "plain clean exits 0 over a kept worktree, as it does for foreign/unknown"
+case "$OUTL" in
+  *"kept worktree $WTL"*"quux"*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: the refusal must name the worktree AND the verdict it could not read — got: $OUTL" >&2 ;;
+esac
+case "$OUTL" in
+  *"removed worktree"*) FAIL=$((FAIL+1)); echo "  FAIL: clean removed a worktree on a verdict it does not recognise — got: $OUTL" >&2 ;;
+  *) PASS=$((PASS+1)) ;;
+esac
+
+# --- M. the same incomplete lib.sh, on the SETUP side -------------------------
+# The cost is the other half of S-01, and worse than clean's: setup's ownership
+# `case` had no default arm, so a verdict none of its five named left REBUILD_WHY
+# empty and fell through to "already initialized" — .active armed, exit 0, no
+# isolation. round-0.md §7 tells the agent exit 0 means isolation holds, so the
+# loop would then run against, and commit into, the user's main tree.
+WSM=$(mk_ws)
+trap 'rm -rf "$WS" "$WS2" "$WS3" "$WS4" "$WS5" "$WS6" "$WS7" "$WS8" "$WS9" "$WSJ" "$WSK" "$WSL" "$WSM"' EXIT
+REPOM="$WSM/proj"; WTM="$WSM/proj-qa-loop"
+( cd "$REPOM" && bash "$SETUP" --mode worktree ) >/dev/null 2>&1
+assert_exists "$WTM" "fixture M: a real sandbox exists for the second run to judge"
+INSTM="$WSM/install"; mkdir -p "$INSTM"
+cp "$(dirname "$SETUP")"/sandbox-setup.sh "$(dirname "$SETUP")"/sandbox-clean.sh "$INSTM/"
+awk -v n="$_cut" 'NR < n' "$LIBSH" > "$INSTM/lib.sh"
+OUTM=$( cd "$REPOM" && bash "$INSTM/sandbox-setup.sh" --mode worktree 2>&1 ); RCM=$?
+assert_eq "2" "$RCM" "setup refuses on an incomplete lib.sh (exit 2) — output: $OUTM"
+case "$OUTM" in
+  *"already initialized"*) FAIL=$((FAIL+1)); echo "  FAIL: setup claimed 'already initialized' with a lib.sh that cannot judge the worktree — got: $OUTM" >&2 ;;
+  *) PASS=$((PASS+1)) ;;
+esac
+
+# ...and an unrecognised verdict from an OTHERWISE COMPLETE lib.sh: the guard
+# above cannot see that one, so the `case`'s own default arm is what refuses.
+cp "$LIBSH" "$INSTM/lib.sh"
+printf '\nwt_ownership() { printf %%s "quux"; }\n' >> "$INSTM/lib.sh"
+OUTM2=$( cd "$REPOM" && bash "$INSTM/sandbox-setup.sh" --mode worktree 2>&1 ); RCM2=$?
+assert_eq "9" "$RCM2" "an unrecognised verdict is an untrustworthy marker (exit 9), not a green run — output: $OUTM2"
+case "$OUTM2" in
+  *"already initialized"*) FAIL=$((FAIL+1)); echo "  FAIL: setup reported isolation it could not confirm — got: $OUTM2" >&2 ;;
+  *quux*) PASS=$((PASS+1)) ;;
+  *) FAIL=$((FAIL+1)); echo "  FAIL: the refusal must name the verdict it could not read — got: $OUTM2" >&2 ;;
+esac
+assert_exists "$WTM" "neither refusal touched the worktree"
+
 report "setup-marker-integrity.test.sh"

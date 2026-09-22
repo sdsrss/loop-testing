@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # loop-testing test entry point.
 #   1. bash -n syntax check on every tracked *.sh
-#   2. shellcheck (errors only) when available
+#   2. shellcheck (errors and warnings) when available
 #   3. every tests/**/*.test.sh shell test
 #   4. node --test tests/moa/*.test.mjs when that dir exists (glob form: bare-dir positional is not discovered on node v22)
 set -u
@@ -20,7 +20,7 @@ done < <(find skills tests hooks install -name '*.sh' -type f -print0 2>/dev/nul
 [ "$sh_found" -eq 1 ] || { echo "  GATE FAIL: no *.sh files discovered"; overall=1; }
 
 if command -v shellcheck >/dev/null 2>&1; then
-  echo "== shellcheck (errors only) =="
+  echo "== shellcheck (-S warning) =="
   # No `mapfile`: it is bash 4+, and this runner has to start on macOS's bash 3.2
   # (audit T-09) — a runner that cannot run is worse than any test it would skip.
   sh_files=()
@@ -38,7 +38,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # SC1091 stays excluded (sourced paths shellcheck cannot resolve statically);
   # its non-constant sibling SC1090 is disabled at the one site that has one.
   if [ "${#sh_files[@]}" -gt 0 ] && shellcheck -S warning -e SC1091 "${sh_files[@]}"; then
-    echo "  ok: no errors"
+    echo "  ok: no errors or warnings"
   else overall=1; fi
 else
   echo "== shellcheck not installed, skipping (bash -n only) =="
