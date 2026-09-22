@@ -182,6 +182,10 @@ LIB_A="tests/driver/lib.sh"; LIB_B="tests/driver/codex-lib.sh"
 # canonically, so what is compared is what will run. Sourcing happens in a
 # subshell — these libs' top level only sets REPO_ROOT, a couple of paths, the
 # counters and the unsets, none of which escape it.
+# The path is the parameter: this helper exists to dump the same function out of
+# two DIFFERENT libs and diff them, so there is no constant for shellcheck to
+# follow and nothing it could check by following one.
+# shellcheck disable=SC1090
 fn_dump() { ( . "$1" >/dev/null 2>&1 && declare -f "$2" ) 2>/dev/null; }
 fn_drift=""; fn_empty=""
 for fn in test_wait_budget wait_lock_pid wait_pid_gone bounded require_watchdog_binary; do

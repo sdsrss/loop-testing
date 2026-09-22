@@ -20,7 +20,7 @@ PROJ="$WS/proj"
 
 for flag in --help -h; do
   for pair in "SETUP:$SETUP:sandbox-setup" "CLEAN:$CLEAN:sandbox-clean"; do
-    name="${pair%%:*}"; rest="${pair#*:}"; script="${rest%:*}"; label="${rest##*:}"
+    rest="${pair#*:}"; script="${rest%:*}"; label="${rest##*:}"
     out=$( cd "$PROJ" && bash "$script" "$flag" 2>&1 ); rc=$?
     assert_eq 0 "$rc" "$label $flag exits 0"
     printf '%s' "$out" | grep -qF 'Usage:' \

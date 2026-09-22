@@ -35,17 +35,23 @@ FAIL=0
 # in a subdir so worktree sibling paths ($WS/proj-qa-loop) stay inside $WS.
 mk_ws() {
   local ws
-  # Both checks are load-bearing. There is no `set -e` here, so an unchecked
-  # `mktemp` leaves $ws empty, the unchecked `cd ""` fails with "null directory"
-  # and CONTINUES, and everything below then runs in the caller's cwd — which for
-  # run-all.sh is the repository root, where `mkdir proj; git init` is the last
-  # thing anyone wants. A deleted TMPDIR is only one way to get there; a full or
-  # read-only TMPDIR is another.
+  # EVERY step here is load-bearing, not just the first two. There is no `set -e`,
+  # so an unchecked `mktemp` leaves $ws empty, the unchecked `cd ""` fails with
+  # "null directory" and CONTINUES, and everything below then runs in the caller's
+  # cwd — which for run-all.sh is the repository root, where `mkdir proj; git init`
+  # is the last thing anyone wants. A deleted TMPDIR is only one way to get there;
+  # a full or read-only TMPDIR is another.
+  #
+  # `mkdir proj` and `cd proj` were the two lines this paragraph described and did
+  # not guard — the repair sat directly above the defect it names. Measured with a
+  # FILE already at `$ws/proj`, so the mkdir fails: `git init` and the two `git
+  # config` calls ran in `$ws` instead of `$ws/proj`, one level below the caller's
+  # cwd rather than in it. Same shape, one directory short of the incident.
   ws=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-sb.XXXXXX") || return 1
   (
     cd "$ws" || exit 1
-    mkdir proj
-    cd proj
+    mkdir proj || exit 1
+    cd proj || exit 1
     git init -q
     git config user.email test@loop-testing.local
     git config user.name loop-testing-test

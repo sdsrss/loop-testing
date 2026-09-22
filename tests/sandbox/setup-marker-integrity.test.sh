@@ -217,6 +217,6 @@ OUTJ=$( cd "$REPOJ" && bash "$CLEAN" 2>&1 )
 case "$OUTJ" in *"unreadable"*) PASS=$((PASS+1)) ;;
   *) FAIL=$((FAIL+1)); echo "  FAIL: the same blank TOP must be unreadable to clean too — got: $OUTJ" >&2 ;; esac
 OUTJp=$( cd "$REPOJ" && bash "$CLEAN" --purge 2>&1 )
-assert_eq "3" "$?" "blank TOP -> --purge refuses (exit 3)"
+assert_eq "3" "$?" "blank TOP -> --purge refuses (exit 3) — output: $OUTJp"
 
 report "setup-marker-integrity.test.sh"

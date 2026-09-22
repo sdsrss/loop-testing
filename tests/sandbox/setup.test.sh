@@ -303,7 +303,11 @@ REPOE="$WSE/proj"
 assert_ok $? "fixture: an existing qa branch, ahead of the starting branch"
 BASE_E=$( cd "$REPOE" && git rev-parse HEAD )
 TIP_E=$( cd "$REPOE" && git rev-parse refs/heads/qa/loop-testing )
-assert_nonzero "$( [ "$BASE_E" = "$TIP_E" ]; echo $? )" "fixture: the two commits really differ"
+# Spelled out rather than `$( [ … ]; echo $? )`: in that form the `$?` belongs to
+# a condition, not to a command, and one edit inserting anything between the two
+# silently re-points it at the new command while still reading as this check.
+if [ "$BASE_E" = "$TIP_E" ]; then same_e=0; else same_e=1; fi
+assert_nonzero "$same_e" "fixture: the two commits really differ"
 ( cd "$REPOE" && bash "$SETUP" --mode branch ) >/dev/null 2>&1
 assert_ok $? "branch-mode setup onto an existing qa branch"
 TAG_E=$( cd "$REPOE" && git rev-parse -q --verify 'refs/tags/qa-baseline^{commit}' 2>/dev/null )

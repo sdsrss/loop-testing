@@ -64,7 +64,7 @@ esac
 # ...and the route works: drop the user's tag, purge again, everything goes.
 ( cd "$REPO" && git tag -d qa-baseline ) >/dev/null 2>&1
 OUT_A2=$( cd "$REPO" && bash "$CLEAN" --purge 2>&1 ); rc_a2=$?
-assert_eq "0" "$rc_a2" "after the kept ref is gone, a second purge completes"
+assert_eq "0" "$rc_a2" "after the kept ref is gone, a second purge completes — output: $OUT_A2"
 assert_absent "$REPO/docs/looptesting" "the second purge removes the evidence dir"
 
 # --- B. same-named user branch at a baseline ANCESTOR: KEPT ------------------

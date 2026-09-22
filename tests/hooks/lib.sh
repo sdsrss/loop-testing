@@ -84,6 +84,12 @@ run_stop() {
 }
 run_stop_err() { # capture stderr
   local ws="$1" active="$2"
+  # `2>&1 1>/dev/null` is the stderr-ONLY capture and the order is deliberate:
+  # stderr first inherits the substitution's stdout, then stdout is dropped. The
+  # order shellcheck asks for (`1>/dev/null 2>&1`) would discard both and hand
+  # every caller an empty string, which is the failure mode that reads as "the
+  # hook printed no diagnostic".
+  # shellcheck disable=SC2069
   ( cd "$ws" && printf '{"stop_hook_active": %s}' "$active" | env -u CLAUDE_PROJECT_DIR bash "$STOP" ) 2>&1 1>/dev/null
 }
 
