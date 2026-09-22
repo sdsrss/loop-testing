@@ -59,7 +59,17 @@ mk_ws() {
     echo "sandbox target" > README.md
     git add .gitignore README.md
     git commit -qm "initial"
-  ) >/dev/null
+  ) >/dev/null || {
+    # The `|| exit 1` guards above stop the stray writes; they do not stop mk_ws
+    # from HANDING BACK a path whose proj/ was never built. The subshell's status
+    # was discarded and `echo "$ws"` ran unconditionally, so a failed fixture
+    # returned 0 with a workspace that is not one, and every assertion below it
+    # then described a repository that does not exist. 96 call sites take this
+    # value; none checks it, so the diagnostic has to come from here.
+    echo "mk_ws: could not build the fixture workspace in ${ws:-<mktemp failed>} — every assertion after this one would be about a repository that was never created" >&2
+    [ -n "$ws" ] && rm -rf "$ws"
+    return 1
+  }
   echo "$ws"
 }
 
