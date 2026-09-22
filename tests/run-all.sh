@@ -45,7 +45,8 @@ _ra_rcfail=0   # set when any suite failed through its exit code, so the
 # A run that skipped suites must not exit 0 unless somebody said so. The
 # qualification on the verdict line is stdout, and nothing reads stdout: CI, a
 # git hook and a release script all read the exit status, so without this a host
-# missing a precondition looks exactly like a host that ran all 43 suites. The
+# missing a precondition looks exactly like a host that ran every suite there is.
+# (A count here would be the third stale one in this file, so: no count.) The
 # acknowledgement is per-run and explicit; any value other than 1 — including a
 # typo — leaves it refused, because this is the fail-closed direction.
 _ra_allow_skip=0
@@ -195,7 +196,7 @@ while IFS= read -r -d '' t; do
     elif [ -n "$tally" ]; then
       echo "  GATE FAIL: $t declared precondition [$_ra_pre] but also reported assertions [$tally] — a suite that ran cases and then declared the host unfit is not a skip"
       overall=1
-    elif grep -qaE 'FAIL:|[0-9]+ passed|[0-9]+ failed' "$_ra_out"; then
+    elif grep -qaE 'FAIL:|[0-9]+ passed|[0-9]+ failed|^  ok: ' "$_ra_out"; then
       # The arm above only sees a tally this runner can PARSE. A suite whose tally
       # does not match — a name with a space in it, an indented line, a CRLF — left
       # `tally` empty, so the check passed vacuously and the skip was honoured over
@@ -211,7 +212,7 @@ while IFS= read -r -d '' t; do
       # after: all eleven real skipping suites under a binary-less PATH produce five
       # lines each and none of them match.
       echo "  GATE FAIL: $t declared precondition [$_ra_pre] and printed no tally this runner can parse, yet its output carries case results — a skip that ran cases is not a skip"
-      grep -aE 'FAIL:|[0-9]+ passed|[0-9]+ failed' "$_ra_out" | head -3 | sed 's/^/      /'
+      grep -aE 'FAIL:|[0-9]+ passed|[0-9]+ failed|^  ok: ' "$_ra_out" | head -3 | sed 's/^/      /'
       overall=1
     else
       case "$_ra_pre" in
@@ -238,7 +239,11 @@ while IFS= read -r -d '' t; do
     # bare TEST FAIL would instead blame the suite's exit code, which is not what
     # went wrong. The GATE FAIL already failed the run.
     echo "  NOT A SKIP: $t — its precondition claim was rejected above (exit $rc)"
-    [ "$rc" -eq 0 ] || _ra_rcfail=1
+    # 77 is the protocol, not a failure report, so it must not set the flag that
+    # says "some suite already surfaced its failures through its exit code" —
+    # doing so suppressed that message for an unrelated suite that really had
+    # reported one with exit 0. Any OTHER non-zero exit here did report.
+    case "$rc" in 0|77) ;; *) _ra_rcfail=1 ;; esac
   elif [ "$rc" -eq 0 ]; then echo "  ok: $t"
   else echo "  TEST FAIL: $t"; overall=1; _ra_rcfail=1; fi
   # A helper the suite's lib does not define is not a failing assertion — it is
@@ -323,7 +328,11 @@ if [ -d tests/moa ]; then
     else
     if node --test "${node_files[@]}" >"$_ra_out" 2>&1; then rc=0; else rc=1; fi
     cat "$_ra_out"
-    if [ "$rc" -eq 0 ]; then echo "  ok: moa tests"; else echo "  MOA TEST FAIL"; overall=1; fi
+    if [ "$rc" -eq 0 ]; then echo "  ok: moa tests"; else
+      # `_ra_rcfail` too: without it the run printed "no suite reported it through
+      # its exit code" one line under MOA TEST FAIL, naming a cause that is false.
+      echo "  MOA TEST FAIL"; overall=1; _ra_rcfail=1
+    fi
     # node --test reports its own totals; fold them in so one number covers the
     # whole run. Each .test.mjs file counts as one suite, same rule as shell.
     np=$(grep -E '^. pass [0-9]+$' "$_ra_out" | tail -1); np=${np##* }
