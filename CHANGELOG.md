@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.17.1 — 2026-09-22
+
+A patch for two regressions `0.17.0` shipped, and for the first attempt at
+fixing them. The `lib.sh` extraction made every entry point resolve a sibling
+file, and the resolver it used was `dirname "${BASH_SOURCE[0]}"`, so a script
+reached through a symlink (the `~/bin` shape) or run with `CDPATH=.` set
+refused to start with "the install is incomplete", a message that is false and
+that a user cannot act on. Both shapes had exited 0 at `0.16.0`. They failed
+closed and deleted nothing.
+
+The first fix replaced the lib.sh lookup with a POSIX `readlink` loop and a
+`CDPATH=''` prefix. The pre-tag review of that fix found that it had corrected
+the lookup and nothing after it. `unattended-loop.sh` and `sandbox-setup.sh`
+still derived `SCRIPT_DIR` from `dirname "$0"`, so the same two invocations now
+got PAST the gate and then used the wrong directory:
+
+```
+unattended-loop.sh via symlink   plugin_dir=/   (the link's dir, ../../..)
+unattended-loop.sh, CDPATH=.     plugin_dir=    (cd echoed into the $(...))
+sandbox-setup.sh, either shape   rc 0, none of the templates seeded
+```
+
+The driver row is the one that matters. Its sessions run with
+`--permission-mode bypassPermissions`, and a `--plugin-dir` that holds no plugin
+means stop-gate and ledger-gate never load. The first fix had turned a refusal
+into an unguarded run. It never reached a tag.
+
+- **fix(scripts)**: all four shipped scripts resolve their own directory through
+  symlinks (relative and absolute, chained, bounded at 32 hops) and are immune to
+  `CDPATH`, and the two that derive paths from it use the resolved directory.
+  `unattended-codex.sh` and `sandbox-clean.sh` derive nothing from `$0` beyond
+  `lib.sh`.
+- **test**: `tests/driver/invocation-path.test.sh` (new) asserts the plugin dir
+  the driver hands its sessions, for a direct call, an absolute link, a relative
+  link chain through a spaced directory, and a bare-relative path under
+  `CDPATH=.`. `tests/sandbox/script-help.test.sh` asserts setup seeds its
+  templates in both shapes, and `--help` works through a relative link chain for
+  all four scripts. The review measured the resolver's relative-target line and
+  its in-loop `CDPATH=''` as each deletable with the old suite green. Each
+  deletion now reddens exactly those 4 cases.
+- **fix(tests)**: the macOS-matrix scan now catches the GNU long-option spellings
+  (`touch --date=@1`, `sed --in-place`, `-d@1`). `set_mtime_epoch` reads the
+  mtime back instead of trusting `-ot`, which compares whole seconds. The
+  gtimeout shim no longer spins on a bare `-k`.
+- **docs**: the `0.17.0` note said the scan covers "every tracked `*.sh`". It
+  covers four roots, and that happened to be the same set. Three hand-written
+  counts in comments were wrong. Two are gone rather than restated (lib.sh's
+  "195 lines", the scan's "59 of 59"). The third, `tests/run-all.sh`'s
+  shellcheck exemption count, now sits beside the list it counts.
+
+Suites, `bash tests/run-all.sh`: `0.17.0` 45 suites / 1912 assertions →
+46 suites / 1944 assertions, 0 failed, ALL GREEN. The other two arms, same
+commit:
+
+```
+no timeout/gtimeout   TOTAL: 46 suites, 1420 assertions, 0 failed, 11 skipped, 5 case-skips
+spaced $TMPDIR        TOTAL: 46 suites, 1939 assertions, 5 failed   -> FAILED
+```
+
+The spaced arm is red, and it was red the same way at `0.17.0` (45 suites,
+1907 assertions, 5 failed, the same two gates). It is not fixed here. The 5
+failures are all in `tests/hooks/update-check.test.sh`. The two residue gates
+are `session-stderr` and `codex-session-stderr`, whose cleanup runs
+`rm -rf $CLEAN` unquoted, so a spaced path splits into words and the fixtures
+stay behind. Both are test-side, not in anything shipped. **Not verified on macOS**: the `bash:3.2`
+container (3.2.57) ran the resolver cases in review, and the BSD userland
+branches are still reasoned, not executed.
+
 ## 0.17.0 — 2026-09-22
 
 Three batches in one release: the two `tests/` repairs that landed on main after
