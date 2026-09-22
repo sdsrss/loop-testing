@@ -11,8 +11,8 @@ that a user cannot act on. Both shapes had exited 0 at `0.16.0`. They failed
 closed and deleted nothing.
 
 The first fix replaced the lib.sh lookup with a POSIX `readlink` loop and a
-`CDPATH=''` prefix. The pre-tag review of that fix found that it had corrected
-the lookup and nothing after it. `unattended-loop.sh` and `sandbox-setup.sh`
+`CDPATH=''` prefix. It corrected the lookup and nothing after it.
+`unattended-loop.sh` and `sandbox-setup.sh`
 still derived `SCRIPT_DIR` from `dirname "$0"`, so the same two invocations now
 got PAST the gate and then used the wrong directory:
 
@@ -37,9 +37,9 @@ into an unguarded run. It never reached a tag.
   link chain through a spaced directory, and a bare-relative path under
   `CDPATH=.`. `tests/sandbox/script-help.test.sh` asserts setup seeds its
   templates in both shapes, and `--help` works through a relative link chain for
-  all four scripts. The review measured the resolver's relative-target line and
-  its in-loop `CDPATH=''` as each deletable with the old suite green. Each
-  deletion now reddens exactly those 4 cases.
+  all four scripts. Deleting the resolver's relative-target line, or the
+  `CDPATH=''` on its in-loop `cd`, left the previous suite green. Each deletion
+  now reddens exactly those 4 cases.
 - **fix(tests)**: the macOS-matrix scan now catches the GNU long-option spellings
   (`touch --date=@1`, `sed --in-place`, `-d@1`). `set_mtime_epoch` reads the
   mtime back instead of trusting `-ot`, which compares whole seconds. The
@@ -64,8 +64,9 @@ The spaced arm is red, and it was red the same way at `0.17.0` (45 suites,
 failures are all in `tests/hooks/update-check.test.sh`. The two residue gates
 are `session-stderr` and `codex-session-stderr`, whose cleanup runs
 `rm -rf $CLEAN` unquoted, so a spaced path splits into words and the fixtures
-stay behind. Both are test-side, not in anything shipped. **Not verified on macOS**: the `bash:3.2`
-container (3.2.57) ran the resolver cases in review, and the BSD userland
+stay behind. Both are test-side, not in anything shipped.
+
+**Not verified on macOS**: no BSD host was available, so the BSD userland
 branches are still reasoned, not executed.
 
 ## 0.17.0 — 2026-09-22
