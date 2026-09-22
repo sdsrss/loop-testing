@@ -1,5 +1,248 @@
 # Changelog
 
+## 0.16.0 — 2026-09-22
+
+The two residuals `0.15.0` filed for a release of its own, and what measuring them
+turned up: the first was understated by eleven suites and 171 failures. Everything
+here is under `tests/`; no product script changed.
+
+Suite 43 suites / 1784 assertions -> the runner's own line, quoted verbatim, on
+each of the arms it now names:
+
+```
+TOTAL: 44 suites, 1840 assertions, 0 failed, 0 skipped, 0 case-skips (space-free $TMPDIR; timeout; node present)
+TOTAL: 44 suites, 1316 assertions, 0 failed, 11 skipped, 5 case-skips (space-free $TMPDIR; no timeout/gtimeout; node present)
+TOTAL: 44 suites, 1835 assertions, 5 failed, 0 skipped, 0 case-skips (spaced $TMPDIR; timeout; node present)
+```
+
+The middle line is the point of the release and the second arm is FAILED, not
+green: eleven suites did not run, and a run that skipped suites no longer exits 0
+unless you say so. `LOOP_TESTING_ALLOW_SKIP=1` turns it green with the counts
+unchanged. Recompute any of them with `bash tests/run-all.sh | grep '^TOTAL:'`.
+
+**What the recorded residual said, and what was there.** `0.15.0` filed "on a host
+with neither `timeout` nor `gtimeout`, `driver-limits` 14/21 and `codex-limits`
+27/17 — 38 failures with no explanation". Measured at `v0.15.0` from a clean
+detached worktree on a PATH farm of `/bin` + `/usr/bin` minus both binaries:
+
+```
+TOTAL: 43 suites, 1460 assertions, 209 failed (space-free $TMPDIR; no timeout/gtimeout — watchdog cases skipped; node present)
+```
+
+Thirteen suites, not two. Two independent runs — one of them under load from
+another process on the box — returned the same thirteen and the same per-suite
+tallies, which is how the cause is known to be deterministic rather than timing.
+Note also what that arms clause says: "watchdog cases skipped", false in both
+halves. Nothing skipped, and those suites failed. The drift this line exists to
+prevent had been written into the line's own comment, and the repair of it then
+carried a stale count of its own; it now names no numbers at all, because the run
+prints them.
+
+Eleven of the thirteen are driver suites and the cause is one thing: without a
+wall-clock watchdog the driver REFUSES to start (DR-7), correctly, so every case
+needing a running driver measures that refusal. They now declare a suite-level
+precondition and skip whole. Per-case skips were the rejected alternative — two
+reviewers reached that independently in the `0.15.0` round, and the guard would
+have to be pasted onto nearly every case in eleven files while each suite still
+published a tally for a run that proved nothing.
+
+**What the precondition costs, stated.** On such a host those eleven suites
+contribute nothing: 190 passes and 202 failures, 392 decisions, no longer run. The
+DR-7 cases go with them even though they pass there, because they build their own
+binary-less PATH and need nothing from the host. Three driver-invoking suites
+deliberately do NOT declare it and were measured green on that arm —
+`agent-binary-preflight` (passes `--no-watchdog` throughout), `driver-help` and
+`prompt-isolation` (which only greps the drivers' source and never runs them).
+
+**Skipping is the direction that hides things here**, so it is a protocol rather
+than an early exit. A suite prints one line, `PRECONDITION NOT MET: <token>`, and
+exits 77; the runner then verifies rather than trusts. Five fail-closed checks: the
+line and the status must agree in both directions; the token must be one the runner
+knows; the precondition is re-evaluated against the host, so a suite claiming the
+watchdog is missing where one exists is a gate failure; a skipping suite must
+report no assertions; and if no parseable tally exists, its output is scanned for
+anything that looks like a case result. `ALL GREEN` no longer stands unqualified
+over a run that skipped, and the exit status is no longer 0 by default.
+
+- **fix(tests)**: the other two of the thirteen were not driver suites. Six bare
+  `timeout` calls survived review T-D's fix in `tests/hooks/stop-gate.test.sh` and
+  `tests/sandbox/setup.test.sh` — GNU-only, so 127 on stock macOS. Three of the six
+  were worse than a failure: `setup.test.sh`'s dangling-flag guards assert
+  `rc != 124`, which 127 satisfies, so **three no-hang guards PASSED over a script
+  that had never been executed**, and two `assert_absent` lines passed for the
+  mirror-image reason. Premise-guarded now, counting nothing: 74/3 -> 72/0 and 66/4
+  -> 61/0 on that arm, unchanged at 77 and 70 where a binary exists.
+- **fix(tests)**: `TIMEOUT_BIN`, `bounded()` and the new `require_watchdog_binary()`
+  have one home, `tests/lib-watchdog.sh`, sourced by all four test libs. Having no
+  shared home is why T-D's fix reached two files and missed two. Checked as a pure
+  move: `declare -f bounded` plus the resolved binary, dumped through both driver
+  libs, is byte-identical at `v0.15.0` and here.
+- **fix(tests)**: `codex-limits`' two shutdown cases counted 2 assertions when the
+  driver came up and 1 when it did not — a per-arm count behind no premise guard,
+  which is why the binary-less total came out 44 where the guarded blocks predicted
+  45. Both are constant now, and where a claim cannot be judged it is reported as
+  unevaluated AND counted as a failure, never passed. Shown by forcing
+  `wait_lock_pid` to report nothing: at `v0.15.0` the file drops 48 decisions to 46,
+  one from each case; here it stays 48.
+- **fix(tests)**: a portability scan for the bare `timeout` that has now been fixed
+  twice and returned twice. It matches the call in command position and says, in the
+  code, exactly what it cannot see — it does not parse, so a flag between the word
+  and its duration, or any of a dozen wrappers, passes unseen. Eight match routes,
+  one probe positive each, six negatives including two lines in this tree that
+  escape by a single character. The instrument that cannot be fooled is the arm
+  itself, which is why the TOTAL line names it.
+- **fix(tests)**: `tests/meta/run-all-precondition.test.sh` runs the real runner
+  against a fixture repo, fourteen scenarios, asserting both the verdict and the
+  cause. Three mutations of `run-all.sh` are recorded as reddening it.
+
+**Two review rounds, and the first found defects in every seat's area.** Four
+independent seats over the batch; eight of the fifteen commits are repairs of what
+they found. The most instructive was in the protocol's own accounting: a rejected
+precondition claim dropped the offending suite's whole tally out of `TOTAL`,
+failures included, so a suite reporting "9 passed, 4 failed" landed in the line as
+4 assertions and 0 failed — the run under-reporting failures it had just printed.
+Next to it, a hole that needed two independent changes to open: a suite whose tally
+the runner cannot parse (a space in the name, an indented line) left the
+"skipped-but-reported-assertions" check passing vacuously, and a skip was honoured
+over four printed failures. Not reachable in the tree as it stands — all thirty
+`report`/`finish` call sites pass a dotted filename — but what made it unreachable
+is a naming habit, not a check.
+
+**Corrections to the record.** Filed here because commit messages are not
+rewritten:
+
+- "Five sites in the two driver **libs**" is wrong wherever this project has said
+  it. `5187307` shows the five bare calls were in the two limits **suites** — three
+  in `driver-limits`, two in `codex-limits` — and the libs had none; they are where
+  that fix PUT the resolution. The sentence reversed the fix and the bug.
+- "`expected rc N got 2` or an absent lock pid as the signature in every one" of the
+  eleven overstated how uniform the evidence was. Measured: `session-stderr` has 38
+  failures with zero of either shape, `codex-session-stderr` 28 with zero;
+  `driver-limits` is 9 of 21 plus one lock pid, `shutdown` 1 plus 28. The refusal is
+  the single root cause in all eleven; most of the failure *messages* are downstream
+  `driver.log lacks …` consequences.
+- "Those suites reported 209 failures" used the whole-run total for a referent that
+  reported 38 (two suites) or 202 (all eleven).
+- A comment in `stop-gate.test.sh` said all three of case X's assertions failed on a
+  gtimeout-only host. Two did; the third passed vacuously, because an armed sentinel
+  survives a hook that never ran — the exact defect that block exists to remove,
+  arriving inside the comment describing it.
+- `DID_PROTECT=1` is at `unattended-codex.sh:635` and the protect chmod at `:645`.
+  A comment cited 632-635, where a reader finds prose.
+- The scan's disclosure of its own blind spots missed one: a line BEGINNING with
+  `env … timeout 5` matched nothing. Widened, with a probe route for it.
+
+**One finding filed and withdrawn.** While verifying the assertion-count fix I
+reported a vacuous pass in `codex-limits`' protect-window case and asked for
+authorisation to fix it. It does not exist: `unattended-codex.sh` arms
+`DID_PROTECT` at :635 and runs the protect chmod at :645, both BEFORE the watchdog
+refusal at :719, so the shim fires, the driver sleeps inside the chmod, and the
+SIGTERM lands in the protect window exactly as the case intends. I had checked `acquire_lock` against
+the refusal and not where protect sat between them, then drew a conclusion from the
+gap. The premise check drafted on the strength of it was removed; what survives is
+the constant assertion count, which the mutation above supports on its own.
+
+**A second review round, on the repairs, and it found five High.** Four more seats
+over `f92238e..HEAD`. Three were fail-open paths in the machinery this release
+added, and the two worth naming are the ones that were green:
+
+- The residual scan added above looked for `FAIL:` and tallies. This tree also
+  prints `  ok: <case>` for a passing case, so a suite that ran its whole fixture,
+  passed every case, and then declared a precondition was still honoured as a skip.
+  The hole was closed for failing suites only.
+- `tests/meta/run-all-precondition.test.sh` — the file added specifically to cover
+  a protocol whose whole subject is the exit status — captured the runner's output
+  and discarded `$?`. Substituting `exit 0` for `exit "$overall"` left it 33 passed,
+  0 failed: every `FAILED` string still printed. It asserts the status now, and the
+  same mutation reddens it 35/14. Its needles were also unanchored substrings, and
+  `SKIP: …` is a substring of `NOT A SKIP: …`.
+
+The other three: a failing node suite never set the flag that says a failure reached
+the verdict through an exit code, so the run printed "no suite reported it through
+its exit code" directly beneath `MOA TEST FAIL`; the repair one commit earlier set
+that same flag for a precondition claim exiting 77, suppressing the message for an
+unrelated suite that really had reported one; and a commit whose body retracts the
+sentence "the suite would report a green tally" wrote that exact sentence into two
+libs, while the other two said "would run unbounded" where the measured outcome is
+`TIMEOUT_BIN: unbound variable` and no tally at all.
+
+**Where this stopped, and why.** `§EXT §12`'s depth limit is two rounds, and the
+second found new defects in the first's repairs, so the decision to ship rather than
+open a third was the user's, with the full context in front of them. The reason to
+stop is not confidence, it is a measured rate: every repair round in this release
+introduced at least one defect of its own, and two of the corrections above are
+corrections OF corrections. A third round would find more; what it would cost is
+another round of the same.
+
+**Corrections to the record, from both rounds.** Filed here because commit messages
+are not rewritten:
+
+- "Five sites in the two driver **libs**" is wrong wherever this project has said
+  it. `5187307` shows the five bare calls were in the two limits **suites** — three
+  in `driver-limits`, two in `codex-limits` — and the libs had none; they are where
+  that fix PUT the resolution. The sentence reversed the fix and the bug.
+- `16d4089`'s three-arm measurement block quotes 44 suites, 1815 / 1292 assertions
+  and 5 case-skips under the words "measured on all three arms". Those are the NEXT
+  commit's tree: `tests/meta/run-all-precondition.test.sh` does not exist at
+  `16d4089`, which measures 43 suites, 1786 / 1265 and 4 case-skips — the numbers
+  actually run before it was committed. Future numbers, presented as measured ones.
+- "`expected rc N got 2` or an absent lock pid as the signature in every one" of the
+  eleven overstated how uniform the evidence was. Measured at `v0.15.0`:
+  `session-stderr` 38 failures with zero of either shape, `codex-session-stderr` 28
+  with zero, `driver-limits` 9 of 21 plus one, `shutdown` 1 plus 28. The refusal is
+  the single root cause in all eleven. The follow-up claim that the messages are
+  "mostly downstream `driver.log lacks …`" is also wrong: that shape is 76 of 209,
+  36%, behind `expected [X] got [Y]` at 38 and `expected rc N got N` at 36.
+- "Those suites reported 209 failures" used the whole-run total for a referent that
+  reported 38 (two suites) or 202 (all eleven).
+- "Three, two, two and five assertions did not run" behind the four premise guards:
+  the third is four, and 3+2+4+5 = 14, which is the number the `case-skips` work
+  states and the −5/−9 per-suite deltas confirm.
+- "All thirty `report`/`finish` call sites pass a dotted filename" — 31 `report`
+  calls across 30 files, plus 9 `finish` calls that pass no argument at all, and
+  five libs print tallies rather than four. The property it was arguing for does
+  hold: all 43 tally lines parse.
+- A comment in `stop-gate.test.sh` said all three of case X's assertions failed on a
+  gtimeout-only host. Two did; the third passed vacuously, because an armed sentinel
+  survives a hook that never ran — the defect that block exists to remove, arriving
+  inside the comment describing it.
+- "Two live lines escape only by luck, one because a backtick precedes and the other
+  because a `"` does." Remove either character and both are still missed: what keeps
+  them out is the `#` and the `:` further left. Naming the nearest character as the
+  cause was a guess dressed as a reading.
+- `DID_PROTECT=1` is at `unattended-codex.sh:635` and the protect chmod at `:645`;
+  a comment cited 632-635, where a reader finds prose. The arms clause claimed to
+  name no counts while carrying four. The scan's blind-spot list missed that a line
+  BEGINNING with `env … timeout 5` matched nothing, now widened and probed.
+
+**Residuals from the second round, filed rather than fixed**, because the rate above
+is the argument: the skip acknowledgement is unbounded, so with
+`LOOP_TESTING_ALLOW_SKIP=1` set every shell suite could skip and the run would still
+exit 0 — the finding it was meant to close, returning on the arm that needs it;
+`case-skips` counts shell suites only, so node's own `skipped`/`todo` reach no field;
+the CRLF display repair reaches two of four sites that print a token; two greps in
+the loop lack `-a`, so one NUL byte blanks both and the run fails naming a false
+cause; the comment defining the release-note line still says "assertion = one
+pass-or-fail decision" where the code sums passes only; `sed 's/\r/\\r/g'` is a GNU
+extension that would rewrite every literal `r` under BSD sed; in a non-UTF-8 locale
+`^. pass` misses node's `ℹ pass N` and the arms clause then says node did not run
+while it ran and passed; and in the meta suite, nine of seventeen scenarios' verdict
+assertions redden only under a composite mutation, `run_inner` neutralises
+`LOOP_TESTING_ALLOW_SKIP` and `TMPDIR` but not `LC_ALL`, `NODE_OPTIONS` or `CDPATH`,
+and two fixtures are byte-identical.
+
+**Residuals.** The three that predate this batch are unchanged and measurable on
+the spaced arm above: `update-check` fails five, and `session-stderr` /
+`codex-session-stderr` trip the fixture-leak gate with 25 and 24 directories. New
+and filed, not fixed: the `skipped` and `case-skips` fields account for suites and
+for notices, and nothing counts the ASSERTIONS a guarded block would have run —
+one `skip:` line stands for a block of any size and the runner cannot know how
+large, so a field claiming otherwise would be a number nobody could check. Also
+still open: `tests/` is out of scope for the bash-3.2 scan while the runner's own
+comment says it must start on bash 3.2, and `shutdown.test.sh`'s tally on the
+binary-less arm is harness-dependent (2/44 standalone against 17/29 under the
+runner), so per-suite numbers for that one suite do not carry across harnesses.
+
 ## 0.15.0 — 2026-09-21
 
 Four items from the 2026-09-20 audit's open list — D-07, K-14, T-16, T-08 —
