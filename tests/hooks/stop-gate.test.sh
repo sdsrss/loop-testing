@@ -304,7 +304,10 @@ if [ -n "$TIMEOUT_BIN" ]; then
     *) FAIL=$((FAIL+1)); echo "  FAIL: the refusal must name the line cap — got [$ERR23]" >&2 ;;
   esac
 else
-  echo "  skip: no timeout/gtimeout on PATH — the wall-clock bound IS case X's assertion"
+  # These messages name the block that did not run and give no count, on purpose:
+  # a number written beside a block goes stale the first time the block gains a
+  # line, which is the drift this release exists to remove.
+  echo "  skip: no timeout/gtimeout on PATH — the bound IS the assertion here, so none of case X's checks on the 20k-line parse ran"
 fi
 
 # Y. The cap must not fire on an honest file: a STATE.md with a handful of
@@ -361,7 +364,7 @@ if [ -n "$TIMEOUT_BIN" ]; then   # the bound is the assertion — see case X abo
   assert_rc $? 2 "200 lines of 100 KB values still BLOCK inside 5s (cost, not just count)"
   assert_exists "$WS27/$ACT" "a 20 MB STATE.md leaves the sentinel armed"
 else
-  echo "  skip: no timeout/gtimeout on PATH — the wall-clock bound IS case BB's assertion"
+  echo "  skip: no timeout/gtimeout on PATH — the bound IS the assertion here, so none of case BB's checks on the 20 MB STATE.md ran"
 fi
 
 # CC. The round signature must not collide on a shared prefix. Truncating it to a

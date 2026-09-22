@@ -68,7 +68,7 @@ if [ -n "$TIMEOUT_BIN" ]; then
       FAIL=$((FAIL+1)); echo "  FAIL: trailing $flag hung (exit 124)" >&2; fi
   done
 else
-  echo "  skip: no timeout/gtimeout on PATH — a no-hang guard with no bound asserts nothing"
+  echo "  skip: no timeout/gtimeout on PATH — a no-hang guard with no bound asserts nothing, so neither the trailing --mode check nor any of the dangling-flag guards ran"
 fi
 
 # --- worktree rebuild after clean removed it (audit B2) ----------------------
@@ -109,7 +109,7 @@ if [ -n "$TIMEOUT_BIN" ]; then
   assert_absent "$WS5/proj-qa-loop" "no worktree built from a dangling flag"
   assert_absent "$REPO5/docs/looptesting/.sandbox/ownership.env" "no marker written from a dangling flag"
 else
-  echo "  skip: no timeout/gtimeout on PATH — R53's dangling-flag runs need a bound"
+  echo "  skip: no timeout/gtimeout on PATH — R53's dangling-flag runs need a bound, so neither those exit-2 checks nor the worktree/marker absence checks that depend on them ran"
 fi
 
 # --- R52 (DR-9): branch-mode short-circuit re-verifies the current branch ----
