@@ -24,6 +24,18 @@ mktags() { local name="$1"; shift; local f="$WS/$name.tags.json" first=1
   { printf '['; for v in "$@"; do [ "$first" = 1 ] || printf ','; printf '{"name":"v%s"}' "$v"; first=0; done; printf ']'; } > "$f"
   echo "$f"; }
 
+# furl PATH -> a file:// URL curl will accept. A raw space is "Malformed input
+# to a URL function" (curl rc 3), and the hook reads every fetch failure as
+# offline and stays SILENT — so under a spaced $TMPDIR the five notify cases
+# failed, and every "stays silent" case below passed without a comparison ever
+# being made. `%` first, or it would re-encode the escapes that follow.
+furl() { local p="$1"; p=${p//%/%25}; p=${p// /%20}; p=${p//#/%23}; p=${p//\?/%3F}
+  printf 'file://%s' "$p"; }
+# Premise for every silent case: a fixture fetched through furl must come back.
+_probe=$(mktags probe 1.2.3)
+if curl -fsS "$(furl "$_probe")" 2>/dev/null | grep -qF '"v1.2.3"'; then PASS=$((PASS+1))
+else FAIL=$((FAIL+1)); echo "  FAIL: fixture: curl cannot read $(furl "$_probe") — every silent case below would pass vacuously" >&2; fi
+
 # `--`: a needle starting with `-` would otherwise be read as a grep option.
 assert_has()   { if printf '%s' "$1" | grep -qF -- "$2"; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $3 — output lacked [$2]; got [$1]" >&2; fi; }
 assert_empty() { if [ -z "$1" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "  FAIL: $2 — expected no output, got [$1]" >&2; fi; }
@@ -32,20 +44,20 @@ assert_empty() { if [ -z "$1" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); e
 #    via a file:// tags fixture; picks the highest semver, not the first listed).
 r=$(mkroot 0.2.6 c1); t=$(mktags c1 0.2.5 0.3.0 0.2.6)
 out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 LOOP_TESTING_UPDATE_CACHE="$WS/cache1" \
-      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$t")" bash "$UPDATE" 2>/dev/null)
 assert_has "$out" '"hookEventName":"SessionStart"' "newer tag -> emits SessionStart output"
 assert_has "$out" '0.2.6 -> 0.3.0' "newer tag -> names current -> latest (highest semver)"
 
 # 2. Latest tag == installed -> silent.
 r=$(mkroot 0.2.6 c2); t=$(mktags c2 0.2.6 0.2.5)
 out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 LOOP_TESTING_UPDATE_CACHE="$WS/cache2" \
-      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$t")" bash "$UPDATE" 2>/dev/null)
 assert_empty "$out" "up-to-date -> no notice"
 
 # 3. Installed version AHEAD of the latest tag -> silent (never downgrade-nag).
 r=$(mkroot 0.9.0 c3); t=$(mktags c3 0.2.6 0.3.0)
 out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 LOOP_TESTING_UPDATE_CACHE="$WS/cache3" \
-      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$t")" bash "$UPDATE" 2>/dev/null)
 assert_empty "$out" "installed ahead of latest -> no notice"
 
 # 4. Opt-out env silences even when an update exists.
@@ -67,19 +79,19 @@ r=$(mkroot 0.2.6 c6); cache6="$WS/cache6"
 CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 LOOP_TESTING_UPDATE_CACHE="$cache6" \
   LOOP_TESTING_UPDATE_TTL=99999 LOOP_TESTING_UPDATE_SELFTEST_LATEST=0.3.0 bash "$UPDATE" >/dev/null 2>&1
 out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 LOOP_TESTING_UPDATE_CACHE="$cache6" \
-      LOOP_TESTING_UPDATE_TTL=99999 LOOP_TESTING_UPDATE_TAGS_URL="file://$WS/does-not-exist.json" bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_TTL=99999 LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$WS/does-not-exist.json")" bash "$UPDATE" 2>/dev/null)
 assert_has "$out" '0.2.6 -> 0.3.0' "within TTL -> reuses cached latest, no network"
 
 # 6b. Throttle with an up-to-date cache -> silent, no network.
 r=$(mkroot 0.2.6 c6b); cache6b="$WS/cache6b"; mkdir -p "$cache6b"; printf '0.2.6\n' > "$cache6b/latest-tag"
 out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 LOOP_TESTING_UPDATE_CACHE="$cache6b" \
-      LOOP_TESTING_UPDATE_TTL=99999 LOOP_TESTING_UPDATE_TAGS_URL="file://$WS/does-not-exist.json" bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_TTL=99999 LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$WS/does-not-exist.json")" bash "$UPDATE" 2>/dev/null)
 assert_empty "$out" "fresh cache == installed -> no notice, no network"
 
 # 7. Offline / junk response -> silent (curl on an empty file yields no version).
 r=$(mkroot 0.2.6 c7); printf 'not json at all' > "$WS/junk.json"
 out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 LOOP_TESTING_UPDATE_CACHE="$WS/cache7" \
-      LOOP_TESTING_UPDATE_TAGS_URL="file://$WS/junk.json" bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$WS/junk.json")" bash "$UPDATE" 2>/dev/null)
 assert_empty "$out" "unparseable/offline response -> no notice"
 
 # 8. Missing CLAUDE_PLUGIN_ROOT -> silent, no crash.
@@ -106,7 +118,7 @@ r=$(mkroot 0.2.6 c9); t=$(mktags c9 0.9.9)
 DATA="$WS/plugindata"
 out=$(CLAUDE_PLUGIN_ROOT="$r" CLAUDE_PLUGIN_DATA="$DATA" LOOP_TESTING_UPDATE_FORCE=1 \
       XDG_CACHE_HOME="$WS/xdg-should-not-be-used" \
-      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$t")" bash "$UPDATE" 2>/dev/null)
 assert_has "$out" '0.2.6 -> 0.9.9' "CLAUDE_PLUGIN_DATA set -> still notifies"
 if [ -f "$DATA/latest-tag" ]; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: throttle file must live under \$CLAUDE_PLUGIN_DATA" >&2; fi
@@ -118,7 +130,7 @@ else PASS=$((PASS+1)); fi
 r=$(mkroot 0.2.6 c10); t=$(mktags c10 0.9.9)
 XDG="$WS/xdg-fallback"
 out=$(CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 XDG_CACHE_HOME="$XDG" \
-      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" env -u CLAUDE_PLUGIN_DATA bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$t")" env -u CLAUDE_PLUGIN_DATA bash "$UPDATE" 2>/dev/null)
 assert_has "$out" '0.2.6 -> 0.9.9' "no CLAUDE_PLUGIN_DATA -> still notifies"
 if [ -f "$XDG/loop-testing/latest-tag" ]; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: without CLAUDE_PLUGIN_DATA the throttle must fall back to XDG cache" >&2; fi
@@ -127,7 +139,7 @@ if [ -f "$XDG/loop-testing/latest-tag" ]; then PASS=$((PASS+1)); else
 r=$(mkroot 0.2.6 c11); t=$(mktags c11 0.9.9)
 OVR="$WS/explicit-override"
 out=$(CLAUDE_PLUGIN_ROOT="$r" CLAUDE_PLUGIN_DATA="$WS/data-loses" LOOP_TESTING_UPDATE_FORCE=1 \
-      LOOP_TESTING_UPDATE_CACHE="$OVR" LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_CACHE="$OVR" LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$t")" bash "$UPDATE" 2>/dev/null)
 if [ -f "$OVR/latest-tag" ]; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: LOOP_TESTING_UPDATE_CACHE must outrank CLAUDE_PLUGIN_DATA" >&2; fi
 
@@ -139,7 +151,7 @@ if [ -f "$OVR/latest-tag" ]; then PASS=$((PASS+1)); else
 # sandbox teardown.
 r=$(mkroot 0.2.6 c12); t=$(mktags c12 0.9.9)
 out=$(env -u HOME -u XDG_CACHE_HOME CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 \
-      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>&1); rc13=$?
+      LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$t")" bash "$UPDATE" 2>&1); rc13=$?
 if [ "$rc13" -eq 0 ]; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: the hook must exit 0 with no HOME and no XDG_CACHE_HOME, got $rc13" >&2; fi
 if printf '%s' "$out" | grep -q 'unbound variable'; then
@@ -149,7 +161,7 @@ else PASS=$((PASS+1)); fi
 # cannot be "always bail out".
 HOMEDIR="$WS/home13"; mkdir -p "$HOMEDIR"
 out=$(env -u XDG_CACHE_HOME HOME="$HOMEDIR" CLAUDE_PLUGIN_ROOT="$r" LOOP_TESTING_UPDATE_FORCE=1 \
-      LOOP_TESTING_UPDATE_TAGS_URL="file://$t" bash "$UPDATE" 2>/dev/null)
+      LOOP_TESTING_UPDATE_TAGS_URL="$(furl "$t")" bash "$UPDATE" 2>/dev/null)
 assert_has "$out" "0.9.9" "with HOME set the check still reports the newer tag"
 if [ -f "$HOMEDIR/.cache/loop-testing/latest-tag" ]; then PASS=$((PASS+1)); else
   FAIL=$((FAIL+1)); echo "  FAIL: with HOME set the throttle file must land under \$HOME/.cache" >&2; fi

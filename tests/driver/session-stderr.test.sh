@@ -34,12 +34,15 @@ set -u
 require_watchdog_binary
 
 LOG=docs/looptesting/driver.log
-CLEAN=""
-cleanup() { [ -n "$CLEAN" ] && chmod -R u+rwX $CLEAN 2>/dev/null; rm -rf $CLEAN; }  # unquoted: a list
+CLEAN=()
+# An ARRAY, not a space-joined string: under a spaced $TMPDIR the unquoted
+# `rm -rf $CLEAN` split every path into words, left all the fixtures behind
+# and handed rm the relative fragments.
+cleanup() { [ ${#CLEAN[@]} -gt 0 ] || return 0; chmod -R u+rwX "${CLEAN[@]}" 2>/dev/null; rm -rf "${CLEAN[@]}"; }
 trap cleanup EXIT
 
 # A. the session's stderr reaches the log.
-WS=$(mk_proj); CLEAN="$WS"
+WS=$(mk_proj); CLEAN=("$WS")
 stub=$(write_stub "$WS"); write_state "$WS" RUNNING 0
 STUB_STDERR='API Error: 401 invalid bearer token' STUB_EXIT=1 \
   bash "$DRIVER" --project "$WS" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
@@ -48,7 +51,7 @@ assert_file_contains "$WS/$LOG" "401 invalid bearer token" "driver.log carries t
 # B. and is redacted on the way in. driver.log sits in the evidence directory the
 #    user is told to read and attach, so a key echoed by a failing endpoint must
 #    not be what this fix delivers there.
-WS2=$(mk_proj); CLEAN="$CLEAN $WS2"
+WS2=$(mk_proj); CLEAN+=("$WS2")
 stub=$(write_stub "$WS2"); write_state "$WS2" RUNNING 0
 KEY='sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 STUB_STDERR="auth failed for key $KEY" STUB_EXIT=1 \
@@ -60,14 +63,14 @@ assert_file_contains "$WS2/$LOG" "auth failed for key" "redaction keeps the diag
 # C. stdout is NOT captured. It is the agent transcript; capturing it would grow
 #    the evidence directory without bound, which is a worse bug than the one
 #    being fixed.
-WS3=$(mk_proj); CLEAN="$CLEAN $WS3"
+WS3=$(mk_proj); CLEAN+=("$WS3")
 stub=$(write_stub "$WS3"); write_state "$WS3" RUNNING 0
 bash "$DRIVER" --project "$WS3" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
 assert_file_lacks "$WS3/$LOG" "stub: round=" "session stdout stays on /dev/null (transcript is not evidence)"
 
 # D. switchable off for anyone who would rather the agent's stderr never be
 #    written down at all.
-WS4=$(mk_proj); CLEAN="$CLEAN $WS4"
+WS4=$(mk_proj); CLEAN+=("$WS4")
 stub=$(write_stub "$WS4"); write_state "$WS4" RUNNING 0
 STUB_STDERR='API Error: 401 invalid bearer token' STUB_EXIT=1 LOOP_TESTING_DISABLE_SESSION_STDERR=1 \
   bash "$DRIVER" --project "$WS4" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
@@ -80,7 +83,7 @@ assert_file_contains "$WS4/$LOG" "session 1: exit=" "the session itself still ra
 #     of SIGPIPE at round 0 and reported exit=13. The stub exits 0 here, so the
 #     logged code IS the discriminator — 13 is the pulled design, 0 is a session
 #     that ran. A plain redirect to /dev/null has no reader to lose.
-WS5=$(mk_proj); CLEAN="$CLEAN $WS5"
+WS5=$(mk_proj); CLEAN+=("$WS5")
 stub=$(write_stub "$WS5"); write_state "$WS5" RUNNING 0
 STUB_STDERR='some stderr chatter' LOOP_TESTING_DISABLE_SESSION_STDERR=1 \
   bash "$DRIVER" --project "$WS5" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
@@ -101,7 +104,7 @@ assert_file_lacks    "$WS5/$LOG" "exit=13"           "and specifically not exit=
 
 # E. the tail is bounded: a chatty session must not turn driver.log into its
 #    transcript by the back door.
-WS6=$(mk_proj); CLEAN="$CLEAN $WS6"
+WS6=$(mk_proj); CLEAN+=("$WS6")
 stub=$(write_stub "$WS6"); write_state "$WS6" RUNNING 0
 STUB_STDERR_LINES=200 STUB_EXIT=1 \
   bash "$DRIVER" --project "$WS6" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
@@ -110,7 +113,7 @@ assert_file_lacks    "$WS6/$LOG" "stderr line 1."   "the head is dropped (the ta
 
 # F. the capture file does not outlive the run. A driver that leaves one temp
 #    file per session behind is the residue shape this project keeps auditing.
-WS7=$(mk_proj); TD=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-errtmp.XXXXXX"); CLEAN="$CLEAN $WS7 $TD"
+WS7=$(mk_proj); TD=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-errtmp.XXXXXX"); CLEAN+=("$WS7" "$TD")
 stub=$(write_stub "$WS7"); write_state "$WS7" RUNNING 0
 STUB_STDERR='API Error: 401 invalid bearer token' STUB_EXIT=1 TMPDIR="$TD" \
   bash "$DRIVER" --project "$WS7" --claude-bin "$stub" --max-sessions 2 >/dev/null 2>&1
@@ -122,7 +125,7 @@ assert_eq "0" "$LEFT" "no session-stderr temp file survives the driver (TMPDIR r
 #    it no longer resolves — the subshell died before exec and the session never
 #    ran at all. The pre-fix driver was immune (it redirected to &1, no path), so
 #    this feature is what introduces the possibility; it stays tested.
-WS8=$(mk_proj); RELHOME=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-relhome.XXXXXX"); CLEAN="$CLEAN $WS8 $RELHOME"
+WS8=$(mk_proj); RELHOME=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-relhome.XXXXXX"); CLEAN+=("$WS8" "$RELHOME")
 mkdir -p "$RELHOME/reltmp"
 stub=$(write_stub "$WS8"); write_state "$WS8" RUNNING 0
 STUB_STDERR='RELATIVE-TMPDIR-MARKER' STUB_EXIT=1 \
@@ -137,7 +140,7 @@ assert_file_contains "$WS8/$LOG" "RELATIVE-TMPDIR-MARKER" "and its stderr still 
 #    SIGPIPE). Under a root user this case is not discriminating — root writes
 #    into a 0500 directory anyway — so it asserts the invariant that holds for
 #    both: the session ran.
-WS9=$(mk_proj); ROTMP=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-rotmp.XXXXXX"); CLEAN="$CLEAN $WS9 $ROTMP"
+WS9=$(mk_proj); ROTMP=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-rotmp.XXXXXX"); CLEAN+=("$WS9" "$ROTMP")
 stub=$(write_stub "$WS9"); write_state "$WS9" RUNNING 0
 chmod 500 "$ROTMP"
 STUB_STDERR='READONLY-TMPDIR-MARKER' TMPDIR="$ROTMP" \
@@ -155,7 +158,7 @@ assert_file_contains "$WS9/$LOG" "session 1: exit=0" "an unwritable TMPDIR costs
 #    (`monkey: 3`), which the 10-character value floor alone already saves — it
 #    stayed green with both boundary rules reverted, i.e. it asserted the fix and
 #    tested the floor. Every value below is 10+ characters for that reason.
-WS10=$(mk_proj); CLEAN="$CLEAN $WS10"
+WS10=$(mk_proj); CLEAN+=("$WS10")
 stub=$(write_stub "$WS10"); write_state "$WS10" RUNNING 0
 FP=$(printf 'monkey: eating_all_the_bananas\nmonkeypatch: applied_to_module_alpha\nkeyboard: /dev/input/by-id/usb-kbd-event\ntoken: expected %s;%s at line 42\nmodule not found: ./src/keys.js\nsecretary: Jane Smith Esquire III\n' "'" "'")
 STUB_STDERR="$FP" STUB_EXIT=1 \
@@ -182,7 +185,7 @@ assert_file_contains "$WS10/$LOG" "secretary: Jane Smith Esquire III"  "'secreta
 #     SyntaxToken, LexToken, HTMLToken, CommentToken) must not match it either.
 #     An [A-Za-z] prefix on that rule redacts all four of the latter; that was
 #     the reviewer's own recommendation and it failed on its own list.
-WS13=$(mk_proj); CLEAN="$CLEAN $WS13"
+WS13=$(mk_proj); CLEAN+=("$WS13")
 stub=$(write_stub "$WS13"); write_state "$WS13" RUNNING 0
 LX=$(printf 'betoken: something_long_here\nnexttoken: IDENTIFIER_FOO\npeektoken: RBRACE_EXPECTED\nSyntaxToken: unexpected_end_of_input\nLexToken: NUMBER_LITERAL_42\nHTMLToken: unexpected end of input\n')
 STUB_STDERR="$LX" STUB_EXIT=1 \
@@ -199,7 +202,7 @@ assert_file_contains "$WS13/$LOG" "HTMLToken: unexpected end of input" "nor HTML
 #     credential field, uppercase a type name — and that is not true in either
 #     direction: accessToken and nextToken are both lowerCamelCase, AccessToken
 #     and SyntaxToken are both PascalCase. These are the names it redacted.
-WS16=$(mk_proj); CLEAN="$CLEAN $WS16"
+WS16=$(mk_proj); CLEAN+=("$WS16")
 stub=$(write_stub "$WS16"); write_state "$WS16" RUNNING 0
 API=$(printf 'nextToken: IDENTIFIER_FOO_X\npeekToken: RBRACE_EXPECTED\nreadToken: unexpected_char_here\nexpectToken: PUNCTUATION_SEMI\nconsumeToken: END_OF_STREAM\n')
 STUB_STDERR="$API" STUB_EXIT=1 \
@@ -214,7 +217,7 @@ done
 #     oauth2.Config / oauth2.Token prints exported — hence capitalised — fields.
 #     The name rule wants a separator before the secret word, so all of these
 #     passed straight through until the prefix was enumerated.
-WS17=$(mk_proj); CLEAN="$CLEAN $WS17"
+WS17=$(mk_proj); CLEAN+=("$WS17")
 stub=$(write_stub "$WS17"); write_state "$WS17" RUNNING 0
 PC=$(printf 'config AccessToken=aaaaaaaaaa1111111111 rejected\nconfig ClientSecret=bbbbbbbbbb2222222222 rejected\nconfig UserPassword=cccccccccc3333333333 rejected\ndump oauth2.Config{ClientID:abc ClientSecret:dddddddddd4444444444 Scopes:[]}\ndump &Token{AccessToken:eeeeeeeeee5555555555 TokenType:Bearer}\n')
 STUB_STDERR="$PC" STUB_EXIT=1 \
@@ -229,7 +232,7 @@ assert_file_contains "$WS17/$LOG" "TokenType:Bearer"     "and the struct's other
 # J. redaction true positives, in the shapes a failing endpoint actually prints.
 #    Each line keeps a word of diagnostic around the secret, so the assertions
 #    below cannot pass by the whole line having been dropped.
-WS11=$(mk_proj); CLEAN="$CLEAN $WS11"
+WS11=$(mk_proj); CLEAN+=("$WS11")
 stub=$(write_stub "$WS11"); write_state "$WS11" RUNNING 0
 TP=$(printf 'call failed X-Api-Key: deadbeefdeadbeefdeadbeef\nheader Authorization: Basic dXNlcjpwYXNzd29yZA==\nfetch https://ci-bot:glpat-SECRETVALUE123@git.example.com/r failed\nenv AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY rejected\nconfig apikey=zyxwvu9876543210 refused\nbody {"accessToken": "aaaaaaaaaa1111111111"} denied\nbody {"clientSecret": "bbbbbbbbbb2222222222"} denied\nenv dbPassword=cccccccccc3333333333 denied\n')
 STUB_STDERR="$TP" STUB_EXIT=1 \
@@ -262,7 +265,7 @@ assert_file_contains "$WS11/$LOG" "denied"                          "and the ver
 #     its own rule, which is what made this easy to miss.
 #     The second assertion is the other half: stopping at the closing quote
 #     rather than running to end of line, so the rest of the JSON survives.
-WS14=$(mk_proj); CLEAN="$CLEAN $WS14"
+WS14=$(mk_proj); CLEAN+=("$WS14")
 stub=$(write_stub "$WS14"); write_state "$WS14" RUNNING 0
 STUB_STDERR='{"status":429,"headers":{"authorization":"Basic Y2ktYm90OnN1cGVyc2VjcmV0"},"retry_after":30}' STUB_EXIT=1 \
   bash "$DRIVER" --project "$WS14" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
@@ -272,7 +275,7 @@ assert_file_contains "$WS14/$LOG" "retry_after"              "and the rest of th
 # J3. the three other quoted renderings review found still leaking afterwards.
 #     Each carries the same base64 — 24 characters, under the fallback — so each
 #     assertion fails on its own if its rendering stops matching.
-WS18=$(mk_proj); CLEAN="$CLEAN $WS18"
+WS18=$(mk_proj); CLEAN+=("$WS18")
 stub=$(write_stub "$WS18"); write_state "$WS18" RUNNING 0
 AU=$(printf 'ruby "authorization" => "Basic UlVCWVJVQllSVUJZUlVCWVJV" here\nnode {"x-authorization": "Basic WFhYWFhYWFhYWFhYWFhYWFhYWFg="} here\nnode {"proxy-authorization": "Basic UFJPWFlQUk9YWVBST1hZUFJP"} here\n')
 STUB_STDERR="$AU" STUB_EXIT=1 \
@@ -290,7 +293,7 @@ assert_file_lacks "$WS18/$LOG" "UFJPWFlQUk9YWVBST1hZUFJP" "a quoted proxy-author
 #    session 2 and, once that offset passes the 4000-byte window, session 2's own
 #    error is pushed out of the log altogether. That is the D-05 symptom produced
 #    by the D-05 fix, so it is asserted from both sides.
-WS12=$(mk_proj); CLEAN="$CLEAN $WS12"
+WS12=$(mk_proj); CLEAN+=("$WS12")
 stub=$(write_stub "$WS12"); write_state "$WS12" RUNNING 0
 STUB_GRANDCHILD=1 \
   bash "$DRIVER" --project "$WS12" --claude-bin "$stub" --max-sessions 2 >/dev/null 2>&1
@@ -310,7 +313,7 @@ assert_file_lacks    "$WS12/$LOG" "LATE WRITE FROM SESSION ONE GRANDCHILD" \
 #    secret reaching driver.log verbatim, with the filler after it masked so the
 #    line read as redacted. No rule fixes this; the partial first line is dropped
 #    instead. One 4091-byte line is the whole trigger.
-WS15=$(mk_proj); CLEAN="$CLEAN $WS15"
+WS15=$(mk_proj); CLEAN+=("$WS15")
 stub=$(write_stub "$WS15"); write_state "$WS15" RUNNING 0
 STUB_STDERR_LONGLINE=1 STUB_EXIT=1 \
   bash "$DRIVER" --project "$WS15" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
@@ -331,7 +334,7 @@ assert_file_contains "$WS15/$LOG" "nothing shown"      "and the log says why it 
 #    platform. CI is ubuntu-only on purpose, so nothing mechanical would catch
 #    it; this shim is the mechanism. Six other places in the repo already strip
 #    that padding, including :150 and :159 of the driver itself.
-WS19=$(mk_proj); SHIM=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-wcshim.XXXXXX"); CLEAN="$CLEAN $WS19 $SHIM"
+WS19=$(mk_proj); SHIM=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-wcshim.XXXXXX"); CLEAN+=("$WS19" "$SHIM")
 # `command -v wc` is resolved HERE, while the shim is not yet on PATH, so it
 # names the real binary — same idiom as run_broken_ps at shutdown.test.sh:306.
 # Hard-coding /usr/bin/wc emits nothing on a host that keeps it elsewhere
@@ -354,7 +357,7 @@ assert_file_contains "$WS19/$LOG" "nothing shown"      "a padding wc does not di
 #    single newline used to produce "the tail was one line longer than 4000
 #    bytes" about a 1-byte file — a false statement written into the evidence
 #    directory the user is told to attach.
-WS20=$(mk_proj); CLEAN="$CLEAN $WS20"
+WS20=$(mk_proj); CLEAN+=("$WS20")
 stub=$(write_stub "$WS20"); write_state "$WS20" RUNNING 0
 STUB_STDERR_BLANK=1 STUB_EXIT=1 \
   bash "$DRIVER" --project "$WS20" --claude-bin "$stub" --max-sessions 1 >/dev/null 2>&1
@@ -378,7 +381,7 @@ assert_file_lacks    "$WS20/$LOG" "one line longer than" "and does not claim a c
 #    The first assertion is the rot guard: if the function is renamed or reshaped,
 #    the extraction stops looking like a function and this fails loudly instead of
 #    passing against nothing.
-DISP=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-disp.XXXXXX"); CLEAN="$CLEAN $DISP"
+DISP=$(mktemp -d "${TMPDIR:-/tmp}/loop-testing-disp.XXXXXX"); CLEAN+=("$DISP")
 { echo '#!/usr/bin/env bash'
   echo 'set -u'
   echo 'CHILD_SURVIVED="${CHILD_SURVIVED:-}"; SESSION_ERR="${SESSION_ERR:-}"'
