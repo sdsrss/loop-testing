@@ -41,6 +41,28 @@ CODEX_DRIVER="$REPO_ROOT/skills/loop-testing/scripts/unattended-codex.sh"
 
 WS_ALL=()
 track_ws() { WS_ALL+=("$1"); }
+# This suite's own process group. `script -q -c "… --claude-bin <stub>"`, the
+# pty launcher, stays in OUR group (only its child gets a new session), and its
+# command line names the stub — so every "pgrep -f <stub>, then SIGKILL that
+# group" sweep below killed the suite itself whenever a pty-case driver was
+# still up. Measured: LOOP_TESTING_TEST_WAIT=0 ended rc 137 after the report,
+# before `rm -rf`, leaving 30 fixture dirs, 20 session-err files and 14
+# drivers running. Under
+# run-all, which runs suites without job control, that group is the runner's.
+SELF_PG=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+case "$SELF_PG" in
+  ''|*[!0-9]*) echo "FAILED: cannot read this suite's own process group — every cleanup below would risk killing it" >&2; exit 1 ;;
+esac
+# kill_group_of <pid>: SIGKILL the process group <pid> is in, unless that group
+# is this suite's own — then only <pid> itself.
+kill_group_of() {
+  local pg; pg=$(ps -o pgid= -p "$1" 2>/dev/null | tr -d ' ')
+  case "$pg" in
+    ''|0|1|"$SELF_PG") ;;
+    *) kill -KILL -- -"$pg" 2>/dev/null ;;
+  esac
+  kill -KILL "$1" 2>/dev/null
+}
 KILL_ON_EXIT=""
 cleanup_all() {
   # Kill anything still beating in a fixture before removing it.
@@ -55,9 +77,7 @@ cleanup_all() {
   if [ "${#WS_ALL[@]}" -gt 0 ]; then
     for ws in "${WS_ALL[@]}"; do
       for p in $(pgrep -f "$ws/heartbeat-stub.sh" 2>/dev/null) $(pgrep -f "$ws/stubborn-stub.sh" 2>/dev/null); do
-        pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')
-        [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null
-        kill -KILL "$p" 2>/dev/null
+        kill_group_of "$p"
       done
     done
   fi
@@ -108,9 +128,57 @@ hb_lines() { [ -f "$1/docs/looptesting/heartbeat" ] && wc -l < "$1/docs/looptest
 #
 # `wait_heartbeat` below has no twin in lib.sh and keeps its own loop.
 
-wait_heartbeat() { # ws -> 0 once the stub has beaten at least 3 times (≤15s)
-  for _ in $(seq 1 60); do [ "$(hb_lines "$1")" -ge 3 ] && return 0; sleep 0.25; done
-  return 1
+wait_heartbeat() { # ws -> 0 once the stub has beaten at least 3 times, 1 past the budget
+  local end; end=$(( $(date +%s) + $(test_wait_budget) ))
+  until [ "$(hb_lines "$1")" -ge 3 ]; do
+    [ "$(date +%s)" -lt "$end" ] || return 1
+    sleep 0.25
+  done
+  return 0
+}
+
+# After a signal, every wait in a case shares ONE deadline. Waiting on each in
+# turn stacked 30 + 30 s, which reaches the session's own watchdog
+# (--session-minutes 1 = 60 s): a driver that IGNORED the signal then had its
+# session killed by the watchdog instead, and "child session kept running" /
+# "orphaned session processes" passed on that kill. The shared deadline is the
+# budget, capped at two thirds of the session watchdog. The cap counts from
+# the signal while the watchdog counts from session launch, so it holds that
+# margin only when the wait before the signal (lock pid, 3 heartbeats) is
+# short — normally well under a second; a slow start narrows it.
+post_budget() { # session-watchdog-seconds -> seconds
+  local b cap; b=$(test_wait_budget); cap=$(( $1 * 2 / 3 ))
+  [ "$b" -le "$cap" ] && echo "$b" || echo "$cap"
+}
+
+# watch_lock_release <lock> <session-pid> <deadline-epoch> -> sets saw=1 once
+# the lock is gone, raced=1 if the session was still alive at that instant.
+# The lock is tested every pass, the clock only every tenth: the race it looks
+# for lasts ~50 ms, and a `date` fork per pass stretched the period ~10 %.
+watch_lock_release() {
+  local i=0; saw=0; raced=0
+  while :; do
+    if [ ! -e "$1" ]; then saw=1; kill -0 "$2" 2>/dev/null && raced=1; return 0; fi
+    i=$((i + 1))
+    if [ $((i % 10)) -eq 0 ] || [ "$i" -eq 1 ]; then [ "$(date +%s)" -lt "$3" ] || return 0; fi
+    sleep 0.05
+  done
+}
+
+# gone_by <pid> <deadline-epoch> -> 0 once the pid is gone, 1 at the deadline.
+gone_by() {
+  while kill -0 "$1" 2>/dev/null; do
+    [ "$(date +%s)" -lt "$2" ] || return 1
+    sleep 0.25
+  done
+  return 0
+}
+
+# Premise failures say so. A case that never reached the state it is about
+# (no lock pid, no heartbeat, no session group) is not evidence about the
+# driver in either direction, and must not read like a verdict on it.
+premise_msg() { # label what
+  echo "  FAIL: $1 — $2 within $(test_wait_budget)s; this run never reached the state the case is about, so it is not evidence about shutdown either way (audit T-08)" >&2
 }
 
 # The session pid is the driver child that LEADS its own process group — the
@@ -128,7 +196,7 @@ session_pid() { # driver-pid
 # run_case <label> <kind: claude|codex> <method: pg-term|pg-hup|pg-quit|bare-int|pty> [stub: normal|stubborn]
 run_case() {
   local label="$1" kind="$2" method="$3" stubkind="${4:-normal}"
-  local ws stub drv sess pgid n1 n2 lock saw_gone raced
+  local ws stub drv sess pgid n1 n2 lock pb pend
   ws=$(mk_proj); track_ws "$ws"
   if [ "$stubkind" = stubborn ]; then stub=$(write_stubborn_stub "$ws"); else stub=$(write_heartbeat_stub "$ws"); fi
   write_state "$ws" RUNNING 0
@@ -186,8 +254,8 @@ run_case() {
       ;;
   esac
   drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no lock pid appeared within $(test_wait_budget)s; this run never reached the state the case is about, so it is not evidence about shutdown either way (audit T-08)" >&2; [ "$method" = pty ] && exec 3>&-; return 0; }
-  wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); echo "  FAIL: $label — child session never started beating" >&2; [ "$method" = pty ] && exec 3>&-; return 0; }
-  sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no session process group found under the driver" >&2; [ "$method" = pty ] && exec 3>&-; return 0; }
+  wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); premise_msg "$label" "the session produced no 3 heartbeats"; [ "$method" = pty ] && exec 3>&-; return 0; }
+  sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); premise_msg "$label" "no session process group appeared under the driver"; [ "$method" = pty ] && exec 3>&-; return 0; }
   pgid=$(ps -o pgid= -p "$drv" | tr -d ' ')
   case "$method" in
     pg-term)  kill -TERM -- -"$pgid" 2>/dev/null ;;
@@ -201,25 +269,18 @@ run_case() {
   # is alive. Watch for the lock to disappear and sample the session pid at that
   # instant — a signal-and-go handler frees it in ~50 ms with the session still
   # running, and a second driver can start right there.
-  saw_gone=0; raced=0
-  for _ in $(seq 1 600); do
-    if [ ! -e "$lock" ]; then
-      saw_gone=1
-      kill -0 "$sess" 2>/dev/null && raced=1
-      break
-    fi
-    sleep 0.05
-  done
-  if [ "$saw_gone" = 1 ] && [ "$raced" = 0 ]; then PASS=$((PASS+1)); else
+  pb=$(post_budget 60); pend=$(( $(date +%s) + pb ))
+  watch_lock_release "$lock" "$sess" "$pend"
+  if [ "$saw" = 1 ] && [ "$raced" = 0 ]; then PASS=$((PASS+1)); else
     FAIL=$((FAIL+1))
-    if [ "$saw_gone" = 0 ]; then echo "  FAIL: $label — .driver.lock was never released" >&2
+    if [ "$saw" = 0 ]; then echo "  FAIL: $label — .driver.lock was not released within ${pb}s of the signal" >&2
     else echo "  FAIL: $label — lock released while session pid $sess was still alive" >&2; fi
   fi
 
   # The driver itself must go (this half always passed).
-  for _ in $(seq 1 40); do kill -0 "$drv" 2>/dev/null || break; sleep 0.25; done
+  gone_by "$drv" "$pend" || :
   if kill -0 "$drv" 2>/dev/null; then
-    FAIL=$((FAIL+1)); echo "  FAIL: $label — driver still alive after the signal" >&2
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — driver still alive ${pb}s after the signal" >&2
     kill -KILL "$drv" 2>/dev/null
   else PASS=$((PASS+1)); fi
   if [ -e "$lock" ]; then
@@ -233,7 +294,7 @@ run_case() {
   # And nothing from this fixture is left in the process table.
   if pgrep -f "$stub" > /dev/null 2>&1; then
     FAIL=$((FAIL+1)); echo "  FAIL: $label — orphaned session processes: $(pgrep -f "$stub" | tr '\n' ' ')" >&2
-    for p in $(pgrep -f "$stub"); do pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null; done
+    for p in $(pgrep -f "$stub"); do kill_group_of "$p"; done
   else PASS=$((PASS+1)); fi
   # The wait must announce itself: a silent pause of up to the bound reads as a
   # hang, and the user's next move is a second signal.
@@ -250,7 +311,7 @@ run_case() {
 # run_double <label> <kind: claude|codex> <first> <second>   signals: TERM INT HUP QUIT pty
 run_double() {
   local label="$1" kind="$2" first="$3" second="$4"
-  local ws stub drv sess lock pgid saw raced t0 tdead
+  local ws stub drv sess lock pgid saw raced t0 tdead pb pend
   ws=$(mk_proj); track_ws "$ws"
   stub=$(write_stubborn_stub "$ws")
   write_state "$ws" RUNNING 0
@@ -272,8 +333,8 @@ run_double() {
     ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
   fi
   drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no lock pid appeared within $(test_wait_budget)s; this run never reached the state the case is about, so it is not evidence about shutdown either way (audit T-08)" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
-  wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); echo "  FAIL: $label — child session never started beating" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
-  sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no session process group found under the driver" >&2; [ "$first" = pty ] && exec 3>&-; return 0; }
+  wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); premise_msg "$label" "the session produced no 3 heartbeats"; [ "$first" = pty ] && exec 3>&-; return 0; }
+  sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); premise_msg "$label" "no session process group appeared under the driver"; [ "$first" = pty ] && exec 3>&-; return 0; }
   pgid=$(ps -o pgid= -p "$drv" | tr -d ' ')
   send_sig "$first" "$drv" "$pgid"
   sleep 2   # the first handler is now inside its wait
@@ -284,35 +345,28 @@ run_double() {
   t0=$(date +%s)
   send_sig "$second" "$drv" "$pgid"
   # THE invariant: the lock may never be absent while the session lives.
-  saw=0; raced=0
-  for _ in $(seq 1 600); do
-    if [ ! -e "$lock" ]; then
-      saw=1
-      kill -0 "$sess" 2>/dev/null && raced=1
-      break
-    fi
-    sleep 0.05
-  done
+  pb=$(post_budget 120); pend=$(( t0 + pb ))
+  watch_lock_release "$lock" "$sess" "$pend"
   if [ "$saw" = 1 ] && [ "$raced" = 0 ]; then PASS=$((PASS+1)); else
     FAIL=$((FAIL+1))
-    if [ "$saw" = 0 ]; then echo "  FAIL: $label — .driver.lock was never released" >&2
+    if [ "$saw" = 0 ]; then echo "  FAIL: $label — .driver.lock was not released within ${pb}s of the second signal" >&2
     else echo "  FAIL: $label — second signal released the lock with session pid $sess still alive" >&2; fi
   fi
   # And the second signal is USEFUL: it collapses the deadline, so the session
   # dies now rather than at the 20 s bound.
-  for _ in $(seq 1 120); do kill -0 "$sess" 2>/dev/null || break; sleep 0.25; done
+  gone_by "$sess" "$pend" || :
   tdead=$(( $(date +%s) - t0 ))
   if kill -0 "$sess" 2>/dev/null; then
-    FAIL=$((FAIL+1)); echo "  FAIL: $label — session still alive 30s after the second signal" >&2
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — session still alive ${tdead}s after the second signal" >&2
   elif [ "$tdead" -le 10 ]; then PASS=$((PASS+1)); else
     FAIL=$((FAIL+1)); echo "  FAIL: $label — second signal did not escalate (session took ${tdead}s to die)" >&2; fi
-  for _ in $(seq 1 40); do kill -0 "$drv" 2>/dev/null || break; sleep 0.25; done
+  gone_by "$drv" "$pend" || :
   if kill -0 "$drv" 2>/dev/null; then
-    FAIL=$((FAIL+1)); echo "  FAIL: $label — driver still alive" >&2; kill -KILL "$drv" 2>/dev/null
+    FAIL=$((FAIL+1)); echo "  FAIL: $label — driver still alive ${pb}s after the second signal" >&2; kill -KILL "$drv" 2>/dev/null
   else PASS=$((PASS+1)); fi
   if pgrep -f "$stub" > /dev/null 2>&1; then
     FAIL=$((FAIL+1)); echo "  FAIL: $label — orphaned session processes: $(pgrep -f "$stub" | tr '\n' ' ')" >&2
-    for p in $(pgrep -f "$stub"); do pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null; done
+    for p in $(pgrep -f "$stub"); do kill_group_of "$p"; done
   else PASS=$((PASS+1)); fi
   if grep -qF "second stop signal" "$ws/driver.err" 2>/dev/null; then PASS=$((PASS+1)); else
     FAIL=$((FAIL+1)); echo "  FAIL: $label — the second signal was not acknowledged on stderr" >&2; fi
@@ -329,7 +383,7 @@ run_double() {
 # applied while the real PATH is otherwise intact.
 run_broken_ps() {
   local label="$1" kind="$2" behavior="$3"
-  local ws stub drv sess lock pgid shim saw raced
+  local ws stub drv sess lock pgid shim saw raced pb pend
   ws=$(mk_proj); track_ws "$ws"
   stub=$(write_stubborn_stub "$ws")
   write_state "$ws" RUNNING 0
@@ -364,21 +418,14 @@ PSSHIM
   fi
   ( ( trap - INT QUIT; exec setsid "$@" > /dev/null 2> "$ws/driver.err" ) & )
   drv=$(wait_lock_pid "$ws") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no lock pid appeared within $(test_wait_budget)s; this run never reached the state the case is about, so it is not evidence about shutdown either way (audit T-08)" >&2; return 0; }
-  wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); echo "  FAIL: $label — child session never started beating" >&2; return 0; }
+  wait_heartbeat "$ws" || { FAIL=$((FAIL+1)); premise_msg "$label" "the session produced no 3 heartbeats"; return 0; }
   # The test's own view of the process table is never shimmed.
-  sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); echo "  FAIL: $label — no session process group found under the driver" >&2; return 0; }
+  sess=$(session_pid "$drv") || { FAIL=$((FAIL+1)); premise_msg "$label" "no session process group appeared under the driver"; return 0; }
   pgid=$(ps -o pgid= -p "$drv" | tr -d ' ')
   : > "$ws/ps-broken"          # ps starts failing exactly as the wait begins
   kill -TERM -- -"$pgid" 2>/dev/null
-  saw=0; raced=0
-  for _ in $(seq 1 600); do
-    if [ ! -e "$lock" ]; then
-      saw=1
-      kill -0 "$sess" 2>/dev/null && raced=1
-      break
-    fi
-    sleep 0.05
-  done
+  pb=$(post_budget 120); pend=$(( $(date +%s) + pb ))
+  watch_lock_release "$lock" "$sess" "$pend"
   if [ "$behavior" = garbage ]; then
     # A ps that answers in a DIFFERENT FORMAT is not "cannot tell" — it is a
     # non-empty start time that does not match, which is exactly what a REUSED
@@ -393,23 +440,22 @@ PSSHIM
   else
     if [ "$saw" = 1 ] && [ "$raced" = 0 ]; then PASS=$((PASS+1)); else
       FAIL=$((FAIL+1))
-      if [ "$saw" = 0 ]; then echo "  FAIL: $label — .driver.lock was never released" >&2
+      if [ "$saw" = 0 ]; then echo "  FAIL: $label — .driver.lock was not released within ${pb}s of the signal" >&2
       else echo "  FAIL: $label — a broken ps made the driver release the lock with session pid $sess still alive" >&2; fi
     fi
   fi
-  for _ in $(seq 1 40); do kill -0 "$drv" 2>/dev/null || break; sleep 0.25; done
+  gone_by "$drv" "$pend" || :
   kill -KILL "$drv" 2>/dev/null
   if [ "$behavior" = garbage ]; then
     # The session this case deliberately leaves standing is the fixture's, so
     # reap it here rather than reporting it as an orphan.
     for p in $(pgrep -f "$stub" 2>/dev/null); do
-      pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null
-      kill -KILL "$p" 2>/dev/null
+      kill_group_of "$p"
     done
     PASS=$((PASS+1))
   elif pgrep -f "$stub" > /dev/null 2>&1; then
     FAIL=$((FAIL+1)); echo "  FAIL: $label — orphaned session processes: $(pgrep -f "$stub" | tr '\n' ' ')" >&2
-    for p in $(pgrep -f "$stub"); do pg=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$pg" ] && kill -KILL -- -"$pg" 2>/dev/null; done
+    for p in $(pgrep -f "$stub"); do kill_group_of "$p"; done
   else PASS=$((PASS+1)); fi
   return 0
 }
@@ -470,20 +516,28 @@ done
 # for it — so a heartbeat check here would pass on the unfixed driver too.
 WS=$(mk_proj); track_ws "$WS"
 stub=$(write_heartbeat_stub "$WS"); write_state "$WS" RUNNING 0
-( pid=""; for _ in $(seq 1 60); do
-    [ -f "$WS/docs/looptesting/.driver.lock/pid" ] && read -r pid < "$WS/docs/looptesting/.driver.lock/pid" 2>/dev/null
-    case "$pid" in ''|*[!0-9]*) pid=""; sleep 0.25 ;; *) break ;; esac
-  done
-  for _ in $(seq 1 60); do [ "$(hb_lines "$WS")" -ge 3 ] && break; sleep 0.25; done
-  [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null ) &
-t0=$(date +%s)
+# The signaller records that it SENT the signal. Without that, a run where the
+# lock pid never appeared sent nothing, the driver ran on to its limits, and the
+# two assertions below read that as "the driver ignored a bare TERM" — a verdict
+# on the driver from a case that never reached its state (the T-08 shape).
+# The marker holds WHEN the signal went out: the elapsed bound is about the
+# driver's response, so the signaller's own waiting must not count against it.
+( pid=$(wait_lock_pid "$WS") && wait_heartbeat "$WS" && kill -TERM "$pid" 2>/dev/null \
+    && date +%s > "$WS/term-sent" ) &
 bash "$DRIVER" --project "$WS" --claude-bin "$stub" --max-sessions 3 --max-minutes 5 --session-minutes 1 > /dev/null 2>&1
 rc=$?
-elapsed=$(( $(date +%s) - t0 ))
+tend=$(date +%s)
 wait 2>/dev/null
-assert_rc "$rc" 143 "a bare kill -TERM <driver-pid> during a session exits 143"
-if [ "$elapsed" -lt 20 ]; then PASS=$((PASS+1)); else
-  FAIL=$((FAIL+1)); echo "  FAIL: bare kill -TERM was deferred to the session boundary (driver ran ${elapsed}s)" >&2; fi
+if [ -s "$WS/term-sent" ]; then
+  read -r tsent < "$WS/term-sent"; elapsed=$(( tend - tsent ))
+  assert_rc "$rc" 143 "a bare kill -TERM <driver-pid> during a session exits 143"
+  if [ "$elapsed" -lt 20 ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "  FAIL: bare kill -TERM was deferred to the session boundary (driver ran ${elapsed}s after the TERM)" >&2; fi
+else
+  # Two failures, as on the reached path two assertions: a constant count.
+  FAIL=$((FAIL+1)); premise_msg "bare kill -TERM" "the signaller saw no lock pid and 3 heartbeats, so it sent no TERM,"
+  FAIL=$((FAIL+1)); echo "  FAIL: bare kill -TERM — the deferral bound is unevaluated for the same reason" >&2
+fi
 
 # A `ps` that cannot answer must never be read as "the session is gone".
 for k in claude codex; do

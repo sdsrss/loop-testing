@@ -25,13 +25,36 @@
   reaches the state, "those six waits go from 35s and 40s to 90s each". Only
   the three lock-pid waits run there (10 + 10 + 15 = 35 s, now 3 x 30 = 90 s).
   The three exit waits (10 + 10 + 20 = 40 s, now 90 s) sit inside the branch
-  that runs only after a lock pid appeared, so they are paid only when a driver
-  outlives TERM. That is a driver failure, not the loaded host the note named.
-- **Not changed:** `tests/driver/shutdown.test.sh` still bounds about ten
-  waits by iteration count, and on expiry several of them report a verdict on
-  the driver ("driver still alive after the signal", "lock was never
-  released") rather than "this run never reached the state". None expired in
-  the runs above.
+  that runs only after a lock pid appeared. So they are paid on a host that did
+  reach the state and then waited for the driver to exit — a driver that
+  outlives TERM, or an exit slowed by load, which is what T-08's one observed
+  failure was — never on the host the note named.
+- **fix(tests)**: `tests/driver/shutdown.test.sh` bounded ten waits by
+  iteration count, which `LOOP_TESTING_TEST_WAIT` could not reach. On expiry,
+  several of them reported a verdict on the driver where the run had never
+  reached the state the case is about: "child session never started beating",
+  "no session process group found". In the bare-`kill -TERM` case, a signaller
+  that never saw a lock pid sent nothing, and the driver's normal exit was then
+  asserted as "a bare TERM exits 143". Every wait now uses the shared
+  wall-clock budget. Premise failures say the state was not reached, and the
+  bare-TERM case asserts only once its signaller records that it sent the
+  signal, and times its bound from that send. After a signal, all of a case's
+  waits share one deadline, capped at two thirds of the session watchdog.
+  Waiting on each in turn stacked 30 + 30 s into the 60 s watchdog, and a
+  driver that ignored the signal then passed "child session kept running" and
+  "orphaned session processes" on the watchdog's kill. With
+  `LOOP_TESTING_TEST_WAIT=0`, all 30 failures name an unreached or unevaluated
+  state and none names the driver. The default run is 154/0, unchanged.
+- **fix(tests)**: the same suite could kill itself, and the runner with it.
+  Its cleanup found live processes with `pgrep -f <stub>` and SIGKILLed their
+  process group. The pty launcher (`script -q -c "… --claude-bin <stub>"`)
+  stays in the suite's own group and its command line names the stub, so any
+  pty-case driver still alive at exit took the suite's group down: rc 137
+  after the report, before `rm -rf`, with 30 fixture dirs, 20 session-err
+  files and 14 drivers left running. `tests/run-all.sh` runs suites without
+  job control, so that group is the runner's. The cleanup now never signals the suite's own group, only
+  the process itself. Restoring the old sweep brings rc 137 and the 14 drivers
+  back.
 
 ## 0.17.2 — 2026-09-22
 
