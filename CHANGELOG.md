@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.17.3 — 2026-09-23
+
+Test-side only; nothing a user installs changes behaviour. It closes audit
+T-08, the last open P1, by measurement rather than reproduction, and it
+removes the same shape from the suite that still had it:
+`tests/driver/shutdown.test.sh`. That suite also turned out to be able to
+SIGKILL its own process group on exit, and with it the runner. Suites,
+`bash tests/run-all.sh`, the same as `0.17.2` in all three runs:
+
+```
+default               46 suites / 1965 assertions, 0 failed   ALL GREEN
+no timeout/gtimeout   1434, 0 failed, 11 skipped              ALL GREEN
+spaced $TMPDIR        1965, 0 failed                          ALL GREEN
+```
 
 - **T-08, closed by measurement, not by reproduction.** The one observed failure
   behind it was in the protect-window case and already had its cause fixed in
