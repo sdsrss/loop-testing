@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- **T-08, closed by measurement, not by reproduction.** The one observed failure
+  behind it was in the protect-window case and already had its cause fixed in
+  place (only the first `chmod` is slowed, so the shutdown path no longer stacks
+  shim sleeps). The remaining setsid waits were bounded, not wrong. Measured on
+  a 12-core Linux host (bash 5.3.9, uutils), timing the lock pid's appearance
+  and the driver's exit after `kill -TERM -- -<pgid>`, using the suites' own
+  slow stub:
+
+  ```
+  idle, 6 runs          lock 60-82 ms     exit 64-81 ms
+  96 CPU hogs, 60 runs  lock max 444 ms   exit max 267 ms   (run queue 98-119)
+  ```
+
+  The budget is 30 000 ms, so the worst sample leaves 67x headroom. Under the
+  same load, three concurrent copies each of `driver-limits` (38/0),
+  `codex-limits` (48/0) and `shutdown` (154/0) passed. With
+  `LOOP_TESTING_TEST_WAIT=0` the case fails and names the unreached state
+  (37 passed, 1 failed), so a green run does exercise the check. Not measured:
+  macOS, and I/O or memory pressure.
+- **Correction to the 0.15.0 note on T-08.** It said that on a host that never
+  reaches the state, "those six waits go from 35s and 40s to 90s each". Only
+  the three lock-pid waits run there (10 + 10 + 15 = 35 s, now 3 x 30 = 90 s).
+  The three exit waits (10 + 10 + 20 = 40 s, now 90 s) sit inside the branch
+  that runs only after a lock pid appeared, so they are paid only when a driver
+  outlives TERM. That is a driver failure, not the loaded host the note named.
+- **Not changed:** `tests/driver/shutdown.test.sh` still bounds about ten
+  waits by iteration count, and on expiry several of them report a verdict on
+  the driver ("driver still alive after the signal", "lock was never
+  released") rather than "this run never reached the state". None expired in
+  the runs above.
+
 ## 0.17.2 — 2026-09-22
 
 Paths the user types are now resolved where the user typed them. Every defect
